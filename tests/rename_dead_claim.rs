@@ -12,14 +12,18 @@
 //! `start_and_rename_agree_for_every_record_shape` asserts the agreement
 //! directly, shape by shape, instead of testing each command in isolation.
 //!
-//! The dead-conflict decision taken here is the non-destructive one: rename
-//! takes the pair and leaves the corpse in place for `a prune` -- it neither
-//! archives nor deletes anything (`rename_takes_a_workspace_tag_held_by_a_dead_record`
-//! pins that a successful rename leaves the dead record's durable state
-//! behind). A pre-PID `Starting` holder is fenced on its worker lock exactly
-//! like every other claim check (issue #9): a record in the
-//! spawn-to-worker-lock gap is a healthy session coming up, and a rename
-//! must not steal its tag.
+//! The dead-conflict decision taken here is the same one `a start` makes:
+//! rename takes the pair AND retires the corpse through the same pipeline a
+//! reclaiming start runs (`rename_takes_a_workspace_tag_held_by_a_dead_record`
+//! pins that the dead record's durable state is archived and deleted, not
+//! left behind). An interim fix took the name and left the corpse for
+//! `a prune`, which made pairs transiently multiply-held; registries
+//! written under it can still hold a pair more than once, so
+//! `rename_drains_a_pair_held_by_more_than_one_dead_record` pins that a
+//! rename retires every dead holder, not just the first. A pre-PID
+//! `Starting` holder is fenced on its worker lock exactly like every other
+//! claim check (issue #9): a record in the spawn-to-worker-lock gap is a
+//! healthy session coming up, and a rename must not steal its tag.
 //!
 //! Harness style follows tests/reclaim_zombie_tag.rs (direct CLI, real
 //! sessions, real signals).
@@ -156,6 +160,29 @@ impl Harness {
 
     fn state_dir_exists(&self, id: &str) -> bool {
         self.state_dir(id).exists()
+    }
+
+    fn retired_dir(&self, id: &str) -> PathBuf {
+        self.state.path().join("retired-sessions").join(id)
+    }
+
+    /// Transplant a record onto another `workspace+tag` by editing it on
+    /// disk -- the shape of a duplicate pair a registry written under the
+    /// interim fix can contain.
+    fn retag(&self, id: &str, workspace: &TempDir, tag: &str) {
+        let record_path = self.state_dir(id).join("session.json");
+        let mut record: Value =
+            serde_json::from_slice(&fs::read(&record_path).expect("read record")).expect("parse");
+        record["workspace"] = Value::from(
+            workspace
+                .path()
+                .canonicalize()
+                .expect("canonical workspace")
+                .to_str()
+                .expect("UTF-8 workspace"),
+        );
+        record["tag"] = Value::from(tag);
+        fs::write(&record_path, serde_json::to_vec(&record).unwrap()).expect("write record");
     }
 
     fn worker_lock(&self, id: &str) -> PathBuf {
@@ -304,6 +331,8 @@ fn make_live_worker_dead_leader(
         workload_pid: Some(workload_pid as u32),
         containment_cgroup: None,
         containment_cgroup_identity: None,
+        worker_cgroup: None,
+        workload_cgroup: None,
         containment_empty: Some(false),
         socket_path: paths.socket(id),
         history_path: paths.history(id),
@@ -471,9 +500,10 @@ impl Shape {
 }
 
 /// The reported bug, end to end: `a start` reclaims a pair held by a dead
-/// record, so `a rename` must be able to take it too. Rename is the
-/// non-destructive claimant: it takes the name and leaves the corpse's
-/// durable state in place for `a prune`.
+/// record, so `a rename` must be able to take it too. Rename claims the pair
+/// through the same pipeline a reclaiming start runs: the corpse is
+/// retired -- archived and deleted -- so exactly one record owns the pair
+/// afterwards.
 #[test]
 fn rename_takes_a_workspace_tag_held_by_a_dead_record() {
     let harness = Harness::new();
@@ -490,26 +520,66 @@ fn rename_takes_a_workspace_tag_held_by_a_dead_record() {
         String::from_utf8_lossy(&renamed.stderr)
     );
 
-    // The renamed session owns the pair now.
+    // The renamed session owns the pair now, alone: the corpse went through
+    // the same retirement a reclaiming start gives its predecessor.
     let rows = harness.rows_for(&workspace, "zt");
-    assert_eq!(rows.len(), 2, "rename lost a record: {rows:?}");
-    let live = rows
-        .iter()
-        .find(|row| row["id"] == helper.id.as_str())
-        .expect("renamed session missing from the registry");
-    assert_eq!(live["state"], "running", "{}", live);
-
-    // ...and the corpse is untouched: rename destroys nothing, `a prune`
-    // remains its cleanup path.
-    let dead = rows
-        .iter()
-        .find(|row| row["id"] == corpse.id.as_str())
-        .expect("rename must not remove the dead record");
-    assert_eq!(dead["state"], "broken", "{}", dead);
+    assert_eq!(rows.len(), 1, "rename left duplicate selectors: {rows:?}");
+    assert_eq!(rows[0]["id"], helper.id, "{}", rows[0]);
+    assert_eq!(rows[0]["state"], "running", "{}", rows[0]);
     assert!(
-        harness.state_dir_exists(&corpse.id),
-        "rename destroyed the dead record's durable state"
+        !harness.state_dir_exists(&corpse.id),
+        "rename left the dead record's durable state behind"
     );
+    assert!(
+        !harness.retired_dir(&corpse.id).exists(),
+        "rename left the dead record's archive behind"
+    );
+}
+
+/// A registry written while the interim fix was live can hold a pair more
+/// than once (rename took the name and left the corpse for `a prune`). A
+/// rename must drain every dead holder of the pair under the registry lock
+/// it already holds, not just the first one `read_dir` lists.
+#[test]
+fn rename_drains_a_pair_held_by_more_than_one_dead_record() {
+    let harness = Harness::new();
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let first = make_zombie(&harness, &workspace, "zt");
+    // A second dead record, transplanted onto the same pair: the duplicate
+    // shape the interim fix left behind.
+    let second_workspace = TempDir::new().expect("second workspace tempdir");
+    let second = make_zombie(&harness, &second_workspace, "elsewhere");
+    harness.retag(&second.id, &workspace, "zt");
+
+    let rows = harness.rows_for(&workspace, "zt");
+    assert_eq!(rows.len(), 2, "fixture lost its duplicate: {rows:?}");
+
+    let helper_workspace = TempDir::new().expect("helper workspace tempdir");
+    let helper = harness.start_sleeper(&helper_workspace, "helper");
+    let _cleanup = ProcessCleanup(vec![helper.worker_pid, helper.workload_pid]);
+
+    let renamed = harness.rename(&helper.id, &workspace, "zt");
+    assert!(
+        renamed.status.success(),
+        "rename refused a pair held by two dead records: stderr={}",
+        String::from_utf8_lossy(&renamed.stderr)
+    );
+
+    let rows = harness.rows_for(&workspace, "zt");
+    assert_eq!(rows.len(), 1, "rename drained only one holder: {rows:?}");
+    assert_eq!(rows[0]["id"], helper.id, "{}", rows[0]);
+    for corpse in [&first, &second] {
+        assert!(
+            !harness.state_dir_exists(&corpse.id),
+            "rename left {}'s durable state behind",
+            corpse.id
+        );
+        assert!(
+            !harness.retired_dir(&corpse.id).exists(),
+            "rename left {}'s archive behind",
+            corpse.id
+        );
+    }
 }
 
 /// The boundary that must never move: a genuinely live session keeps its

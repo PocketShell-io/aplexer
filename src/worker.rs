@@ -1,4 +1,3 @@
-use crate::api::{fence_pre_pid_worker, PrePidFence};
 use crate::*;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::json;
@@ -1872,76 +1871,52 @@ impl WorkerRuntime {
     ///
     /// The `workspace+tag` claim check answers the same question
     /// `start_session`'s supersede check answers -- "does any record still
-    /// own this pair?" -- so it applies the same predicate, `reap_verdict`,
-    /// and no third copy (issue #13). `rename` used to refuse on *any*
-    /// conflicting record, dead or not, while `a start` reclaimed a pair
-    /// held by a dead one: on the same box, the same dead record made one
-    /// command succeed and the other fail with "already belongs to session
-    /// <uuid>", naming a session `a list` showed as broken and nothing
-    /// could attach to.
+    /// own this pair?" -- and it must get the same answer, so it runs
+    /// through the very same decision and retirement `a start` uses
+    /// (`claim_holder_pair` / `retire_reclaimed_holder`, no third copy).
+    /// A holder that no longer needs the pair is retired exactly as a
+    /// reclaiming start retires it -- archive, delete, drop runtime state,
+    /// report an unproven reclaim -- which keeps the invariant that one
+    /// pair has one record; an interim fix took the name and left the
+    /// corpse for `a prune`, but that made pairs transiently multiply-held
+    /// and every holder scan had to guess, so this supersedes it (issue
+    /// #13). A live holder keeps its claim, and the refusal names its
+    /// derived state and a next step, in `a start`'s own words.
     ///
-    /// What a dead conflict gets from rename is deliberately *not* what
-    /// `a start` does to it: reclaiming archives and then deletes the
-    /// holder's durable state, and rename is a metadata edit that must
-    /// destroy nothing. So rename skips the dead holder and leaves its
-    /// record for `a prune`, the routine cleaner of exactly this class.
-    /// A live holder keeps its claim, and the refusal names its derived
-    /// state and a next step, in `a start`'s own words.
+    /// A pre-PID `Starting` holder is the one "dead"-looking shape that the
+    /// fence inside the claim still refuses (issue #9): a stub in the
+    /// spawn-to-worker-lock gap is a healthy session coming up, and its
+    /// worker lock is both the detector and the fence.
     ///
-    /// A pre-PID `Starting` holder is the one "dead"-looking shape that
-    /// must still refuse (issue #9): a stub in the spawn-to-worker-lock gap
-    /// is a healthy session coming up. Its worker lock is both the detector
-    /// and the fence -- held means the session is very much coming up
-    /// (refuse), acquired means nothing is behind the stub, and holding the
-    /// fence across the update below keeps a worker that has not reached
-    /// its acquisition yet from coming up on top of the pair this rename
-    /// just handed out.
+    /// Every dead conflict is retired in turn, not just the first: a
+    /// registry written while the interim fix was live can hold a pair
+    /// more than once, and the loop drains them under the registry lock
+    /// this rename already holds.
     fn rename(&self, workspace: std::path::PathBuf, tag: String) -> Result<SessionRecord> {
         validate_tag(&tag)?;
         let workspace = canonical_workspace(&workspace)?;
         let id = lock(&self.record)?.id;
         let _registry = FileLock::exclusive(&self.paths.registry_lock(), false)?;
-        let conflicts: Vec<SessionRecord> = list_records(&self.paths)?
-            .into_iter()
-            .filter(|record| record.id != id && record.workspace == workspace && record.tag == tag)
-            .collect();
-        // Every conflict must be reclaimable-dead, or the rename refuses:
-        // a live holder -- live worker, live workload leader, or a
-        // containment domain that still holds something -- owns its pair,
-        // exactly as against `a start`.
-        if let Some(live) = conflicts
-            .iter()
-            .find(|record| reap_verdict(record).is_none())
-        {
-            bail!(
-                "workspace+tag already belongs to session {} (state: {}); rename it or choose a different tag",
-                live.id,
-                live.observed_state()
-            );
-        }
-        // All conflicts are dead by the same verdict `a start` reclaims on.
-        // Fence each pre-PID stub before skipping it, and hold the fences
-        // across the update: the skip is only safe while nothing can come
-        // up behind the stub.
-        let _fences = conflicts
-            .iter()
-            .map(|record| {
-                match fence_pre_pid_worker(&self.paths, record).with_context(|| {
-                    format!("cannot fence session {}'s pre-PID worker", record.id)
-                })? {
-                    PrePidFence::Fenced(lock) => Ok(lock),
-                    PrePidFence::WorkerHoldsLock(lock_path) => bail!(
-                        "workspace+tag already belongs to session {}, whose worker still holds {}; rename it or choose a different tag",
-                        record.id,
-                        lock_path.display()
-                    ),
-                }
-            })
-            .collect::<Result<Vec<Option<FileLock>>>>()?;
+        self.take_pair(id, &workspace, &tag)?;
         self.update_record(|r| {
             r.workspace = workspace;
             r.tag = tag;
         })
+    }
+    /// Retire every dead holder of the pair this rename wants, refusing --
+    /// with the holder named and a way out -- if any of them still owns it.
+    /// Registry contents cannot change under the caller's lock: a start
+    /// writes its pre-PID stub holding the same lock, so once no conflict
+    /// is listed, none can appear before the update below commits.
+    fn take_pair(&self, id: Uuid, workspace: &std::path::Path, tag: &str) -> Result<()> {
+        while let Some(holder) = list_records(&self.paths)?
+            .into_iter()
+            .find(|record| record.id != id && record.workspace == workspace && record.tag == tag)
+        {
+            let claim = crate::api::claim_holder_pair(&self.paths, &holder)?;
+            crate::api::retire_reclaimed_holder(&self.paths, &holder, claim.verdict)?;
+        }
+        Ok(())
     }
     /// `a state-report <state>` (docs/pocketshell-integration-plan.md Open
     /// question #2): a hook running inside this session pushes its own

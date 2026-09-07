@@ -1856,22 +1856,21 @@ state named in the error. When the reclaimed record's worker never proved
 its containment domain empty, `a start` says so on stderr in the same terms
 `a prune` uses, because the same manual-investigation trail is gone.
 
-`a rename` is a third consumer of the same predicate, with a lighter hand
-(issue #13). Its claim check used to be a bare conflict scan -- any record
-holding the pair refused the rename -- while `a start` reclaimed a pair
-held by a dead one, so the same dead record made one command succeed and
-the other fail with "already belongs to session <uuid>", naming a session
-`a list` shows as broken and nothing can attach to. Rename now asks the
-same liveness question: a live holder keeps its pair, and the refusal names
-its derived state and a next step, in `a start`'s own words. A holder
-`reap_verdict` would hand over no longer blocks the rename, but rename
-destroys nothing: it takes the name and leaves the dead record in place
-for `a prune`, which remains its cleanup path. A pre-PID `Starting` holder
-is fenced on its worker lock like every other claim check -- a session
-still coming up keeps its name -- and the fence is held across the rename's
-record update. Because the corpse stays, a pair can transiently be held by
-two records until prune runs; `a start` and selector resolution treat a
-live holder as the owner and ignore the dead one.
+`a rename` asks the same question about the same pair and must get the same
+answer: renaming a session onto a `workspace+tag` whose holder no longer
+needs it retires the holder through the same archive-and-delete pipeline a
+reclaiming start runs, in one registry-locked step (no spawn window, so the
+retirement happens before the renamed session's own record commits). A
+holder with a live worker, a live workload leader, or a containment domain
+that still holds something keeps its name; the refusal names the holder's
+derived state and a way out, exactly as start's does. The decision, the
+pre-PID fence, and the retirement are one shared implementation
+(`claim_holder_pair` / `retire_reclaimed_holder`), not parallel copies:
+start and rename disagreeing about whether a record still owns its name was
+itself the bug (aplexer#13). An interim fix took the name and left the
+dead record in place for `a prune`, but a pair held by two records made
+every holder scan guess, so rename drains dead holders instead and the
+one-pair-one-record invariant holds again.
 
 Two hazards the broadened predicate opens, and how a reclaim closes them:
 

@@ -1489,11 +1489,9 @@ pub(crate) enum PrePidFence {
 ///
 /// Callers must keep the returned guard alive across every removal, exactly
 /// as `a forget` does. `rename`'s claim check (issue #13) uses the same
-/// fence for the same reason, holding it across its record update: its
-/// verdict must not read a coming-up session as free either, and while
-/// rename destroys nothing, holding the lock keeps a worker that has not
-/// reached its acquisition yet from coming up on top of the pair the
-/// rename just handed out.
+/// fence for the same reason: its verdict must not read a coming-up session
+/// as free, and the claim's fence is held across the retirement of the
+/// holder's state.
 pub(crate) fn fence_pre_pid_worker(paths: &Paths, record: &SessionRecord) -> Result<PrePidFence> {
     if !record.worker_phase_active() || record.worker_pid.is_some() {
         return Ok(PrePidFence::Fenced(None));
@@ -1839,6 +1837,90 @@ fn archive_reclaimed_predecessor(paths: &Paths, existing: &SessionRecord) -> Res
     archive_superseded_session(paths, existing.id)
 }
 
+/// The one `workspace+tag` ownership decision (spec.md 32.1): does the
+/// holder of the requested pair still own it? Shared by `start_session`'s
+/// supersede and the worker's `rename` (issue #13) so the two commands
+/// cannot drift apart about when a record has lost its claim -- the
+/// disagreement itself was the reported bug.
+///
+/// An `Err` names the holder and a way out. A `HolderClaim` means the caller
+/// may take the pair and must keep the fence alive across every destruction
+/// of the holder's state.
+pub(crate) struct HolderClaim {
+    /// Whether the holder's worker proved its containment domain empty. A
+    /// reclaim without this proof is reported, exactly as `a prune` reports
+    /// the same class of removal, because the same manual-investigation
+    /// trail goes with it.
+    pub(crate) verdict: ContainmentReap,
+    /// Held across every destruction so a worker still in the
+    /// spawn-to-worker-lock gap cannot come up on top of the state the
+    /// caller is about to archive and delete. Never read: the field exists
+    /// to be dropped last, exactly like the `_superseded_fence` it replaced.
+    #[allow(dead_code)]
+    pub(crate) fence: PrePidFence,
+}
+
+pub(crate) fn claim_holder_pair(paths: &Paths, holder: &SessionRecord) -> Result<HolderClaim> {
+    // Taking this pair means archiving and then DELETING the holder's
+    // durable state -- the same destruction `a prune` performs -- so it must
+    // clear the same bar, `reap_verdict`. `worker_finished()`, the old test,
+    // required a terminal phase that a SIGKILLed worker never gets to write,
+    // so a zombie (worker dead, `phase` stuck at `running`) held its
+    // `workspace+tag` forever.
+    let verdict = reap_verdict(holder).ok_or_else(|| {
+        anyhow!(
+            "workspace+tag already belongs to session {} (state: {}); rename it or choose a different tag",
+            holder.id,
+            holder.observed_state()
+        )
+    })?;
+    let fence = match fence_pre_pid_worker(paths, holder)
+        .with_context(|| format!("cannot fence session {}'s pre-PID worker", holder.id))?
+    {
+        PrePidFence::Fenced(lock) => PrePidFence::Fenced(lock),
+        PrePidFence::WorkerHoldsLock(lock_path) => bail!(
+            "workspace+tag already belongs to session {}, whose worker still holds {}; rename it or choose a different tag",
+            holder.id,
+            lock_path.display()
+        ),
+    };
+    Ok(HolderClaim { verdict, fence })
+}
+
+/// Retire a dead holder in one registry-locked step, for a caller that takes
+/// the pair without a spawn window in between (the worker's `rename`):
+/// re-read and re-judge the record as it stands on disk right now, archive,
+/// delete the archive, drop the runtime directory, and report an unproven
+/// reclaim exactly as `a prune` reports the same class of removal.
+///
+/// `start_session` cannot call this in one piece -- its archive must
+/// complete before the replacement hand-off and its cleanup only after -- so
+/// it drives the same pieces (`archive_reclaimed_predecessor`,
+/// `cleanup_superseded_archive`) directly and prints the same warning from
+/// the launcher.
+pub(crate) fn retire_reclaimed_holder(
+    paths: &Paths,
+    holder: &SessionRecord,
+    verdict: ContainmentReap,
+) -> Result<()> {
+    let archived = archive_reclaimed_predecessor(paths, holder)?;
+    if let Err(error) = cleanup_superseded_archive(&archived) {
+        bail!(
+            "superseded session {} cleanup failed; its remaining evidence is retained at {}: {error:#}",
+            holder.id,
+            archived.display()
+        );
+    }
+    let _ = fs::remove_dir_all(paths.runtime_session(holder.id));
+    if verdict == ContainmentReap::NoRemainingHandle {
+        eprintln!(
+            "a: reclaimed workspace+tag from broken session {} without a containment proof; its worker died without recording one and nothing addressable remained",
+            holder.id
+        );
+    }
+    Ok(())
+}
+
 fn restore_superseded_session(paths: &Paths, id: Uuid, archived: &Path) -> Result<()> {
     let destination = paths.state_session(id);
     fs::rename(archived, &destination).with_context(|| {
@@ -2087,12 +2169,13 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
     // the whole spawn: this read IS the locked read, and no other aplexer
     // command can modify the registry until this call returns.
     let registry = list_records(paths)?;
-    // The pair can be held by more than one record: `a rename` takes a pair
-    // from a dead holder but leaves the corpse in place for `a prune`
-    // (issue #13), so "the holder" must not be whoever `read_dir` lists
-    // first. A live holder always wins -- it is who the supersede check
-    // below refuses to displace -- and only when every holder is reclaimable
-    // does the first dead one become the predecessor this start archives.
+    // A pair should have exactly one record, but a registry written while
+    // the interim #13 fix was live can hold it more than once (rename took
+    // the name and left the corpse for `a prune`). Never let "the holder"
+    // be whoever `read_dir` lists first: a live holder always wins -- it is
+    // who the supersede check below refuses to displace -- and only when
+    // every holder is reclaimable does the first dead one become the
+    // predecessor this start archives.
     let holder_of = |tag: &str| {
         let mut holders = registry
             .iter()
@@ -2106,11 +2189,10 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
             })
     };
     let mut tag = req.tag.clone();
-    // Held for the rest of the call when the predecessor is a pre-PID stub,
-    // so a worker that was spawned into it cannot come up on top of the
-    // state we are about to archive and delete.
-    let mut _superseded_fence: Option<FileLock> = None;
-    let mut reclaim: Option<ContainmentReap> = None;
+    // The ownership decision for a held pair (below) plus the fence keeping
+    // a pre-PID worker from coming up on top of the state we are about to
+    // archive and delete. Held for the rest of the call.
+    let mut claim: Option<HolderClaim> = None;
     if req.fresh {
         // `--fresh` promises "always creates": a requested pair held by
         // something live is not an error, it is a reason to move to the next
@@ -2130,31 +2212,7 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
     }
     let superseded = holder_of(&tag).cloned();
     if let Some(existing) = &superseded {
-        // Taking this pair means archiving and then DELETING the holder's
-        // durable state -- the same destruction `a prune` performs -- so it
-        // must clear the same bar, `reap_verdict`. `worker_finished()`, the
-        // old test, required a terminal phase that a SIGKILLed worker never
-        // gets to write, so a zombie (worker dead, `phase` stuck at
-        // `running`) held its `workspace+tag` forever and `a start` could
-        // only succeed if something else pruned it first.
-        let Some(verdict) = reap_verdict(existing) else {
-            bail!(
-                "workspace+tag already belongs to session {} (state: {}); rename it or choose a different tag",
-                existing.id,
-                existing.observed_state()
-            );
-        };
-        _superseded_fence = match fence_pre_pid_worker(paths, existing).with_context(|| {
-            format!("cannot fence session {}'s pre-PID worker", existing.id)
-        })? {
-            PrePidFence::Fenced(lock) => lock,
-            PrePidFence::WorkerHoldsLock(lock_path) => bail!(
-                "workspace+tag already belongs to session {}, whose worker still holds {}; rename it or choose a different tag",
-                existing.id,
-                lock_path.display()
-            ),
-        };
-        reclaim = Some(verdict);
+        claim = Some(claim_holder_pair(paths, existing)?);
     }
     let mut startup = StartupGuard::new(paths, id);
     let result = (|| -> Result<SessionRecord> {
@@ -2439,7 +2497,10 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
                 // predecessor's manual-investigation trail is gone with it,
                 // and a caller that only ever sees a successful `a start`
                 // would otherwise have no way to know that happened.
-                if reclaim == Some(ContainmentReap::NoRemainingHandle) {
+                if claim
+                    .as_ref()
+                    .is_some_and(|claim| claim.verdict == ContainmentReap::NoRemainingHandle)
+                {
                     eprintln!(
                         "a: reclaimed workspace+tag from broken session {} without a containment proof; its worker died without recording one and nothing addressable remained",
                         existing.id
