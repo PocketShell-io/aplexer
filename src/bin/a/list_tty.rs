@@ -122,7 +122,8 @@ pub(crate) fn detect_row_agents(
         .map(|n| n.get())
         .unwrap_or(1)
         .clamp(1, records.len().max(1));
-    let chunk_size = records.len().div_ceil(worker_count);
+    // An empty registry has nothing to detect; chunks(0) would panic.
+    let chunk_size = records.len().div_ceil(worker_count).max(1);
     thread::scope(|scope| {
         let handles: Vec<_> = records
             .chunks(chunk_size)
