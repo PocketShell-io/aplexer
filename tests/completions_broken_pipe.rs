@@ -16,7 +16,7 @@ fn completions_exit_cleanly_when_the_reader_leaves_first() {
     // Safety: the fd comes straight from `into_raw_fd` and is handed to
     // `Stdio`, which takes ownership of exactly that fd.
     let stdout = unsafe { Stdio::from_raw_fd(writer.into_raw_fd()) };
-    let mut child = Command::new(env!("CARGO_BIN_EXE_a"))
+    let child = Command::new(env!("CARGO_BIN_EXE_a"))
         .args(["completions", "bash"])
         .stdout(stdout)
         .stderr(Stdio::piped())
