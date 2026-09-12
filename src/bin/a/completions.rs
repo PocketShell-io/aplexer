@@ -17,7 +17,21 @@ use super::*;
 pub(crate) fn cmd_completions(args: CompletionsArgs) -> Result<()> {
     let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
-    generate(args.shell, &mut cmd, name, &mut io::stdout());
+    // clap_complete unwraps every write into its target ("failed to write
+    // completion file"), so generating straight into stdout turns a reader
+    // that leaves early (`a completions bash | head`) into a BrokenPipe
+    // panic. Render into memory first; the single write below can then see
+    // EPIPE, which only means the reader already took what it wanted.
+    let mut script = Vec::new();
+    generate(args.shell, &mut cmd, name, &mut script);
+    if let Err(e) = io::stdout()
+        .write_all(&script)
+        .and_then(|()| io::stdout().flush())
+    {
+        if e.kind() != io::ErrorKind::BrokenPipe {
+            return Err(e.into());
+        }
+    }
     Ok(())
 }
 
