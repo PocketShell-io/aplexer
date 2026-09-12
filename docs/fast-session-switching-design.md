@@ -420,8 +420,15 @@ automatically targets the new worker after a switch.
 > Down`/`Up` = next/previous workspace (entered at its most recently
 > accessed session), `Ctrl-b n` = create another session in this workspace
 > and switch to it, `Ctrl-b p` = unbound. `N`/`P`, `1-9`, `l`, `d`, `r`,
-> `[` and `?` are unchanged. The rationale below still applies; the
-> authoritative keymap is `ATTACH_BINDINGS` in src/bin/a.rs, which both
+> `[` and `?` are unchanged. `Ctrl-b R` (rename prompt), `Ctrl-b s`
+> (session picker: a box listing this workspace's sessions under the same
+> 1-9 numbering the status bar prints; a digit attaches via the ordinary
+> `Index` switch path, Esc cancels), and `Ctrl-b w` (workspace picker:
+> the same box one level up, rows numbered as `a list` badges its
+> groups; a digit resolves a `Workspace` switch target and enters at
+> `workspace_entry_session`, Esc cancels) are local modals outside this
+> design's scope. The rationale below still applies; the
+> authoritative keymap is `ATTACH_BINDINGS`, which both
 > `a keys` and the `Ctrl-b ?` flash are generated from.
 
 | Chord | Action |

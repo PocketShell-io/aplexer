@@ -49,7 +49,7 @@ const FUNNELLED_WRITERS: &[&str] = &[
     "refresh_scroll_bar",
     "paint_live_screen_then",
     "sync_client_mouse",
-    "paint_key_overlay",
+    "paint_overlay_lines",
 ];
 
 /// `write_locked` writes unconditionally, so it is a second route to the
@@ -120,6 +120,8 @@ const PRODUCTION_SOURCE: &str = concat!(
     include_str!("../a/session_commands.rs"),
     "\n",
     include_str!("../a/session_diagnostics.rs"),
+    "\n",
+    include_str!("../a/session_picker.rs"),
     "\n",
     include_str!("../a/status_bar.rs"),
     "\n",
@@ -320,9 +322,10 @@ fn scroll_mode_writes_are_the_only_stream_suspended_ones() {
         // it), which can be the first write after the suspension whenever
         // nothing was repainted in between (a resize, say).
         ("paint_live_screen_then", true),
-        // The overlay's own frame: always the first write after the
-        // relay was suspended for it.
-        ("paint_key_overlay", true),
+        // Any overlay's frame -- the which-key keymap and the two pickers
+        // share the one painting body -- always the first write
+        // after the relay was suspended for it.
+        ("paint_overlay_lines", true),
         // The bar row is drawn *into* a screen the pager already owns
         // and already cancelled; it is not the first write after the
         // suspension, so it needs no CAN of its own.

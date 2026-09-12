@@ -427,6 +427,19 @@ pub(crate) fn load_list_sort(paths: &Paths) -> ListSort {
         .unwrap_or(ListSort::Name)
 }
 
+/// The workspace groups `a list` prints, over the live registry: every
+/// workspace that has a session, in the remembered `--sort` order. One
+/// list, three numberings that must never disagree -- `a list`'s `[N]`
+/// badges, `SwitchTarget::Workspace` resolution, and the `Ctrl-b w`
+/// picker's rows -- so all of them walk it through this call rather than
+/// three near-copies of `group_by_workspace(list_records(..), ..)`.
+pub(crate) fn list_workspace_groups(paths: &Paths) -> Result<Vec<(PathBuf, Vec<SessionRecord>)>> {
+    Ok(group_by_workspace(
+        list_records(paths)?,
+        load_list_sort(paths),
+    ))
+}
+
 pub(crate) fn save_list_sort(paths: &Paths, sort: ListSort) -> Result<()> {
     fs::write(list_sort_path(paths), format!("{}\n", sort.as_str()))
         .with_context(|| format!("write {}", list_sort_path(paths).display()))

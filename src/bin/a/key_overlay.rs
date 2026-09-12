@@ -1,19 +1,49 @@
 use super::*;
 
+/// Which modal owns the host terminal while `active` is set: the which-key
+/// keymap, the `Ctrl-b s` session picker, or the `Ctrl-b w` workspace
+/// picker. All three suspend the relay and take the whole screen, so one
+/// flag does for "may I write"; the kind exists for the resize thread,
+/// which repaints whichever box the user is actually looking at and must
+/// not swap one for another mid-glance.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OverlayKind {
+    /// The which-key keymap. This is also what a zeroed `AtomicU8` reads
+    /// back as, so the keymap path can keep relying on defaults.
+    Keymap,
+    Sessions,
+    Workspaces,
+}
+
 /// Whether the key overlay currently owns the host terminal.
 ///
 /// An atomic for exactly the reason `ScrollMode::active` is one: the relay
 /// reads it on every chunk, under the stdout lock, purely to decide whether
 /// to write.
 #[derive(Default)]
-
 pub(crate) struct KeyOverlay {
     pub(crate) active: AtomicBool,
+    /// The `OverlayKind` of the box that is up, stored as its discriminant
+    /// (`Keymap` is 0, so an idle overlay reads back as the keymap). Only
+    /// meaningful while `active` is set, and cleared with it.
+    pub(crate) kind: AtomicU8,
 }
 
 impl KeyOverlay {
     pub(crate) fn is_active(&self) -> bool {
         self.active.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn kind(&self) -> OverlayKind {
+        match self.kind.load(Ordering::Relaxed) {
+            1 => OverlayKind::Sessions,
+            2 => OverlayKind::Workspaces,
+            _ => OverlayKind::Keymap,
+        }
+    }
+
+    pub(crate) fn set_kind(&self, kind: OverlayKind) {
+        self.kind.store(kind as u8, Ordering::SeqCst);
     }
 }
 
@@ -143,8 +173,23 @@ pub(crate) fn key_overlay_sequence(geom: TermGeom, lines: &[String]) -> Vec<u8> 
     seq
 }
 
-/// Paint the overlay: the live screen from the model, then the box on top of
-/// it, then the ordinary status bar.
+/// Paint the which-key keymap: its lines from the current geometry, then
+/// `paint_overlay_lines` -- the shared box-painting body every overlay uses.
+pub(crate) fn paint_key_overlay(ctx: &StatusBarCtx) -> bool {
+    let geom = match ctx.term.lock() {
+        Ok(g) => *g,
+        Err(_) => return false,
+    };
+    let Some(lines) = key_overlay_lines(key_overlay_rows(geom) as usize, geom.cols as usize) else {
+        return false;
+    };
+    paint_overlay_lines(ctx, &lines)
+}
+
+/// The shared body of painting whichever overlay is up (`paint_key_overlay`
+/// for the which-key keymap, `repaint_session_picker` for the picker): the
+/// live screen from the model, then the box on top of it, then the ordinary
+/// status bar.
 ///
 /// Repainting the whole screen first rather than only the box's rows is what
 /// makes this idempotent, which is what lets the resize thread simply call it
@@ -156,13 +201,10 @@ pub(crate) fn key_overlay_sequence(geom: TermGeom, lines: &[String]) -> Vec<u8> 
 /// the snapshot may have just restored a workload sub-range (and, with it,
 /// an origin mode that would make those rows relative to it). The dismissal
 /// repaint puts the workload's own region back.
-pub(crate) fn paint_key_overlay(ctx: &StatusBarCtx) -> bool {
+pub(crate) fn paint_overlay_lines(ctx: &StatusBarCtx, lines: &[String]) -> bool {
     let geom = match ctx.term.lock() {
         Ok(g) => *g,
         Err(_) => return false,
-    };
-    let Some(lines) = key_overlay_lines(key_overlay_rows(geom) as usize, geom.cols as usize) else {
-        return false;
     };
     let bar = status_bar_render(ctx);
     let mut out = ctx.stdout.lock().unwrap_or_else(PoisonError::into_inner);
@@ -171,7 +213,7 @@ pub(crate) fn paint_key_overlay(ctx: &StatusBarCtx) -> bool {
     if geom.reserved {
         seq.extend_from_slice(format!("\x1b[1;{}r", geom.rows - 1).as_bytes());
     }
-    seq.extend_from_slice(&key_overlay_sequence(geom, &lines));
+    seq.extend_from_slice(&key_overlay_sequence(geom, lines));
     if let Some((bar_geom, text)) = bar {
         // The pager's flavour of the bar row: no workload cursor restore, and
         // the cursor left hidden. The workload's cursor is not what the user
@@ -223,6 +265,7 @@ pub(crate) fn show_key_overlay(ctx: &StatusBarCtx) -> bool {
         if ctx.overlay.active.swap(true, Ordering::SeqCst) {
             return true;
         }
+        ctx.overlay.set_kind(OverlayKind::Keymap);
     }
     // The bar is about to be drawn by a writer that is not the dirty-check's
     // usual one, and again on the way out.
@@ -242,6 +285,9 @@ pub(crate) fn show_key_overlay(ctx: &StatusBarCtx) -> bool {
 /// Take the overlay down, put the screen back, and let the relay resume.
 /// Returns whether there was an overlay to take down.
 ///
+/// Resets the kind too: "no overlay" has no kind, and the resize thread
+/// reads `kind` only while `active` is set, so both must move together.
+///
 /// The restore is `paint_live_screen_then` -- the same model repaint the
 /// pager's exit writes, for the same reason (see its doc comment) -- and
 /// `active` drops under that paint's stdout lock, so a chunk waiting on
@@ -252,6 +298,7 @@ pub(crate) fn dismiss_key_overlay(ctx: &StatusBarCtx) -> bool {
     }
     paint_live_screen_then(ctx, || {
         ctx.overlay.active.store(false, Ordering::SeqCst);
+        ctx.overlay.set_kind(OverlayKind::Keymap);
     });
     true
 }

@@ -29,6 +29,13 @@ pub(crate) enum InputAction {
     /// cancels -- and until one of those arrives, no keystroke reaches the
     /// workload.
     Sessions,
+    /// `Ctrl-b w`: the workspace picker, the session picker's sibling one
+    /// level up. Local until a digit: a box over the screen lists every
+    /// workspace under the `[N]` numbering `a list` prints; a digit
+    /// attaches to that workspace at its most recently accessed session
+    /// (the same entry point `Ctrl-b Down` uses), Esc cancels -- and until
+    /// one of those arrives, no keystroke reaches the workload.
+    Workspaces,
     /// `Ctrl-b [`: open the scrollback pager (tmux's copy-mode chord). Local
     /// and, crucially, *consumed*: from here until the user leaves the mode,
     /// no keystroke reaches the workload.
@@ -139,7 +146,8 @@ impl InputScanner {
     /// Scan rules (docs/fast-session-switching-design.md section 5.1):
     /// `Ctrl-b d` detaches; `?` flashes the key reference; `r` redraws the
     /// live screen; `R` opens the rename prompt; `[` opens the scrollback
-    /// pager; `s` opens the session picker; `n` creates another session in
+    /// pager; `s` opens the session picker; `w` opens the workspace picker;
+    /// `n` creates another session in
     /// this workspace and switches to it; `Right`/`Left` move between the
     /// sessions of this workspace and `Down`/`Up` between workspaces;
     /// `N P l 1-9` switch. Anything else pending is "not a real prefix" --
@@ -224,6 +232,9 @@ impl InputScanner {
                     // creates would be a trap. It falls through untouched.
                     b'n' => Some(InputAction::Switch(SwitchTarget::New)),
                     b's' => Some(InputAction::Sessions),
+                    // Workspace navigation lives on the arrows (above), so
+                    // `w` reads as what it is: the workspace list.
+                    b'w' => Some(InputAction::Workspaces),
                     b'N' => Some(InputAction::Switch(SwitchTarget::NextGlobal)),
                     b'P' => Some(InputAction::Switch(SwitchTarget::PrevGlobal)),
                     b'l' => Some(InputAction::Switch(SwitchTarget::Last)),

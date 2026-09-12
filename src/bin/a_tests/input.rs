@@ -240,6 +240,8 @@ fn the_key_reference_is_generated_from_the_binding_table() {
             "Right / Left",
             "Down / Up",
             "n",
+            "s",
+            "w",
             "d",
             "[",
             "N / P",

@@ -23,6 +23,14 @@ pub(crate) enum SwitchTarget {
     /// (1-based) of the current workspace, no skipping -- must mean exactly
     /// what the status bar shows.
     Index(usize),
+    /// `Ctrl-b w`'s picker digit: the Nth workspace (1-based) in `a list`
+    /// group order -- the same number the list prints as its `[N]` badge --
+    /// entered at `workspace_entry_session`, the session `Ctrl-b Down`
+    /// would land on. Like `Index`, no skipping: the number must mean
+    /// exactly what the picker showed, so a workspace with nothing
+    /// attachable in it is a named error rather than a silent hop to the
+    /// next one.
+    Workspace(usize),
     /// `Ctrl-b n`: create a brand-new session in the attached session's
     /// workspace and switch to it. (Session navigation moved to the arrow
     /// keys, which is what freed `n` to mean "new".) The odd one out -- every
@@ -118,6 +126,12 @@ pub(crate) fn workspace_entry_session(group: &[SessionRecord]) -> Option<Session
 ///   status bar shows (`workspace_summary`); an unattachable target is
 ///   still returned here and rejected later by `perform_switch`'s
 ///   `check_attachable` call, so the error names the actual session.
+/// - `Workspace(n)`: 1-based, into the whole group list -- the same order
+///   `a list` badges `[N]` and the `Ctrl-b w` picker numbers its rows by.
+///   **No** skipping here either: the digit is explicit addressing over a
+///   list the user just read, so a workspace with nothing attachable is a
+///   named error (`workspace_entry_session` returned `None`), not a hop
+///   to the next-live workspace the way the *cycling* targets above hop.
 /// - `Last`: resolved by UUID against every group (survives renames, works
 ///   across workspaces).
 pub(crate) fn pick_switch_target(
@@ -184,6 +198,21 @@ pub(crate) fn pick_switch_target(
             }
             Ok(group[n - 1].clone())
         }
+        SwitchTarget::Workspace(n) => {
+            if n < 1 || n > groups.len() {
+                bail!(
+                    "no workspace {n} here: there are {} workspace(s)",
+                    groups.len()
+                );
+            }
+            let (workspace, group) = &groups[n - 1];
+            workspace_entry_session(group).ok_or_else(|| {
+                anyhow!(
+                    "no running session in {}",
+                    display_workspace(workspace, env::var_os("HOME").map(PathBuf::from).as_deref())
+                )
+            })
+        }
         // Not reachable through `perform_switch`, which resolves `New` by
         // *creating* the session before it ever gets here (see the variant's
         // doc comment). Spelled out rather than folded into another arm so a
@@ -208,7 +237,7 @@ pub(crate) fn resolve_switch_target(
     target: SwitchTarget,
     last: Option<Uuid>,
 ) -> Result<SessionRecord> {
-    let groups = group_by_workspace(list_records(paths)?, load_list_sort(paths));
+    let groups = list_workspace_groups(paths)?;
     pick_switch_target(&groups, &current.workspace, current.id, target, last)
 }
 

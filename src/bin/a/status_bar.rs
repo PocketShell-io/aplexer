@@ -144,6 +144,11 @@ pub(crate) const ATTACH_BINDINGS: &[AttachBinding] = &[
         description: "list this workspace's sessions; 1-9 attaches, Esc cancels",
     },
     AttachBinding {
+        keys: "w",
+        brief: Some("w workspaces"),
+        description: "list every workspace; 1-9 enters it, Esc cancels",
+    },
+    AttachBinding {
         keys: "d",
         brief: Some("d detach"),
         description: "detach (the workload keeps running)",

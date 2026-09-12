@@ -234,6 +234,32 @@ pub(crate) fn engine_profile(record: &SessionRecord) -> String {
     }
 }
 
+/// `{i}:{tag}[*][({state})]` for one session at position `i` (0-based) of
+/// its workspace's `a list` order -- the label the status bar's sibling
+/// segment prints, and the exact format the `Ctrl-b s` session picker
+/// renders its rows from. Sharing this one formatter is what guarantees a
+/// picker row and the status bar's same-numbered entry can never disagree
+/// about the number, the `*`, or the state: both walk the same
+/// `list_records` order (`Reverse(created_at_ms)`) that
+/// `group_by_workspace` preserves within a group -- see the equivalence
+/// note on `resolve_quick_index` -- and both print through here. `*` marks
+/// the currently attached session; `(state)` is appended only when the
+/// state is not "running" (the common case needs no label).
+pub(crate) fn numbered_session_label(r: &SessionRecord, index: usize, current: Uuid) -> String {
+    let (state, _) = session_ui_state(r, now_ms());
+    let mut label = format!("{}:{}", index + 1, r.tag);
+    if r.id == current {
+        label.push('*');
+    }
+    // Running-ish states are the expected background; anything else (a
+    // reported wait, a death, a broken worker) is worth seeing while
+    // attached.
+    if !matches!(state, "running" | "working" | "active" | "quiet") {
+        label.push_str(&format!("({state})"));
+    }
+    label
+}
+
 /// `{i}:{tag}[*][({state})]` for every session in the current workspace,
 /// mirroring how `a list`'s tree groups sessions by workspace (see
 /// `group_by_workspace`) -- a live glance at what else is running here
@@ -242,13 +268,12 @@ pub(crate) fn engine_profile(record: &SessionRecord) -> String {
 /// (`pick_switch_target`'s `Index` arm), because both walk the same
 /// `list_records` order (`Reverse(created_at_ms)`) that `group_by_workspace`
 /// preserves within a group -- see the equivalence note on
-/// `resolve_quick_index`. `*` marks the currently attached session;
-/// `(state)` is appended only when the state is not "running" (the common
-/// case needs no label). Lists **all** sessions including the current one
-/// (the old version listed only "the others") because the numbering only
-/// makes sense as a complete index. Example: `1:main* 2:review
-/// 3:build(broken)`. A single-session workspace omits the segment (empty
-/// string), same as before.
+/// `resolve_quick_index`. Rows are `numbered_session_label`, which is also
+/// what the `Ctrl-b s` session picker prints, so the two can never drift.
+/// Lists **all** sessions including the current one (the old version listed
+/// only "the others") because the numbering only makes sense as a complete
+/// index. Example: `1:main* 2:review 3:build(broken)`. A single-session
+/// workspace omits the segment (empty string), same as before.
 pub(crate) fn workspace_summary(paths: &Paths, record: &SessionRecord) -> String {
     let records = match list_records(paths) {
         Ok(r) => r,
@@ -264,20 +289,7 @@ pub(crate) fn workspace_summary(paths: &Paths, record: &SessionRecord) -> String
     siblings
         .iter()
         .enumerate()
-        .map(|(i, r)| {
-            let (state, _) = session_ui_state(r, now_ms());
-            let mut part = format!("{}:{}", i + 1, r.tag);
-            if r.id == record.id {
-                part.push('*');
-            }
-            // Running-ish states are the expected background; anything else
-            // (a reported wait, a death, a broken worker) is worth seeing
-            // while attached.
-            if !matches!(state, "running" | "working" | "active" | "quiet") {
-                part.push_str(&format!("({state})"));
-            }
-            part
-        })
+        .map(|(i, r)| numbered_session_label(r, i, record.id))
         .collect::<Vec<_>>()
         .join(" ")
 }

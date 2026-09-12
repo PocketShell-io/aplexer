@@ -2736,9 +2736,11 @@ fn a_ctrl_b_chord_typed_at_speed_never_draws_the_key_overlay() {
     client.send(&[0x02, b'?']);
     // The binding's own effect proves the chord really ran, so the negative
     // assertion below is scoped to a window the client demonstrably reacted
-    // in rather than to a bare sleep.
+    // in rather than to a bare sleep. The needle is the reference's lead, not
+    // a tail brief like "N/P global": the bar truncates the line at the
+    // terminal edge, and an 80-column terminal cuts it off after "[ scroll".
     client.wait_for(
-        b"N/P global",
+        b"Ctrl-b:",
         chord_at,
         "the Ctrl-b ? key reference on the status bar",
     );
@@ -2854,11 +2856,13 @@ fn a_key_pressed_over_the_overlay_runs_its_binding_or_falls_through() {
     client.send(&[0x02]);
     client.wait_for(OVERLAY_BOTTOM, bound_at, "the overlay for the bound key");
     client.send(b"?");
-    // A needle only the `?` reference carries: the attach's own opening
-    // banner says "Ctrl-b d detach" too, and is redrawn on the bar's timer
-    // for `FLASH_DURATION` after the attach.
+    // The needle is the reference's "Ctrl-b:" lead: the attach's own opening
+    // banner ("Ctrl-b ? help", no colon) also shares the bar for
+    // `FLASH_DURATION` after attach, and the bar truncates the reference at
+    // the terminal edge -- an 80-column terminal cuts it off after
+    // "[ scroll", so a tail brief like "N/P global" never arrives.
     client.wait_for(
-        b"N/P global",
+        b"Ctrl-b:",
         bound_at,
         "the `?` binding's own reference on the status bar",
     );

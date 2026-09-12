@@ -5,6 +5,7 @@ include!("attach.rs");
 include!("input.rs");
 include!("rename_prompt.rs");
 include!("scroll.rs");
+include!("session_picker.rs");
 include!("status.rs");
 include!("switching.rs");
 include!("lifecycle.rs");

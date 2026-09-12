@@ -78,10 +78,19 @@ fn repaint_resize_modal(status: &StatusBarCtx) {
     if status.scroll.owns_host() {
         paint_scroll_view(status);
     }
-    // A new geometry may be too small for the key overlay. If it cannot be
-    // painted, take it down instead of leaving a stale box over the relay.
-    if status.overlay.is_active() && !paint_key_overlay(status) {
-        dismiss_key_overlay(status);
+    // A new geometry may be too small for whichever overlay is up. Repaint
+    // the one the user is actually looking at -- the keymap and the two
+    // pickers are different boxes -- and if it cannot be painted, take it
+    // down instead of leaving a stale box over the relay.
+    if status.overlay.is_active() {
+        let painted = match status.overlay.kind() {
+            OverlayKind::Sessions => repaint_session_picker(status),
+            OverlayKind::Workspaces => repaint_workspace_picker(status),
+            OverlayKind::Keymap => paint_key_overlay(status),
+        };
+        if !painted {
+            dismiss_key_overlay(status);
+        }
     }
 }
 

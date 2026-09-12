@@ -19,7 +19,7 @@ pub(crate) use std::os::unix::net::UnixStream;
 pub(crate) use std::os::unix::process::CommandExt;
 pub(crate) use std::path::{Path, PathBuf};
 pub(crate) use std::process::Command;
-pub(crate) use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+pub(crate) use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 pub(crate) use std::sync::{Arc, Mutex, PoisonError};
 pub(crate) use std::thread;
 pub(crate) use std::time::{Duration, Instant};
@@ -91,6 +91,8 @@ mod scroll_keys;
 mod session_commands;
 #[path = "session_diagnostics.rs"]
 mod session_diagnostics;
+#[path = "session_picker.rs"]
+mod session_picker;
 #[path = "status_bar.rs"]
 mod status_bar;
 #[path = "status_commands.rs"]
@@ -137,6 +139,7 @@ pub(crate) use scroll_input::*;
 pub(crate) use scroll_keys::*;
 pub(crate) use session_commands::*;
 pub(crate) use session_diagnostics::*;
+pub(crate) use session_picker::*;
 pub(crate) use status_bar::*;
 pub(crate) use status_commands::*;
 pub(crate) use switch_targets::*;

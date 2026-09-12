@@ -28,8 +28,10 @@ fn run_input_loop(config: InputThreadConfig) {
     let mut buffer = [0u8; 8192];
     // Ctrl-b (0x02) prefix state machine -- Ctrl-b d detaches,
     // Ctrl-b ? flashes the key reference, Ctrl-b r redraws the live
-    // screen, Ctrl-b R opens the rename prompt, Ctrl-b c creates another
-    // session here, Ctrl-b n/p/N/P/l/1-9
+    // screen, Ctrl-b R opens the rename prompt, Ctrl-b s opens the
+    // session picker, Ctrl-b w opens the workspace picker, Ctrl-b c
+    // creates another session here, Ctrl-b
+    // n/p/N/P/l/1-9
     // switch sessions, anything else pending is not a real prefix (both
     // bytes forward to the workload). See `InputScanner` for the byte-level
     // rules and why this needs to survive across separate read() calls, not
@@ -40,10 +42,10 @@ fn run_input_loop(config: InputThreadConfig) {
     // unrecognized), never forwarding Ctrl-b itself to the pane. aplexer has
     // no such command-prefix system and isn't growing one just for this, so
     // the simplest reasonable behavior is used instead: a *bound* Ctrl-b
-    // sequence (d/?/r/R/c/n/p/N/P/l/1-9) is consumed; anything else is not a
-    // prefix at all -- both bytes are forwarded through as ordinary input,
-    // so a program that wants a literal Ctrl-b (some editors and REPLs use
-    // it) isn't broken by this feature.
+    // sequence (d/?/r/R/s/w/c/n/p/N/P/l/1-9) is consumed; anything else is
+    // not a prefix at all -- both bytes are forwarded through as ordinary
+    // input, so a program that wants a literal Ctrl-b (some editors and
+    // REPLs use it) isn't broken by this feature.
     let mut scanner = InputScanner::default();
     // Sits between the chord scanner and the socket: while the pager is up it
     // consumes every byte (no keystroke reaches the workload -- the whole
@@ -219,6 +221,22 @@ fn handle_input_action(
             // blocks here until Enter/Esc; see run_rename_prompt.
             exit_scroll_mode(&config.status);
             run_rename_prompt(config, scanner);
+            true
+        }
+        InputAction::Sessions => {
+            // The picker owns the whole screen, so the pager closes first
+            // for exactly the same no-stacking reason as Rename. It blocks
+            // here until a digit or Esc; see run_session_picker.
+            exit_scroll_mode(&config.status);
+            run_session_picker(config, scanner);
+            true
+        }
+        InputAction::Workspaces => {
+            // The workspace picker, same modal treatment as the session
+            // picker: pager closed first, box up until a digit or Esc; see
+            // run_workspace_picker.
+            exit_scroll_mode(&config.status);
+            run_workspace_picker(config, scanner);
             true
         }
         InputAction::Scroll => {

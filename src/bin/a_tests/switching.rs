@@ -140,6 +140,83 @@ fn index_out_of_range_errors() {
     assert!(err.to_string().contains("no session 9"));
 }
 
+/// `Ctrl-b w`'s picker digit addresses a whole workspace, entered at the
+/// same most-recently-accessed session `Ctrl-b Down` enters at -- but with
+/// `Index`'s no-skipping contract, since the number must mean exactly what
+/// the picker (and `a list`'s `[N]` badge) showed.
+#[test]
+fn workspace_index_enters_at_the_most_recent_session_without_skipping() {
+    let ws_a = "/ws/a";
+    let ws_b = "/ws/b";
+    let a1 = mk_record(ws_a, "main", Phase::Running);
+    let mut b1 = mk_record(ws_b, "first", Phase::Running);
+    let mut b2 = mk_record(ws_b, "second", Phase::Running);
+    // `b2` is listed second but was attached to more recently.
+    b1.last_accessed_ms = Some(1_000);
+    b2.last_accessed_ms = Some(2_000);
+    let (a1_id, b2_id) = (a1.id, b2.id);
+    let groups = vec![
+        (PathBuf::from(ws_a), vec![a1]),
+        (PathBuf::from(ws_b), vec![b1, b2]),
+    ];
+    let picked = pick_switch_target(
+        &groups,
+        Path::new(ws_a),
+        a1_id,
+        SwitchTarget::Workspace(2),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        picked.id, b2_id,
+        "workspace 2 must be entered at its most recently accessed session"
+    );
+
+    // Out of range, both ends: 0 is not a number the picker prints, and
+    // past the end refuses rather than wrapping -- explicit addressing
+    // never silently means a different workspace.
+    for n in [0usize, 3] {
+        let err = pick_switch_target(
+            &groups,
+            Path::new(ws_a),
+            a1_id,
+            SwitchTarget::Workspace(n),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains(&format!("no workspace {n}")),
+            "unexpected error for {n}: {err:#}"
+        );
+    }
+
+    // A workspace with nothing attachable in it is a named error, not a
+    // silent hop to the next-live workspace -- the `Index` contract, one
+    // level up: cycling targets hop, addressing reports.
+    let corpse = {
+        let mut r = mk_record("/ws/dead", "gone", Phase::Exited);
+        r.worker_pid = None;
+        r
+    };
+    let with_dead = vec![
+        (PathBuf::from(ws_a), vec![mk_record(ws_a, "main", Phase::Running)]),
+        (PathBuf::from("/ws/dead"), vec![corpse]),
+    ];
+    let err = pick_switch_target(
+        &with_dead,
+        Path::new(ws_a),
+        a1_id,
+        SwitchTarget::Workspace(2),
+        None,
+    )
+    .unwrap_err();
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("no running session in") && message.contains("/ws/dead"),
+        "the error must name the dead workspace: {message}"
+    );
+}
+
 #[test]
 fn index_nine_selects_the_ninth_session_and_bounds_are_one_based() {
     let sessions: Vec<SessionRecord> = (1..=9)
