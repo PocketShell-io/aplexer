@@ -194,7 +194,10 @@ pub(crate) const TRANSCRIPT_EXAMPLES: &str = r#"Examples:
 "#;
 
 pub(crate) const COMPLETIONS_EXAMPLES: &str = r#"Examples:
-  source <(a completions bash)          try it in the current shell
+  source <(COMPLETE=bash a)             bash: completes live sessions/engines too
+  a completions bash > \
+    ~/.local/share/bash-completion/completions/a
+                                        static bash: subcommands and flags only
   a completions zsh > "${fpath[1]}/_a"  then restart the shell to compinit
   a completions fish > ~/.config/fish/completions/a.fish
 "#;

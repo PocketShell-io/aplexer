@@ -1,4 +1,5 @@
 use super::cli_examples::*;
+use super::completions::{engine_completions, session_tag_completions};
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -65,6 +66,7 @@ pub(crate) struct MessageSendArgs {
     #[arg(
         long,
         value_name = "TAG",
+        add = session_tag_completions(),
         help = "Send to one session, addressed by tag"
     )]
     pub(crate) to: Option<String>,
@@ -73,6 +75,7 @@ pub(crate) struct MessageSendArgs {
     #[arg(
         long = "to-engine",
         value_name = "ENGINE",
+        add = engine_completions(),
         help = "Broadcast to sessions of one engine"
     )]
     pub(crate) to_engine: Option<String>,

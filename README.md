@@ -29,7 +29,14 @@ Rust 1.85 or newer is recommended. Runtime state defaults to `$XDG_RUNTIME_DIR/a
 
 ## Shell completions
 
-`a completions <shell>` prints a completion script for `a`'s subcommands and flags to stdout (via [`clap_complete`](https://docs.rs/clap_complete)), covering `bash`, `zsh`, `fish`, `elvish`, and `powershell`. Install it once and open a new shell:
+For bash, source a self-updating script that completes subcommands and flags **plus live values** — session selectors (`workspace:tag`) and tags for `attach`/`status`/`kill`/`send`/…, engine ids for `--engine`, profile ids for `--profile`. The hook re-runs `a` itself on every TAB, so candidates always match the running sessions:
+
+```bash
+# ~/.bashrc
+source <(COMPLETE=bash a)
+```
+
+`a completions <shell>` prints a static script instead, for `bash`, `zsh`, `fish`, `elvish`, and `powershell` (via [`clap_complete`](https://docs.rs/clap_complete)). Static scripts know subcommands and flags only, but need no per-TAB callback:
 
 ```bash
 # bash (per-user; requires the bash-completion package to auto-load it)

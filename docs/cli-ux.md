@@ -208,8 +208,7 @@ The next work should remain job-shaped rather than become a collection of flags.
 
 - `a plan ...` as a human rendering of the existing launch resolution path;
 - explain default engine/profile selection before an expensive launch when it is ambiguous;
-- surface unavailable engine/profile fixes next to the error;
-- generate shell completions for human aliases once their vocabulary is stable.
+- surface unavailable engine/profile fixes next to the error.
 
 ### Session awareness
 

@@ -6,10 +6,11 @@ pub(crate) use aplexer::messaging::*;
 pub(crate) use aplexer::*;
 pub(crate) use clap::{CommandFactory, Parser};
 pub(crate) use clap_complete::generate;
+pub(crate) use clap_complete::{ArgValueCompleter, CompleteEnv, CompletionCandidate};
 pub(crate) use serde_json::{json, Value};
 pub(crate) use std::collections::BTreeMap;
 pub(crate) use std::env;
-pub(crate) use std::ffi::{CString, OsString};
+pub(crate) use std::ffi::{CString, OsStr, OsString};
 pub(crate) use std::fs;
 pub(crate) use std::io::{self, IsTerminal, Read, Write};
 pub(crate) use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
@@ -48,6 +49,8 @@ mod cli_message_args;
 mod cli_session_args;
 #[path = "commands.rs"]
 mod commands;
+#[path = "completions.rs"]
+mod completions;
 #[path = "diagnostics.rs"]
 mod diagnostics;
 #[path = "doctor.rs"]
@@ -113,6 +116,7 @@ pub(crate) use cli::*;
 pub(crate) use cli_message_args::*;
 pub(crate) use cli_session_args::*;
 pub(crate) use commands::*;
+pub(crate) use completions::*;
 pub(crate) use diagnostics::*;
 pub(crate) use doctor::*;
 pub(crate) use input_scanner::*;

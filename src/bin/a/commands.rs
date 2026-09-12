@@ -1,6 +1,15 @@
 use super::*;
 
 pub(crate) fn run() -> Result<()> {
+    // Shell completion traffic arrives through the same binary: the shell
+    // hook sourced from `COMPLETE=bash a` re-runs `a` itself on every TAB
+    // with `_CLAP_COMPLETE_*` variables set, and `complete()` answers both
+    // that request and the original registration print, then exits. It
+    // must run before anything else talks to stdout -- including before
+    // the quick-attach rewrite, since the words being completed are raw
+    // (`a -rev<TAB>` is not a parseable command line). The candidates come
+    // from the `add = ...` completers in `completions.rs`.
+    CompleteEnv::with_factory(Cli::command).complete();
     // `a` is a standalone process, so it can safely repair an inherited
     // auto-reaping SIGCHLD disposition before any subcommand spawns a child.
     // The embeddable Rust/Python API only validates and preserves its host.

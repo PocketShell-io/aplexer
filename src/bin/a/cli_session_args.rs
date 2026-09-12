@@ -1,4 +1,7 @@
 use super::commands::DEFAULT_HUMAN_TAG;
+use super::completions::{
+    engine_completions, profile_completions, session_selector_completions, session_tag_completions,
+};
 use aplexer::DEFAULT_STARTUP_TIMEOUT_MS;
 use clap::{Args, ValueEnum};
 use clap_complete::Shell;
@@ -11,6 +14,7 @@ pub(crate) struct QuickAttachArgs {
     pub(crate) workspace_index: usize,
     /// 1-based index into that workspace's sessions (list order), or a
     /// literal tag. Defaults to that workspace's first session.
+    #[arg(add = session_tag_completions())]
     pub(crate) session: Option<String>,
 }
 
@@ -46,10 +50,10 @@ pub(crate) struct StartArgs {
     #[arg(long, default_value = DEFAULT_HUMAN_TAG)]
     pub(crate) tag: String,
     /// Engine id from `a engines`; defaults to the configured default engine, else shell
-    #[arg(long)]
+    #[arg(long, add = engine_completions())]
     pub(crate) engine: Option<String>,
     /// Profile id from `a profiles` -- an engine variant (e.g. another account)
-    #[arg(long)]
+    #[arg(long, add = profile_completions())]
     pub(crate) profile: Option<String>,
     /// Working directory for the launched process (default: the workspace)
     #[arg(long)]
@@ -96,9 +100,9 @@ pub(crate) struct StartArgs {
 
 #[derive(Args)]
 pub(crate) struct LaunchArgs {
-    #[arg(long)]
+    #[arg(long, add = engine_completions())]
     pub(crate) engine: Option<String>,
-    #[arg(long)]
+    #[arg(long, add = profile_completions())]
     pub(crate) profile: Option<String>,
     #[arg(long)]
     pub(crate) cwd: Option<PathBuf>,
@@ -114,6 +118,7 @@ pub(crate) struct LaunchArgs {
 pub(crate) struct TargetArgs {
     #[arg(
         value_name = "SESSION",
+        add = session_selector_completions(),
         help = "UUID/prefix, workspace:tag selector, or tag in the current workspace"
     )]
     pub(crate) selector: Option<String>,
@@ -121,7 +126,7 @@ pub(crate) struct TargetArgs {
     #[arg(long, value_name = "PATH")]
     pub(crate) workspace: Option<PathBuf>,
     /// Tag to resolve in --workspace (or the current workspace)
-    #[arg(long, value_name = "TAG")]
+    #[arg(long, value_name = "TAG", add = session_tag_completions())]
     pub(crate) tag: Option<String>,
 }
 
@@ -313,7 +318,7 @@ pub(crate) struct RenameArgs {
     /// Session to retag: UUID/prefix, workspace:tag, or tag in the current
     /// workspace. Omitted (with --tag given) renames the session this
     /// command runs inside, via APLEXER_SESSION_ID.
-    #[arg(value_name = "SESSION")]
+    #[arg(value_name = "SESSION", add = session_selector_completions())]
     pub(crate) selector: Option<String>,
     /// Workspace directory to resolve the selector in
     #[arg(long, value_name = "PATH")]
@@ -366,7 +371,7 @@ pub(crate) struct InitArgs {
     pub(crate) uninstall: bool,
     /// Only act on one engine: claude, codex, zcodex (shares codex's
     /// CODEX_HOME config), grok, gemini, or opencode. Default: all engines.
-    #[arg(long, value_name = "ENGINE")]
+    #[arg(long, value_name = "ENGINE", add = engine_completions())]
     pub(crate) engine: Option<String>,
 }
 

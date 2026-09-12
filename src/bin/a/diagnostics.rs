@@ -1,17 +1,5 @@
 use super::*;
 
-/// `a completions <shell>` -- writes the clap_complete-generated script for
-/// the given shell to stdout, completing for the `a` binary name itself
-/// (from `#[command(name = "a")]` on `Cli` above, not the `aplexer` package
-/// name), so callers just redirect it into whatever path their shell's
-/// completion loader scans.
-pub(crate) fn cmd_completions(args: CompletionsArgs) -> Result<()> {
-    let mut cmd = Cli::command();
-    let name = cmd.get_name().to_string();
-    generate(args.shell, &mut cmd, name, &mut io::stdout());
-    Ok(())
-}
-
 /// `a hotkeys` -- a lookup command for the attach-mode Ctrl-b chords,
 /// rendered from `ATTACH_BINDINGS`, the same table the attach status bar's
 /// `?` flash (`attach_key_help`) renders. There is one authoritative keymap

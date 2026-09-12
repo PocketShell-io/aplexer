@@ -12,3 +12,4 @@ include!("terminal_render.rs");
 include!("terminal_resize.rs");
 include!("structure.rs");
 include!("quick_args.rs");
+include!("completions.rs");
