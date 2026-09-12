@@ -20,12 +20,12 @@ pub(crate) struct QuickAttachArgs {
 
 #[derive(Args)]
 pub(crate) struct QuickLaunchArgs {
-    /// Usually `[engine [tag]]`; words naming no engine or shortcut run
+    /// Usually `[engine [tag]]`; words naming no engine run
     /// as a literal command
     pub(crate) rest: Vec<String>,
     /// Explicit tag, injected by main()'s rewrite of the `a -<tag>`
     /// shorthand (`a -review` -> `quick-launch --tag review`): pin the
-    /// session tag while the words still pick engine/shortcut/command
+    /// session tag while the words still pick engine/command
     /// exactly as they do for bare `a -`. Not advertised as a typed flag;
     /// `a here` accepts it as the typed-out equivalent.
     #[arg(long, value_name = "TAG", hide = true)]

@@ -39,7 +39,6 @@ pub(crate) const NEW_EXAMPLES: &str = r#"Examples:
 pub(crate) const HERE_EXAMPLES: &str = r#"Examples:
   a here                        create-or-attach session "main" in this directory
   a here codex review           create-or-attach codex, tagged "review"
-  a here coz                    a configured shortcut: engine+profile in one word
   a here htop                   not a known engine, so runs htop literally
   a -review                     `a here` with the tag named after the dash
 "#;

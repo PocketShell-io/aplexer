@@ -1,4 +1,4 @@
-//! Configuration: engine/profile/shortcut configuration loading and
+//! Configuration: engine/profile configuration loading and
 //! validation, profile discovery rules, provider environment handling, and
 //! launch resolution into an executable argv.
 
@@ -80,32 +80,6 @@ impl Config {
             validate_limits(&profile.limits, &format!("profile {name:?} limits"))?;
         }
 
-        for (name, shortcut) in &self.shortcuts {
-            if name.is_empty() {
-                bail!("shortcut name must not be empty");
-            }
-            if !self.engines.contains_key(&shortcut.engine) {
-                bail!(
-                    "shortcut {name:?} engine {:?} does not reference a configured engine",
-                    shortcut.engine
-                );
-            }
-            if let Some(profile_name) = &shortcut.profile {
-                let profile = self.profiles.get(profile_name).ok_or_else(|| {
-                    anyhow!(
-                        "shortcut {name:?} profile {profile_name:?} does not reference a configured profile"
-                    )
-                })?;
-                if let Some(profile_engine) = &profile.engine {
-                    if profile_engine != &shortcut.engine {
-                        bail!(
-                            "shortcut {name:?} selects engine {:?}, but profile {profile_name:?} selects engine {profile_engine:?}",
-                            shortcut.engine
-                        );
-                    }
-                }
-            }
-        }
         Ok(())
     }
 
@@ -119,11 +93,9 @@ impl Config {
             // engines above -- an explicit `[profiles.<id>]` entry in the
             // user's config still wins on the extend in merge_user_file.
             profiles: discover_profiles(),
-            shortcuts: Self::builtin_shortcuts(),
             ..Config::default()
         };
         config.merge_user_file(paths)?;
-        config.add_profile_shortcuts();
         config.validate()?;
         Ok(config)
     }
@@ -154,33 +126,11 @@ impl Config {
         }
         self.engines.extend(user.engines);
         self.profiles.extend(user.profiles);
-        self.shortcuts.extend(user.shortcuts);
         // A bool has no "unset" value to test the way the options above
         // do, and the built-in default is `false`, so the user's parsed
         // value simply is the answer.
         self.keep_exited = user.keep_exited;
         Ok(())
-    }
-
-    /// Profile-specific built-ins are useful only when discovery or user
-    /// config supplied their target profile. Insert them after merging so
-    /// they never create dangling references, while an explicit user
-    /// shortcut with the same id still wins.
-    fn add_profile_shortcuts(&mut self) {
-        for (shortcut, engine, profile) in [
-            ("clz", "claude", "zlaude"),
-            ("coz", "codex", "zodex"),
-            ("cog", "codex", "godex"),
-        ] {
-            if self.profiles.contains_key(profile) {
-                self.shortcuts
-                    .entry(shortcut.into())
-                    .or_insert_with(|| ShortcutConfig {
-                        engine: engine.into(),
-                        profile: Some(profile.into()),
-                    });
-            }
-        }
     }
 
     #[allow(clippy::too_many_arguments)]

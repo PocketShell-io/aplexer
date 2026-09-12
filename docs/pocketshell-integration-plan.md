@@ -141,9 +141,9 @@ That is no longer remotely true. Verified against the built binary and source:
   `profiles.py` (claude/codex only, `~/.<name>` sibling dirs, marker files + name hints,
   conservative, never reads inside config dirs); discovered profiles carry
   `CLAUDE_CONFIG_DIR`/`CODEX_HOME` env. User TOML config layers over built-ins
-  (`[engines.*]`, `[profiles.*]`, `[shortcuts.*]`, `default_engine`, `default_profile`).
+  (`[engines.*]`, `[profiles.*]`, `default_engine`, `default_profile`).
 - Quick-launch `a -` (create-or-attach in cwd; first word resolved against real engines, then
-  shortcuts `cl/co/g/clz/coz/cog` + user-defined, then literal command) and numbered
+  literal command) and numbered
   quick-attach `a <N> [<M>|<tag>]`; the numeric indexes also work as selectors for
   `attach/status/kill/...`.
 - `a whoami` — self-identification from inside a session via the injected
@@ -206,7 +206,7 @@ The original Phase 0 list, item by item:
 | Provider-key `env_unset` forced union | **Resolved.** Agent `EngineConfig.env_unset` is merged with aplexer's provider-key list during `Config::resolve`, so custom agent config may add removals but cannot opt out of the safeguard. The literal `shell` engine is intentionally exempt and uses only its configured removals. |
 | `a profiles --json` | **Materially resolved.** Discovery is ported from `profiles.py` (same markers, hints, conservatism). Shape differences to adapt in the Python shim remain: aplexer's namespace is flat and keyed by directory stem (`"zlaude"`, `"godex"`) rather than per-engine `Profile.name`, and there is no `default` flag. Public profile/session JSON now filters environment metadata to recognized config-directory variables rather than exposing arbitrary launch environment. |
 | Launch-resolution command (`a launch-spec --json` / `a launch-exec`) | **Resolved.** Both hidden integration commands use `Config::resolve`, return/apply `env_set` and `env_unset`, select `skip_permissions_argv` by default, and accept `--no-skip-permissions`. The in-process Python client exposes the same resolver as `launch_spec()`. |
-| Config migration `~/.config/pocketshell/{engines,profiles}.yaml` → aplexer TOML | Not done; but the target shape is no longer speculative (`EngineConfig`/`ProfileConfig`/`ShortcutConfig` in `src/lib.rs`). Small documentation-plus-converter task. |
+| Config migration `~/.config/pocketshell/{engines,profiles}.yaml` → aplexer TOML | Not done; but the target shape is no longer speculative (`EngineConfig`/`ProfileConfig` in `src/lib.rs`). Small documentation-plus-converter task. |
 | Python `aplexer-client` package (import `aplexer`; was "nice-to-have") | **Resolved for Phase A's aplexer-facing operations.** It is an in-process PyO3 binding, not a socket client, and exposes `engines()`, `profiles()`, `launch_spec()`, `snapshot()`/`list()`, and `start()`. It intentionally does not yet mirror every CLI operation. |
 
 New capabilities that change the Phase B calculus (they were all "missing aplexer piece" rows in
@@ -221,7 +221,7 @@ running inside an aplexer session can self-identify without parsing env vars, wh
 the addressing primitive a future `a state-report` verb (or the messaging design's sender
 resolution) needs.
 
-New gaps introduced by the new features: essentially none for Phase A — `a -`, shortcuts, the
+New gaps introduced by the new features: essentially none for Phase A — `a -`, the
 status bar, and quick-attach are human-CLI sugar that PocketShell never calls. The one real new
 mismatch is the **flat, dir-stem-keyed profile namespace** vs PocketShell's per-engine profile
 names; the Python adapter in A1 absorbs it, but if aplexer becomes authoritative the Kotlin

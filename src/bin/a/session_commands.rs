@@ -5,35 +5,19 @@ use super::*;
 /// `a -` and friends -- create-or-attach in the current directory, agent
 /// engines and tags used the same way spec.md's own worked examples do
 /// (workspace ~/git/pocketshell, tags main/review/issue-2294, engines
-/// claude/codex). Whether the first word after "-" names a real engine, a
-/// shortcut, or is a literal command to run (mirroring tmuxctl's `t -
-/// <command>`) is decided against the real engine registry and the
-/// `config.shortcuts` map -- never a fixed word list -- and in that
-/// precedence order:
+/// claude/codex). Whether the first word after "-" names a real engine or
+/// is a literal command to run (mirroring tmuxctl's `t - <command>`) is
+/// decided against the real engine registry -- never a fixed word list:
 ///
 ///   1. real engine id (`config.engines`)
-///   2. shortcut id (`config.shortcuts`)
-///   3. literal command
+///   2. literal command
 ///
-/// Engines are checked first so a real engine name always means exactly
-/// what it says -- `a - claude` must never behave differently just because
-/// someone also configured a shortcut named "claude". Shortcuts are checked
-/// next, ahead of the literal-command fallback: a shortcut is meant to be a
-/// fast path onto exactly what typing the full `--engine`/`--profile` pair
-/// would already produce (see spec.md 9/23), so it sits directly below real
-/// engine names and above running an arbitrary binary. In practice a
-/// shortcut id realistically never collides with a real engine id (they're
-/// deliberately short, e.g. "cl"/"coz") or with a command someone would
-/// actually type standalone, but the ordering is still deliberate rather
-/// than incidental.
+/// A real engine name always means exactly what it says: `a - claude`
+/// launches the engine, never anything else that might share the name.
 ///
 ///   a -                  tag "main", default engine
 ///   a - claude           tag "claude" (defaults to the engine name), engine claude
 ///   a - claude review    tag "review", engine claude
-///   a - clz              tag "clz" (defaults to the shortcut's own id, not
-///                        "claude" -- so `a - cl` and `a - clz` don't
-///                        collide on the same tag), engine claude, profile zlaude
-///   a - clz review       tag "review", engine claude, profile zlaude
 ///   a - htop             tag "htop" (defaults to the command name), runs `htop` literally
 ///
 /// The dash can also carry the tag itself -- tmuxctl's `-suffix` idiom,
@@ -43,7 +27,7 @@ use super::*;
 ///   a -review            tag "review", default engine
 ///   a -review claude     tag "review", engine claude
 ///
-/// Re-running the same shortcut reattaches to a live matching session
+/// Re-running the same command reattaches to a live matching session
 /// instead of erroring, like tmuxctl's own create_or_attach.
 /// Default tag for a literal-command quick-launch: the command's own base
 /// name, normalized to the charset validate_tag accepts. Deliberately NOT
@@ -76,7 +60,7 @@ pub(crate) fn cmd_quick_launch(paths: &Paths, args: QuickLaunchArgs) -> Result<(
     let workspace = canonical_workspace(Path::new("."))?;
     let config = Config::load(paths)?;
     // See the precedence note on the doc comment above: real engine id,
-    // then shortcut id, then literal command.
+    // then literal command.
     let (derived_tag, engine, profile, command): (
         String,
         Option<String>,
@@ -90,24 +74,6 @@ pub(crate) fn cmd_quick_launch(paths: &Paths, args: QuickLaunchArgs) -> Result<(
         [engine, tag] if config.engines.contains_key(engine) => {
             (tag.clone(), Some(engine.clone()), None, vec![])
         }
-        [word] if config.shortcuts.contains_key(word) => {
-            let shortcut = &config.shortcuts[word];
-            (
-                word.clone(),
-                Some(shortcut.engine.clone()),
-                shortcut.profile.clone(),
-                vec![],
-            )
-        }
-        [word, tag] if config.shortcuts.contains_key(word) => {
-            let shortcut = &config.shortcuts[word];
-            (
-                tag.clone(),
-                Some(shortcut.engine.clone()),
-                shortcut.profile.clone(),
-                vec![],
-            )
-        }
         words => (
             command_tag(&words[0]),
             None,
@@ -117,9 +83,8 @@ pub(crate) fn cmd_quick_launch(paths: &Paths, args: QuickLaunchArgs) -> Result<(
     };
     // An explicit tag -- `a -review`, rewritten to `--tag review` in main()
     // -- names the session directly, tmuxctl's dash-suffix idiom; the words
-    // after it still decide engine vs shortcut vs literal command exactly
-    // as they do for bare `a -` (`a -review claude` = session "review",
-    // engine claude).
+    // after it still decide engine vs literal command exactly as they do
+    // for bare `a -` (`a -review claude` = session "review", engine claude).
     let tag = args.tag.unwrap_or(derived_tag);
     if let Some(existing) = list_records(paths)?
         .into_iter()

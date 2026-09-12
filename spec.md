@@ -1500,7 +1500,7 @@ Python console-script launchers to locate and execute those binaries.
 
 The user configuration file is `~/.config/aplexer/config.toml` by default
 (`APLEXER_CONFIG` overrides it). The schema is versioned and rejects unknown
-fields and invalid engine/profile/shortcut references. For example:
+fields and invalid engine/profile references. For example:
 
 ```toml
 version = 1

@@ -759,7 +759,7 @@ fn quick_launch_refuses_a_workspace_tag_whose_workload_is_still_alive() {
 
 /// `a -review` -- tmuxctl's dash-suffix idiom -- creates-or-attaches the
 /// workspace's "review" session instead of `a -`'s "main", while the words
-/// after the tag still pick engine/shortcut/command. The create half runs
+/// after the tag still pick engine/command. The create half runs
 /// the command literally under the named tag; the attach half must find
 /// the live session rather than error or create a sibling.
 #[test]

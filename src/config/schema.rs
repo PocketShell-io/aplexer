@@ -66,13 +66,6 @@ pub struct ProfileConfig {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct ShortcutConfig {
-    pub engine: String,
-    #[serde(default)]
-    pub profile: Option<String>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default_config_version")]
     pub version: u32,
@@ -84,8 +77,6 @@ pub struct Config {
     pub engines: BTreeMap<String, EngineConfig>,
     #[serde(default)]
     pub profiles: BTreeMap<String, ProfileConfig>,
-    #[serde(default)]
-    pub shortcuts: BTreeMap<String, ShortcutConfig>,
     /// Keep a durable record for a session whose workload finished.
     ///
     /// Default `false`: a session that ends -- `exit`, Ctrl-D at a shell,
@@ -135,7 +126,7 @@ impl ConfigHeader {
 /// The worker consults this on its exit path, where [`Config::load`] would
 /// be the wrong tool twice over: it walks the filesystem for engine profile
 /// discovery that finalization has no use for, and it fails the whole load
-/// on an unrelated invalid engine/profile/shortcut entry -- which would flip
+/// on an unrelated invalid engine/profile entry -- which would flip
 /// the retention policy as a side effect of a typo elsewhere in the file.
 /// Only the [`ConfigHeader`] is parsed here, so an unreadable or unparsable
 /// config file, one of an unsupported version (whose field may not mean

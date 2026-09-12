@@ -136,10 +136,3 @@ engines both wanting a profile called `"zai"`). When migrating a
   the flat id and `engine`/`env`/etc, no display name. A consumer that
   wants a friendly label (e.g. a future pocketshell adapter) needs to keep
   its own id-to-label map rather than expecting aplexer to carry one.
-
-## `shortcuts` (aplexer-only, no `profiles.yaml`/`engines.yaml` source)
-
-`[shortcuts.<id>]` (`ShortcutConfig`, e.g. `a - cl` / `a - clz`) has no
-pocketshell equivalent to migrate from -- it is purely an aplexer human-CLI
-convenience (`docs/pocketshell-integration-plan.md` 1.4 notes PocketShell
-never calls this path). Nothing to do here for a migration.

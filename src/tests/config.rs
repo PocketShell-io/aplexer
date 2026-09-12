@@ -1,4 +1,4 @@
-//! Unit tests for engine/profile/shortcut configuration.
+//! Unit tests for engine/profile configuration.
 
 use super::*;
 
@@ -235,11 +235,6 @@ fn config_schema_rejects_unknown_fields_at_every_level() {
             "version = 1\n[profiles.review.limits]\nmemroy_bytes = 1024\n",
             "memroy_bytes",
         ),
-        (
-            "shortcut",
-            "version = 1\n[shortcuts.review]\nengine = \"shell\"\nprofiel = \"review\"\n",
-            "profiel",
-        ),
     ] {
         let message = format!("{:#}", load_config_text(text).unwrap_err());
         assert!(message.contains("unknown field"), "{label}: {message}");
@@ -264,21 +259,6 @@ fn config_semantics_reject_dangling_references_and_invalid_commands() {
             "profile engine",
             "version = 1\n[profiles.review]\nengine = \"missing\"\n",
             "profile \"review\" engine \"missing\"",
-        ),
-        (
-            "shortcut engine",
-            "version = 1\n[shortcuts.review]\nengine = \"missing\"\n",
-            "shortcut \"review\" engine \"missing\"",
-        ),
-        (
-            "shortcut profile",
-            "version = 1\n[shortcuts.review]\nengine = \"shell\"\nprofile = \"missing\"\n",
-            "shortcut \"review\" profile \"missing\"",
-        ),
-        (
-            "shortcut profile engine",
-            "version = 1\n[profiles.review]\nengine = \"claude\"\n[shortcuts.review]\nengine = \"codex\"\nprofile = \"review\"\n",
-            "selects engine \"codex\", but profile \"review\" selects engine \"claude\"",
         ),
         (
             "empty engine command",
@@ -372,21 +352,12 @@ fn valid_config_references_commands_and_limits_still_load() {
          memory_bytes = 1048576\n\
          pids = 4\n\
          cpu_quota_us = 50000\n\
-         cpu_period_us = 100000\n\
-         [shortcuts.rev]\n\
-         engine = \"custom\"\n\
-         profile = \"review\"\n",
+         cpu_period_us = 100000\n",
     )
     .unwrap();
 
     assert_eq!(config.default_engine.as_deref(), Some("custom"));
     assert_eq!(config.default_profile.as_deref(), Some("review"));
-    for (name, shortcut) in &config.shortcuts {
-        assert!(config.engines.contains_key(&shortcut.engine), "{name}");
-        if let Some(profile) = &shortcut.profile {
-            assert!(config.profiles.contains_key(profile), "{name}");
-        }
-    }
 }
 
 /// The load-bearing property from pocketshell-integration-plan.md 0.2: a

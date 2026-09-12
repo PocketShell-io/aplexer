@@ -8,7 +8,7 @@ fn dash_suffix_rewrites_to_quick_launch_with_an_explicit_tag() {
         rewrite_quick_attach_args(vec!["a".into(), "-review".into()]),
         vec!["a", "quick-launch", "--tag", "review"]
     );
-    // Words after the dash-tag still pick engine/shortcut/command.
+    // Words after the dash-tag still pick engine/command.
     assert_eq!(
         rewrite_quick_attach_args(vec!["a".into(), "-review".into(), "claude".into()]),
         vec!["a", "quick-launch", "--tag", "review", "claude"]

@@ -5,7 +5,7 @@
 ## What's different from tmux
 
 - **Sessions are `workspace + tag + engine + profile`, not flat pane names.** `~/git/pocketshell:review` running `codex/zai` is a real, addressable identity (spec.md §§1–3) — `a list` groups sessions by workspace and shows engine/profile for each, instead of a flat list of pane titles you have to keep straight yourself. And when a session is started from *inside* another session (an agent spawning `a start`), the child records its parent (`parent_session` in the record and every `--json` payload; `↳ parent` in `a list`, a `parent` line in `a status`), so agent-spawned sessions stay traceable to where they came from.
-- **Aplexer owns how each agent actually launches**, not just how it's displayed. Engine definitions (spec.md §8) capture the real launch command, permission-bypass flags, and profile config-dir wiring per engine — `a - clz` starts Claude routed through its Z.AI profile (the right `CLAUDE_CONFIG_DIR` set automatically) with one two-letter shortcut, instead of a hand-assembled command line you have to get right every time. See [Engines, profiles, and shortcuts](#engines-profiles-and-shortcuts).
+- **Aplexer owns how each agent actually launches**, not just how it's displayed. Engine definitions (spec.md §8) capture the real launch command, permission-bypass flags, and profile config-dir wiring per engine — `a start --engine claude --profile zlaude` starts Claude routed through its Z.AI profile (the right `CLAUDE_CONFIG_DIR` set automatically), instead of a hand-assembled command line you have to get right every time. See [Engines and profiles](#engines-and-profiles).
 - **Every session is independently resource-isolated**, because agent workloads — a runaway test loop, an agent that spawns its own build — are exactly the kind of thing that eats memory unpredictably. A `--memory`-capped session gets OOM-killed on its own by the kernel's real cgroup OOM killer, without taking any other session down. See [Resource isolation](#resource-isolation) and [Daemonless vs. tmux](#daemonless-vs-tmux) below.
 - **Agents can find out where they are and talk to each other.** `a whoami` lets an agent (or a hook, or a script) running inside a session ask "which session am I, what engine/profile, what workspace" — there's no tmux equivalent because a tmux pane has no agent identity to ask about. `a message` gives sibling agents in the same workspace a durable inbox plus direct-to-pane delivery for real handoffs ("backend's done, see api.md"). See [Inter-agent messaging](#inter-agent-messaging).
 
@@ -120,15 +120,14 @@ a keys                    the attach-mode key reference
 
 Presentation is TTY-aware by construction: richer tables, semantic agent states (`working`/`waiting`/`idle` from a fresh `a state-report`, honest `active`/`quiet` from PTY-recency otherwise), and the one-line attach status bar exist only when stdout is a real terminal. Redirected output and every `--json` path keep their exact pre-existing format, and `Ctrl-b ?` (attach help flash) never sends a byte to the workload. While attached, the status bar keeps task identity, semantic state, sibling sessions, and `^b ?` visible, dropping detail from the right on narrow terminals.
 
-## Engines, profiles, and shortcuts
+## Engines and profiles
 
-Configuration is one TOML file, `~/.config/aplexer/config.toml` (override with `APLEXER_CONFIG`). It declares three related things together, in the same place, so it's clear how they relate:
+Configuration is one TOML file, `~/.config/aplexer/config.toml` (override with `APLEXER_CONFIG`). It declares two related things together, in the same place, so it's clear how they relate:
 
 - **`[engines.<id>]`** — how to launch an agent/shell/command: argv plus any env. `codex` is a plain engine entry — `a - codex` just runs `codex` with no profile.
 - **`[profiles.<id>]`** — an engine variant, usually a different config directory via that engine's env var (`CLAUDE_CONFIG_DIR` for claude, `CODEX_HOME` for codex) — an alternate account or provider.
-- **`[shortcuts.<id>]`** — a short mnemonic for `a - <id>` that resolves to an (engine, profile) pair. `coz` is a shortcut meaning "codex with the Z.AI profile" (`config_dir` `~/.zodex`) — a fast path onto exactly what `a start --engine codex --profile zodex` already does, distinct from the plain `codex` engine above.
 
-All three layer identically: aplexer ships built-in/auto-discovered defaults for each map, then your config file's `[engines.*]` / `[profiles.*]` / `[shortcuts.*]` tables extend it, and your file wins on any id collision.
+Both layer identically: aplexer ships built-in/auto-discovered defaults for each map, then your config file's `[engines.*]` / `[profiles.*]` tables extend it, and your file wins on any id collision.
 
 ### Engines
 
@@ -209,45 +208,6 @@ readers use the checksummed generations for crash recovery and dead capture.
 A profile can also swap the binary itself, not just the config dir: `executable` replaces only argv[0] of the engine's command, and `command`/`args` replace the whole argv — that is how a fork of an agent CLI becomes a first-class launch target (see the worked example below).
 
 Launch a profile explicitly with `a start --engine codex --profile zodex`, or from inside a workspace `a start --profile zodex` (the profile's own `engine` field fills in `--engine`).
-
-### Shortcuts
-
-Built-in defaults, resolving `a - <id>` to an (engine, profile) pair. The
-plain engine shortcuts are always present; profile shortcuts are added only
-when discovery or user configuration provides their referenced profile:
-
-```toml
-[shortcuts.cl]
-engine = "claude"
-
-[shortcuts.co]
-engine = "codex"
-
-[shortcuts.g]
-engine = "grok"
-
-[shortcuts.clz]
-engine = "claude"
-profile = "zlaude"
-
-[shortcuts.coz]
-engine = "codex"
-profile = "zodex"
-
-[shortcuts.cog]
-engine = "codex"
-profile = "godex"
-```
-
-So `a - codex` (a real engine id) runs plain codex tagged `codex`, while `a - coz` (a shortcut id) runs codex with the Z.AI profile tagged `coz` — same engine, different profile and tag, so the two sessions never collide. `a - coz review` uses the same engine+profile but tags the session `review` instead of `coz`. Word matching checks real engine ids first (so a real engine name always means exactly what it says), then shortcut ids, then falls back to running the words as a literal command — see the doc comment on `cmd_quick_launch` in `src/bin/a.rs` for the full precedence rationale.
-
-Add your own the same way:
-
-```toml
-[shortcuts.rev]
-engine = "codex"
-profile = "review"   # the [profiles.review] example above
-```
 
 ### A real config
 
@@ -542,7 +502,7 @@ See [spec.md](spec.md) for the complete architecture: identity model, session ty
 
 For using aplexer on a remote host over a slow or flaky link (PocketShell on cellular), see [docs/low-bandwidth-remote-access-design.md](docs/low-bandwidth-remote-access-design.md) — what SSH compression already solves for free, status-bar/replay frugality, and reconnect/resume semantics (planning doc, not yet implemented).
 
-For switching between sessions without detaching (`Ctrl-b Right`/`Left` between the sessions of a workspace, `Ctrl-b Down`/`Up` between workspaces, `Ctrl-b 1-9`/`l`/`N`/`P` inside `a attach`, reusing the same numbering `a list` prints — and `Ctrl-b n` to create another session here and land in it), see [docs/fast-session-switching-design.md](docs/fast-session-switching-design.md) — the in-process switch architecture, keybinding scheme, and failure handling. `a keys` prints the current keymap, which is generated from one table in the source. `Ctrl-b R` renames the session you are attached to — an inline `rename:` prompt on the status bar row, Enter confirms, Esc cancels — and from a shell inside the session, `a rename --tag newname` does the same thing without attaching.
+For switching between sessions without detaching (`Ctrl-b Right`/`Left` between the sessions of a workspace, `Ctrl-b Down`/`Up` between workspaces, `Ctrl-b 1-9`/`l`/`N`/`P` inside `a attach`, reusing the same numbering `a list` prints — and `Ctrl-b n` to create another session here and land in it), see [docs/fast-session-switching-design.md](docs/fast-session-switching-design.md) — the in-process switch architecture, keybinding scheme, and failure handling. `a keys` prints the current keymap, which is generated from one table in the source. `Ctrl-b s` opens a picker box listing this workspace's sessions under that same numbering — a digit attaches, Esc cancels. `Ctrl-b w` is the same one level up: a box listing every workspace under the `[N]` numbering `a list` prints — a digit enters that workspace at its most recently used session, Esc cancels. `Ctrl-b R` renames the session you are attached to — an inline `rename:` prompt on the status bar row, Enter confirms, Esc cancels — and from a shell inside the session, `a rename --tag newname` does the same thing without attaching.
 
 For scrolling through a session's recent output without blocking input (tmux copy-mode's job, minus the input freeze), see [docs/scrollback-design.md](docs/scrollback-design.md) — why the host terminal's native scrollback is the mechanism, the status-bar hygiene invariants that keep it clean, and why a custom in-band scrollback view is rejected for v1 (design doc; mostly verification work).
 

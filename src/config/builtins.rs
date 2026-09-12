@@ -1,9 +1,9 @@
-//! The engines and shortcuts every installation starts with.
+//! The engines every installation starts with.
 
 use std::collections::BTreeMap;
 use std::env;
 
-use super::{Config, EngineConfig, ShortcutConfig};
+use super::{Config, EngineConfig};
 
 /// Transcript-family normalization: a variant engine -- a fork of a built-in
 /// engine CLI with the same wire format and the same native conversation-log
@@ -63,38 +63,5 @@ impl Config {
             .into_iter()
             .map(|(name, command, skip)| (name.to_string(), engine(command, skip)))
             .collect()
-    }
-
-    /// Built-in quick-launch shortcuts (`a - <id>`, see cmd_quick_launch in
-    /// src/bin/a.rs): short mnemonics onto an (engine, profile) pair. Same
-    /// defaults-then-user-file-extends layering as engines/profiles, so
-    /// `[shortcuts.<id>]` in the user's config can add new ones or override
-    /// these. "cl"/"co"/"g" are the plain engines; "clz"/"coz"/"cog"
-    /// additionally select the Z.AI/Go sibling profiles discovered above
-    /// (ids match those profiles' own dir-stem ids).
-    pub(super) fn builtin_shortcuts() -> BTreeMap<String, ShortcutConfig> {
-        let mut shortcuts = BTreeMap::new();
-        shortcuts.insert(
-            "cl".into(),
-            ShortcutConfig {
-                engine: "claude".into(),
-                profile: None,
-            },
-        );
-        shortcuts.insert(
-            "co".into(),
-            ShortcutConfig {
-                engine: "codex".into(),
-                profile: None,
-            },
-        );
-        shortcuts.insert(
-            "g".into(),
-            ShortcutConfig {
-                engine: "grok".into(),
-                profile: None,
-            },
-        );
-        shortcuts
     }
 }
