@@ -74,6 +74,32 @@ pub(super) fn spawn_workload(
         // key replace earlier ones.
         .env("TERM", WORKLOAD_TERM)
         .env("COLORTERM", WORKLOAD_COLORTERM)
+        // Agent-hint compatibility, same emulation claim as TERM above: tmux
+        // is identified by `$TMUX` alone, and agent CLIs gate helpful hints
+        // on it -- Claude Code, for one, only offers its `ctrl+b ctrl+b`
+        // run-in-background hint when it thinks it is inside tmux, which is
+        // exactly the situation an aplexer session presents (Ctrl-b is
+        // reserved as our detach prefix, and an unbound prefix+Ctrl-b pair
+        // forwards the Ctrl-b through, so the hint is truthful here). The
+        // value is tmux-shaped (`socket,pid,session`) so comma-splitting
+        // parsers get a plausible socket path; nothing serves that socket,
+        // and agents that probe it (Claude shells out to `tmux -S ...` for
+        // clipboard and mouse/focus settings) fail those probes non-fatally.
+        // Identity stays with the APLEXER_* vars below and `a whoami`; this
+        // asserts only the terminal shape. Setting it unconditionally also
+        // strips a `TMUX` inherited from a worker launched inside real tmux
+        // -- the workload talks to aplexer's PTY, not the launcher's pane.
+        .env(
+            "TMUX",
+            // tmux's value shape is `socket,pid,session`; parsers that care
+            // split on the commas and read the socket out of field one.
+            format!(
+                "/tmp/aplexer/tmux-{id},{pid},0",
+                id = record.id,
+                pid = std::process::id()
+            ),
+        )
+        .env("TMUX_PANE", "%0")
         .envs(launch_environment)
         .env("APLEXER_SESSION_ID", record.id.to_string())
         .env("APLEXER_WORKSPACE", &record.workspace)
