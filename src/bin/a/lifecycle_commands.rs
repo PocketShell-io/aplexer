@@ -1,9 +1,20 @@
 use super::*;
 
-pub(crate) fn remove_session_state(paths: &Paths, id: Uuid) -> Result<()> {
+pub(crate) fn remove_session_state(paths: &Paths, record: &SessionRecord) -> Result<()> {
+    // The tombstone goes in before the removal so a kill that resolves its
+    // target after this point answers "already finished" instead of
+    // "no matching session" (issue #2665). Best-effort: a missing tombstone
+    // only degrades that later kill back to today's failure.
+    aplexer::retired::write_finished_tombstone(
+        paths,
+        record.id,
+        &record.workspace,
+        &record.tag,
+        aplexer::retired::TombstoneCause::Finished,
+    );
     let _registry = FileLock::exclusive(&paths.registry_lock(), false)?;
-    fs::remove_dir_all(paths.state_session(id))?;
-    let _ = fs::remove_dir_all(paths.runtime_session(id));
+    fs::remove_dir_all(paths.state_session(record.id))?;
+    let _ = fs::remove_dir_all(paths.runtime_session(record.id));
     Ok(())
 }
 
@@ -108,7 +119,7 @@ fn stop_unreachable_worker(
     preflight_broken_containment_recovery(record)?;
     force_kill_stale_worker(record)?;
     if record.containment_proven_empty() {
-        remove_session_state(paths, record.id)
+        remove_session_state(paths, record)
             .with_context(|| format!("remove stale session {}", record.id))?;
         eprintln!(
             "a: removed session {} after stopping unreachable worker pid {}",
@@ -165,7 +176,7 @@ fn remove_finished_record(
     if !record.containment_proven_empty() {
         recover_broken_containment(record, signal, grace_ms)?;
     }
-    remove_session_state(paths, record.id)
+    remove_session_state(paths, record)
         .with_context(|| format!("remove finished session {}", record.id))?;
     eprintln!("a: removed {} session {}", record.phase.name(), record.id);
     if json_output {
@@ -208,7 +219,10 @@ fn report_kill_outcome(paths: &Paths, record: &SessionRecord, signal: i32, json_
 }
 
 pub(crate) fn cmd_kill(paths: &Paths, args: KillArgs, json_output: bool) -> Result<()> {
-    let record = resolve(paths, &args.target)?;
+    let record = match resolve(paths, &args.target) {
+        Ok(record) => record,
+        Err(error) => return kill_already_finished(paths, &args.target, error, json_output),
+    };
     let signal = parse_signal(&args.signal)?;
     let grace = kill_grace_duration(args.grace_ms)?;
     let rpc = rpc_call_within(
@@ -225,6 +239,55 @@ pub(crate) fn cmd_kill(paths: &Paths, args: KillArgs, json_output: bool) -> Resu
         return handle_failed_kill_rpc(paths, &record, error, signal, args.grace_ms, json_output);
     }
     report_kill_outcome(paths, &record, signal, json_output);
+    Ok(())
+}
+
+/// The one resolve failure `a kill` reinterprets: when the live registry
+/// has no match but a finished-tombstone does, the kill's outcome was
+/// already achieved by whoever removed the session, and success is the
+/// honest answer -- an actor that resolved the tag from an earlier listing
+/// must not be told its kill failed (issue #2665, hit in #2661's probe
+/// cleanup). Every other failure -- ambiguity, unresolvable paths, a
+/// selector nothing ever matched -- comes back untouched, so a mistyped
+/// tag still fails loudly.
+fn kill_already_finished(
+    paths: &Paths,
+    target: &TargetArgs,
+    error: anyhow::Error,
+    json_output: bool,
+) -> Result<()> {
+    // "No matching session" is the ordinary miss. ENOENT is its uglier
+    // sibling: canonicalizing a --workspace whose directory is already gone
+    // fails with io NotFound before any registry comparison happens, and a
+    // vanished workspace is precisely the post-cleanup shape a tombstone
+    // exists to answer.
+    let not_found = error
+        .root_cause()
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|cause| cause.kind() == std::io::ErrorKind::NotFound);
+    if error.to_string() != aplexer::NO_MATCHING_SESSION && !not_found {
+        return Err(error);
+    }
+    let cwd_workspace = resolve_message_workspace(None).ok();
+    let Some(tombstone) = aplexer::retired::lookup_finished_tombstone(
+        paths,
+        target.selector.as_deref(),
+        target.workspace.as_deref(),
+        target.tag.as_deref(),
+        cwd_workspace.as_deref(),
+    ) else {
+        return Err(error);
+    };
+    if json_output {
+        println!("{}", aplexer::retired::tombstone_kill_json(&tombstone));
+    } else {
+        println!(
+            "session {}:{} already finished ({}); nothing to kill",
+            tombstone.workspace.display(),
+            tombstone.tag,
+            tombstone.cause.as_str(),
+        );
+    }
     Ok(())
 }
 

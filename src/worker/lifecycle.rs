@@ -120,6 +120,20 @@ fn remove_finished_state(runtime: &WorkerRuntime) {
         eprintln!("aplexer worker: fence writes before removing finished session: {error:#}");
         return;
     }
+    // Leave the finished-tombstone before the state dir goes: a `a kill`
+    // that resolves its target after this point must learn "already
+    // finished" instead of "no matching session" (issue #2665). The
+    // workload ended before finalization either way -- by exiting or by an
+    // accepted kill -- so Finished is the honest cause from here.
+    if let Ok(record) = runtime.record() {
+        crate::retired::write_finished_tombstone(
+            &runtime.paths,
+            runtime.id,
+            &record.workspace,
+            &record.tag,
+            crate::retired::TombstoneCause::Finished,
+        );
+    }
     if let Err(error) = fs::remove_dir_all(runtime.paths.state_session(runtime.id)) {
         eprintln!(
             "aplexer worker: remove finished session {} state: {error:#}",

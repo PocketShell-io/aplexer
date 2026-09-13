@@ -4,10 +4,8 @@
 
 use super::*;
 
-pub(super) const RETIRED_SESSIONS_DIR: &str = "retired-sessions";
-
 pub(super) fn archive_superseded_session(paths: &Paths, id: Uuid) -> Result<PathBuf> {
-    let retired_root = paths.state_root.join(RETIRED_SESSIONS_DIR);
+    let retired_root = paths.retired_sessions_dir();
     ensure_private_dir(&retired_root)?;
     let source = paths.state_session(id);
     let archived = retired_root.join(id.to_string());
@@ -191,7 +189,7 @@ mod reclaim_tests {
         assert!(
             !paths
                 .state_root
-                .join(RETIRED_SESSIONS_DIR)
+                .join("retired-sessions")
                 .join(stale.id.to_string())
                 .exists(),
             "a refused retire stranded the predecessor in the archive"

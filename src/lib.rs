@@ -6,6 +6,7 @@ pub mod api;
 pub mod hooks;
 pub mod messaging;
 pub mod placement;
+pub mod retired;
 pub mod screen;
 pub mod watch;
 pub mod worker;
@@ -32,7 +33,9 @@ mod record;
 pub use record::*;
 
 mod registry;
-pub use registry::{list_records, read_record, read_session_record, resolve_record};
+pub use registry::{
+    list_records, read_record, read_session_record, resolve_record, NO_MATCHING_SESSION,
+};
 
 mod paths;
 pub use paths::{canonical_workspace, ensure_private_dir, Paths};

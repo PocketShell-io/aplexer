@@ -130,6 +130,11 @@ pub(crate) fn record_is_not_written_yet(error: &anyhow::Error) -> bool {
     io_kind(error) == Some(io::ErrorKind::NotFound)
 }
 
+/// The not-found answer every resolve failure carries; `a kill`'s
+/// finished-tombstone path matches on exactly this so only the "there was
+/// nothing to kill" failure is eligible for the already-finished answer.
+pub const NO_MATCHING_SESSION: &str = "no matching session";
+
 pub fn resolve_record(
     paths: &Paths,
     selector: Option<&str>,
@@ -172,7 +177,7 @@ pub fn resolve_record(
         );
     }
     match matches.len() {
-        0 => bail!("no matching session"),
+        0 => bail!(NO_MATCHING_SESSION),
         1 => Ok(matches[0].clone()),
         // A pair can transiently be held by two records: `a rename` takes a
         // dead holder's name but leaves the corpse for `a prune` (issue

@@ -105,6 +105,14 @@ impl Paths {
     pub fn registry_lock(&self) -> PathBuf {
         self.state_root.join("registry.lock")
     }
+    /// Finished-session tombstones and superseded-session archives live
+    /// here; both answer "this id is deliberately gone".
+    pub fn retired_sessions_dir(&self) -> PathBuf {
+        self.state_root.join("retired-sessions")
+    }
+    pub fn retired_session(&self, id: Uuid) -> PathBuf {
+        self.retired_sessions_dir().join(id.to_string())
+    }
 }
 
 pub(crate) fn absolute_override_path(path: PathBuf, variable: &str) -> Result<PathBuf> {

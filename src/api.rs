@@ -527,6 +527,13 @@ pub fn forget_session(paths: &Paths, selector: &str, force: bool) -> Result<Valu
     // worker lock (in the runtime dir) and only then reads the record, so
     // a worker that recreates the runtime dir after this removal finds the
     // record already gone and refuses to come up.
+    crate::retired::write_finished_tombstone(
+        paths,
+        current.id,
+        &current.workspace,
+        &current.tag,
+        crate::retired::TombstoneCause::Forgotten,
+    );
     fs::remove_dir_all(paths.state_session(current.id))
         .with_context(|| format!("remove forgotten session {} durable state", current.id))?;
     match fs::remove_dir_all(paths.runtime_session(current.id)) {

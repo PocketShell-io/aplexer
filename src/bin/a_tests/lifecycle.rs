@@ -364,3 +364,214 @@ fn cmd_kill_still_refuses_live_reachable_worker() {
         "a live/reachable session's worker must not be signalled"
     );
 }
+
+
+#[test]
+fn kill_on_a_finished_session_tombstone_succeeds() {
+    let state_dir = tempfile::tempdir().unwrap();
+    let runtime_dir = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        runtime_root: runtime_dir.path().to_path_buf(),
+        state_root: state_dir.path().to_path_buf(),
+        config_file: state_dir.path().join("config.toml"),
+    };
+    paths.ensure().unwrap();
+    let record = mk_record("/ws/i2665", "done", Phase::Exited);
+    aplexer::retired::write_finished_tombstone(
+        &paths,
+        record.id,
+        &record.workspace,
+        &record.tag,
+        aplexer::retired::TombstoneCause::Finished,
+    );
+
+    let args = KillArgs {
+        target: TargetArgs {
+            selector: None,
+            workspace: Some(PathBuf::from("/ws/i2665")),
+            tag: Some("done".to_string()),
+        },
+        signal: "TERM".to_string(),
+        grace_ms: 50,
+    };
+    cmd_kill(&paths, args, true)
+        .expect("a kill whose target already finished must succeed, not report failure");
+}
+
+#[test]
+fn kill_on_a_selector_that_never_matched_still_fails() {
+    let state_dir = tempfile::tempdir().unwrap();
+    let runtime_dir = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        runtime_root: runtime_dir.path().to_path_buf(),
+        state_root: state_dir.path().to_path_buf(),
+        config_file: state_dir.path().join("config.toml"),
+    };
+    paths.ensure().unwrap();
+    let workspace = state_dir.path().join("ws-i2665");
+    fs::create_dir_all(&workspace).unwrap();
+
+    let args = KillArgs {
+        target: TargetArgs {
+            selector: None,
+            workspace: Some(workspace),
+            tag: Some("typo".to_string()),
+        },
+        signal: "TERM".to_string(),
+        grace_ms: 50,
+    };
+    let error = cmd_kill(&paths, args, false)
+        .expect_err("a selector nothing ever matched must keep failing loudly");
+    assert!(format!("{error:#}").contains("no matching session"), "{error:#}");
+}
+
+#[test]
+fn remove_session_state_leaves_the_finished_tombstone_behind() {
+    let mut record = mk_record("/ws/i2665", "done", Phase::Exited);
+    record.worker_pid = None;
+    record.workload_pid = None;
+    let (paths, _state_dir, _runtime_dir) = seeded_registry(&mut record);
+
+    remove_session_state(&paths, &record).unwrap();
+    assert!(
+        !paths.state_session(record.id).exists(),
+        "the durable state must be gone"
+    );
+
+    let by_tag = aplexer::retired::lookup_finished_tombstone(
+        &paths,
+        None,
+        Some(Path::new("/ws/i2665")),
+        Some("done"),
+        None,
+    );
+    assert_eq!(by_tag.expect("tag+workspace lookup must find the tombstone").id, record.id);
+    let by_id = aplexer::retired::lookup_finished_tombstone(
+        &paths,
+        Some(&record.id.to_string()[..8]),
+        None,
+        None,
+        None,
+    );
+    assert_eq!(by_id.expect("uuid-prefix lookup must find the tombstone").id, record.id);
+}
+
+#[test]
+fn tombstone_lookup_mirrors_resolve_selectors() {
+    let state_dir = tempfile::tempdir().unwrap();
+    let runtime_dir = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        runtime_root: runtime_dir.path().to_path_buf(),
+        state_root: state_dir.path().to_path_buf(),
+        config_file: state_dir.path().join("config.toml"),
+    };
+    paths.ensure().unwrap();
+    let record = mk_record("/ws/i2665", "done", Phase::Exited);
+    aplexer::retired::write_finished_tombstone(
+        &paths,
+        record.id,
+        &record.workspace,
+        &record.tag,
+        aplexer::retired::TombstoneCause::Finished,
+    );
+    let id_string = record.id.to_string();
+
+    let hit = |selector: Option<&str>, workspace: Option<&Path>, tag: Option<&str>, cwd: Option<&Path>| {
+        aplexer::retired::lookup_finished_tombstone(&paths, selector, workspace, tag, cwd)
+    };
+    assert!(hit(None, Some(Path::new("/ws/i2665")), Some("done"), None).is_some());
+    assert!(hit(Some(&id_string), None, None, None).is_some());
+    assert!(hit(Some(&id_string[..8]), None, None, None).is_some());
+    assert!(hit(Some("/ws/i2665:done"), None, None, None).is_some());
+    assert!(hit(Some("done"), None, None, Some(Path::new("/ws/i2665"))).is_some());
+
+    assert!(hit(Some("other"), None, None, Some(Path::new("/ws/i2665"))).is_none());
+    assert!(hit(None, Some(Path::new("/ws/other")), Some("done"), None).is_none());
+    assert!(
+        hit(None, None, Some("done"), None).is_none(),
+        "a tag query without any workspace must not match: resolve would not have either"
+    );
+}
+
+#[test]
+fn prune_ages_expired_tombstones_and_leaves_archives() {
+    let state_dir = tempfile::tempdir().unwrap();
+    let runtime_dir = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        runtime_root: runtime_dir.path().to_path_buf(),
+        state_root: state_dir.path().to_path_buf(),
+        config_file: state_dir.path().join("config.toml"),
+    };
+    paths.ensure().unwrap();
+
+    let fresh = mk_record("/ws/i2665", "fresh", Phase::Exited);
+    aplexer::retired::write_finished_tombstone(
+        &paths,
+        fresh.id,
+        &fresh.workspace,
+        &fresh.tag,
+        aplexer::retired::TombstoneCause::Finished,
+    );
+
+    let stale = mk_record("/ws/i2665", "stale", Phase::Exited);
+    let expired = aplexer::retired::FinishedTombstone {
+        id: stale.id,
+        workspace: PathBuf::from("/ws/i2665"),
+        tag: "stale".to_string(),
+        finished_at_ms: 0,
+        cause: aplexer::retired::TombstoneCause::Pruned,
+    };
+    let stale_dir = paths.retired_session(stale.id);
+    aplexer::ensure_private_dir(&stale_dir).unwrap();
+    aplexer::atomic_write_json(
+        &stale_dir.join(aplexer::retired::TOMBSTONE_FILE),
+        &expired,
+    )
+    .unwrap();
+
+    // A supersede archive holds a full record, not a tombstone; prune must
+    // never treat it as expired.
+    let archive = paths.retired_session(Uuid::new_v4());
+    aplexer::ensure_private_dir(&archive).unwrap();
+    fs::write(archive.join("session.json"), "{}").unwrap();
+
+    let aged = aplexer::retired::prune_expired_tombstones(&paths).unwrap();
+    assert_eq!(aged, vec![stale.id]);
+    assert!(
+        !stale_dir.exists(),
+        "the expired tombstone must be gone"
+    );
+    assert!(paths.retired_session(fresh.id).exists(), "the fresh tombstone must stay");
+    assert!(archive.exists(), "a supersede archive is not a tombstone");
+}
+
+
+#[test]
+fn kill_in_an_existing_workspace_without_a_tombstone_keeps_failing_loudly() {
+    let state_dir = tempfile::tempdir().unwrap();
+    let runtime_dir = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        runtime_root: runtime_dir.path().to_path_buf(),
+        state_root: state_dir.path().to_path_buf(),
+        config_file: state_dir.path().join("config.toml"),
+    };
+    paths.ensure().unwrap();
+    let workspace = state_dir.path().join("ws-i2665");
+    fs::create_dir_all(&workspace).unwrap();
+
+    let args = KillArgs {
+        target: TargetArgs {
+            selector: None,
+            workspace: Some(workspace),
+            tag: Some("never-existed".to_string()),
+        },
+        signal: "TERM".to_string(),
+        grace_ms: 50,
+    };
+    let error = cmd_kill(&paths, args, false)
+        .expect_err("a workspace-resolvable selector with no session and no tombstone must keep failing loudly");
+    assert!(
+        format!("{error:#}").contains("no matching session"),
+        "{error:#}"
+    );
+}

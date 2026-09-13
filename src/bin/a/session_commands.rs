@@ -256,6 +256,13 @@ pub(crate) fn reap_sweep(paths: &Paths, wait_for_terminating: bool) -> Result<Pr
         }
         match reap_session_state(paths, record.id)? {
             ReapResult::Removed { containment_proven } => {
+                aplexer::retired::write_finished_tombstone(
+                    paths,
+                    record.id,
+                    &record.workspace,
+                    &record.tag,
+                    aplexer::retired::TombstoneCause::Pruned,
+                );
                 outcome.removed.push(record.id);
                 if !containment_proven {
                     outcome.removed_without_containment_proof.push(record.id);
@@ -270,6 +277,10 @@ pub(crate) fn reap_sweep(paths: &Paths, wait_for_terminating: bool) -> Result<Pr
 
 pub(crate) fn cmd_prune(paths: &Paths, json_output: bool) -> Result<()> {
     let outcome = prune_dead_sessions(paths)?;
+    let expired_tombstones = aplexer::retired::prune_expired_tombstones(paths)?;
+    for id in &expired_tombstones {
+        println!("removed expired finished-tombstone {id}");
+    }
     // Say plainly which reaps rested on "nothing left to hold on to" rather
     // than on a worker's own proof that its containment domain was empty --
     // the same distinction `a forget --force` reports, minus its scarier
@@ -287,6 +298,7 @@ pub(crate) fn cmd_prune(paths: &Paths, json_output: bool) -> Result<()> {
                 "removed": outcome.removed,
                 "removed_without_containment_proof": outcome.removed_without_containment_proof,
                 "retained_count": outcome.retained_count,
+                "expired_tombstones": expired_tombstones,
             }))?
         );
     } else if outcome.removed.is_empty() {
