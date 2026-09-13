@@ -12,7 +12,11 @@ use crate::api::{self, StartRequest};
 use crate::paths::Paths;
 
 fn py_err(err: anyhow::Error) -> PyErr {
-    PyRuntimeError::new_err(err.to_string())
+    // `Display` alone keeps only the outermost context, so a caller would see
+    // "refusing to forget session X" with no hint why. `{:#}` flattens the
+    // chain into one line -- the same information the CLI's anyhow handler
+    // prints as its "Caused by" section.
+    PyRuntimeError::new_err(format!("{err:#}"))
 }
 
 fn paths(
