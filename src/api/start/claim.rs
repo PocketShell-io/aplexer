@@ -69,12 +69,13 @@ pub(super) fn claim_pair(paths: &Paths, req: &StartRequest, workspace: &Path) ->
     // the whole spawn: this read IS the locked read, and no other aplexer
     // command can modify the registry until this call returns.
     let registry = list_records(paths)?;
-    // The pair can be held by more than one record: `a rename` takes a pair
-    // from a dead holder but leaves the corpse in place for `a prune`
-    // (issue #13), so "the holder" must not be whoever `read_dir` lists
-    // first. A live holder always wins -- it is who the supersede check
-    // below refuses to displace -- and only when every holder is reclaimable
-    // does the first dead one become the predecessor this start archives.
+    // A pair should have exactly one record, but a registry written while
+    // the interim #13 fix was live can hold it more than once (rename took
+    // the name and left the corpse for `a prune`). Never let "the holder"
+    // be whoever `read_dir` lists first: a live holder always wins -- it is
+    // who the supersede check below refuses to displace -- and only when
+    // every holder is reclaimable does the first dead one become the
+    // predecessor this start archives.
     let holder_of = |tag: &str| {
         let mut holders = registry
             .iter()
@@ -88,8 +89,6 @@ pub(super) fn claim_pair(paths: &Paths, req: &StartRequest, workspace: &Path) ->
             })
     };
     let mut tag = req.tag.clone();
-    let mut fence: Option<FileLock> = None;
-    let mut reclaim: Option<ContainmentReap> = None;
     if req.fresh {
         // `--fresh` promises "always creates": a requested pair held by
         // something live is not an error, it is a reason to move to the next
@@ -108,33 +107,96 @@ pub(super) fn claim_pair(paths: &Paths, req: &StartRequest, workspace: &Path) ->
         }
     }
     let superseded = holder_of(&tag).cloned();
-    if let Some(existing) = &superseded {
-        // Taking this pair means archiving and then DELETING the holder's
-        // durable state -- the same destruction `a prune` performs -- so it
-        // must clear the same bar, `reap_verdict`. `worker_finished()`, the
-        // old test, required a terminal phase that a SIGKILLed worker never
-        // gets to write, so a zombie (worker dead, `phase` stuck at
-        // `running`) held its `workspace+tag` forever and `a start` could
-        // only succeed if something else pruned it first.
-        let Some(verdict) = reap_verdict(existing) else {
-            bail!(
-                "workspace+tag already belongs to session {} (state: {}); rename it or choose a different tag",
-                existing.id,
-                existing.observed_state()
-            );
-        };
-        fence = fence_or_refuse(paths, existing).with_context(|| {
-            format!(
-                "workspace+tag already belongs to session {}; rename it or choose a different tag",
-                existing.id
-            )
-        })?;
-        reclaim = Some(verdict);
-    }
+    // One shared ownership decision with the worker's `rename` (issue #13):
+    // the two commands must not drift apart about when a record has lost
+    // its claim -- the disagreement itself was the reported bug.
+    let claim = match &superseded {
+        Some(existing) => Some(claim_holder_pair(paths, existing)?),
+        None => None,
+    };
     Ok(PairClaim {
         tag,
         superseded,
-        reclaim,
-        _fence: fence,
+        reclaim: claim.as_ref().map(|claim| claim.verdict),
+        _fence: claim.and_then(|claim| claim._fence),
     })
+}
+
+/// The one `workspace+tag` ownership decision (spec.md 32.1): does the
+/// holder of the requested pair still own it? Shared by `claim_pair`'s
+/// supersede decision and the worker's `rename` (issue #13) so the two
+/// commands cannot drift apart about when a record has lost its claim --
+/// the disagreement itself was the reported bug.
+///
+/// An `Err` names the holder and a way out. An `Ok` means the caller may
+/// take the pair and must keep the fence alive across every destruction of
+/// the holder's state.
+pub(crate) struct HolderClaim {
+    /// Whether the holder's worker proved its containment domain empty. A
+    /// reclaim without this proof is reported, exactly as `a prune` reports
+    /// the same class of removal, because the same manual-investigation
+    /// trail goes with it.
+    pub(crate) verdict: ContainmentReap,
+    /// Held across every destruction so a worker still in the
+    /// spawn-to-worker-lock gap cannot come up on top of the state the
+    /// caller is about to archive and delete. Never read: the field exists
+    /// to be dropped last.
+    #[allow(dead_code)]
+    pub(crate) _fence: Option<FileLock>,
+}
+
+pub(crate) fn claim_holder_pair(paths: &Paths, holder: &SessionRecord) -> Result<HolderClaim> {
+    // Taking this pair means archiving and then DELETING the holder's
+    // durable state -- the same destruction `a prune` performs -- so it must
+    // clear the same bar, `reap_verdict`. `worker_finished()`, the old test,
+    // required a terminal phase that a SIGKILLed worker never gets to write,
+    // so a zombie (worker dead, `phase` stuck at `running`) held its
+    // `workspace+tag` forever.
+    let verdict = reap_verdict(holder).ok_or_else(|| {
+        anyhow!(
+            "workspace+tag already belongs to session {} (state: {}); rename it or choose a different tag",
+            holder.id,
+            holder.observed_state()
+        )
+    })?;
+    let _fence = fence_or_refuse(paths, holder).with_context(|| {
+        format!(
+            "workspace+tag already belongs to session {}; rename it or choose a different tag",
+            holder.id
+        )
+    })?;
+    Ok(HolderClaim { verdict, _fence })
+}
+
+/// Retire a dead holder in one registry-locked step, for a caller that takes
+/// the pair without a spawn window in between (the worker's `rename`):
+/// archive, delete the archive, drop the runtime directory, and report an
+/// unproven reclaim exactly as `a prune` reports the same class of removal.
+///
+/// `claim_pair` cannot call this in one piece -- its archive must complete
+/// before the replacement hand-off and its cleanup only after -- so it
+/// drives the same pieces (`archive_reclaimed_predecessor`,
+/// `cleanup_superseded_archive`) directly and prints the same warning from
+/// the launcher.
+pub(crate) fn retire_reclaimed_holder(
+    paths: &Paths,
+    holder: &SessionRecord,
+    verdict: ContainmentReap,
+) -> Result<()> {
+    let archived = archive_reclaimed_predecessor(paths, holder)?;
+    if let Err(error) = cleanup_superseded_archive(&archived) {
+        bail!(
+            "superseded session {} cleanup failed; its remaining evidence is retained at {}: {error:#}",
+            holder.id,
+            archived.display()
+        );
+    }
+    let _ = fs::remove_dir_all(paths.runtime_session(holder.id));
+    if verdict == ContainmentReap::NoRemainingHandle {
+        eprintln!(
+            "a: reclaimed workspace+tag from broken session {} without a containment proof; its worker died without recording one and nothing addressable remained",
+            holder.id
+        );
+    }
+    Ok(())
 }

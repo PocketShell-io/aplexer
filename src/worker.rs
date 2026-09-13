@@ -1,4 +1,4 @@
-use crate::api::fence_or_refuse;
+use crate::api::{claim_holder_pair, retire_reclaimed_holder};
 use crate::*;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::json;

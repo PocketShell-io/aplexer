@@ -455,11 +455,9 @@ pub(crate) enum PrePidFence {
 ///
 /// Callers must keep the returned guard alive across every removal, exactly
 /// as `a forget` does. `rename`'s claim check (issue #13) uses the same
-/// fence for the same reason, holding it across its record update: its
-/// verdict must not read a coming-up session as free either, and while
-/// rename destroys nothing, holding the lock keeps a worker that has not
-/// reached its acquisition yet from coming up on top of the pair the
-/// rename just handed out.
+/// fence for the same reason: its verdict must not read a coming-up session
+/// as free, and the claim's fence is held across the retirement of the
+/// holder's state.
 pub(crate) fn fence_pre_pid_worker(paths: &Paths, record: &SessionRecord) -> Result<PrePidFence> {
     if !record.worker_phase_active() || record.worker_pid.is_some() {
         return Ok(PrePidFence::Fenced(None));

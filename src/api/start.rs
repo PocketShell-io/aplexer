@@ -14,6 +14,7 @@ mod launch;
 mod supersede;
 mod tag;
 
+pub(crate) use claim::{claim_holder_pair, retire_reclaimed_holder};
 use claim::{claim_pair, resolve_launch};
 pub(super) use connect::connect_startup_control;
 use connect::*;
