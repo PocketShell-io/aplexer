@@ -197,14 +197,17 @@ fn kill_removes_record_runtime_dir_and_listing() {
         "killed session still appears in `a list --json`"
     );
 
-    // Both clients treat "already gone" as the goal state of a kill; the
-    // error must stay exactly this phrase (pocketshell-electron
-    // AplexerClient::isAplexerNotFound matches /no matching session/i).
-    let (stdout, stderr) = harness.run_failing(&["kill", &id], Duration::from_secs(5));
-    let detail = format!("{stdout}{stderr}");
+    // The first kill's removal left a finished tombstone (issue #2665), so
+    // the repeat kill -- an actor that resolved the id from an earlier
+    // listing -- must learn the goal state was already achieved, not that
+    // it failed. "no matching session" stays the answer for a selector
+    // nothing ever matched (pinned in a_tests/lifecycle.rs, and what
+    // pocketshell-electron's AplexerClient::isAplexerNotFound still
+    // matches); a tombstoned one is a quiet success.
+    let stdout = harness.run_ok(&["kill", &id], Duration::from_secs(5));
     assert!(
-        detail.contains("no matching session"),
-        "second kill should report the record as gone, got: {detail}"
+        stdout.contains("already finished"),
+        "second kill should report the session as already finished, got: {stdout}"
     );
 }
 
