@@ -45,7 +45,10 @@ pub(crate) struct LiveStatus {
     pub(crate) session: Option<Uuid>,
     pub(crate) raw: Option<Value>,
     pub(crate) agent: Option<aplexer::agent_kind::DetectedAgent>,
-    pub(crate) siblings: String,
+    /// The workspace's sessions as `numbered_session_label`s, unjoined so
+    /// the status bar can elide the list from the right (`+N`) instead of
+    /// dropping it whole when the terminal is too narrow.
+    pub(crate) siblings: Vec<String>,
     /// The git branch (or detached commit) checked out at the session's
     /// `cwd`, `None` outside a repository -- the one `LiveStatus` fact read
     /// from the filesystem rather than from the worker or the registry.
@@ -277,26 +280,55 @@ pub(crate) fn numbered_session_label(r: &SessionRecord, index: usize, current: U
 /// what the `Ctrl-b s` session picker prints, so the two can never drift.
 /// Lists **all** sessions including the current one (the old version listed
 /// only "the others") because the numbering only makes sense as a complete
-/// index. Example: `1:main* 2:review 3:build(broken)`. A single-session
-/// workspace omits the segment (empty string), same as before.
-pub(crate) fn workspace_summary(paths: &Paths, record: &SessionRecord) -> String {
+/// index. Unjoined: the status bar joins with spaces and elides from the
+/// right when the row is tight (`sibling_elisions`), so a crowded
+/// workspace narrows to `1:main* 2:review … +3` instead of crowding every
+/// other segment off the bar. Empty (single-session workspace): no
+/// segment, same as before.
+pub(crate) fn workspace_summary(paths: &Paths, record: &SessionRecord) -> Vec<String> {
     let records = match list_records(paths) {
         Ok(r) => r,
-        Err(_) => return String::new(),
+        Err(_) => return Vec::new(),
     };
     let siblings: Vec<SessionRecord> = records
         .into_iter()
         .filter(|r| r.workspace == record.workspace)
         .collect();
     if siblings.len() <= 1 {
-        return String::new();
+        return Vec::new();
     }
     siblings
         .iter()
         .enumerate()
         .map(|(i, r)| numbered_session_label(r, i, record.id))
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect()
+}
+
+/// Every elision of the workspace's session labels, widest first: the
+/// complete list, then the list with its last entry replaced by `+1`, and
+/// so on down to the bare `+N` count. The status bar tries these in order
+/// at each layout level -- before stepping down to a narrower layout --
+/// because the `+N` tail keeps the one fact that matters about the hidden
+/// entries (how many there are) on the bar for two-ish cells, where the
+/// old all-or-nothing segment hid both the entries and the fact that they
+/// existed at all. Each elision is strictly narrower than the previous
+/// one (a label is at least `i:t`, three cells, and the `+N` tail costs
+/// at most three), so first-fit picks the widest that fits.
+pub(crate) fn sibling_elisions(labels: &[String]) -> Vec<String> {
+    (0..=labels.len())
+        .rev()
+        .map(|keep| {
+            let hidden = labels.len() - keep;
+            let mut text = labels[..keep].join(" ");
+            if hidden > 0 {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(&format!("+{hidden}"));
+            }
+            text
+        })
+        .collect()
 }
 
 /// The git branch checked out at the session's `cwd`, for the status

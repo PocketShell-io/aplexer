@@ -546,6 +546,26 @@ fn sample_groups() -> Vec<(PathBuf, Vec<SessionRecord>)> {
 }
 
 #[test]
+fn sibling_elisions_count_what_they_hide() {
+    let labels: Vec<String> = vec![
+        "1:main*".to_string(),
+        "2:review".to_string(),
+        "3:build(broken)".to_string(),
+    ];
+    assert_eq!(
+        sibling_elisions(&labels),
+        vec![
+            "1:main* 2:review 3:build(broken)",
+            "1:main* 2:review +1",
+            "1:main* +2",
+            "+3",
+        ]
+    );
+    // A single-session workspace has no segment at any width.
+    assert_eq!(sibling_elisions(&[]), vec![""]);
+}
+
+#[test]
 fn git_branch_detection_reads_head_in_all_its_shapes() {
     let dir = tempfile::TempDir::new().unwrap();
     let repo = dir.path().join("repo");
@@ -636,4 +656,62 @@ fn status_bar_shows_the_sessions_git_branch() {
     let ctx = status_ctx_for_test(true);
     refresh_live_status(&ctx);
     assert!(!status_bar_text(&ctx, 256).contains('\u{2387}'));
+}
+
+/// The redesign's core property: a workspace whose session list is too
+/// wide for the terminal squeezes the *list* -- down to entries plus a
+/// `+N` count -- instead of stepping the whole bar down a layout and
+/// crowding the workspace name (and memory, and eventually the tag) off
+/// the row. At the old behavior this exact width renders the tag-only
+/// medium layout with the complete list; now it renders the full layout
+/// with the list elided.
+#[test]
+fn status_bar_elides_siblings_instead_of_dropping_layouts() {
+    let ctx = status_ctx_for_test(true);
+    let session = ctx.record.lock().unwrap().id;
+    *ctx.live.lock().unwrap() = LiveStatus {
+        session: Some(session),
+        raw: None,
+        agent: None,
+        siblings: vec![
+            "1:main*".to_string(),
+            "2:review".to_string(),
+            "3:build(broken)".to_string(),
+            "4:spike".to_string(),
+            "5:docs".to_string(),
+        ],
+        branch: Some("main".to_string()),
+        fetched_at: Some(Instant::now()),
+    };
+
+    // Plenty of room: everything, complete list included.
+    let wide = status_bar_text(&ctx, 256);
+    assert!(
+        wide.contains("1:main* 2:review 3:build(broken) 4:spike 5:docs"),
+        "{wide:?}"
+    );
+    assert!(wide.contains("\u{2387} main"), "{wide:?}");
+
+    // Six cells tighter than the complete bar: the whole list no longer
+    // fits, but one elision frees four, so the workspace-qualified layout
+    // must survive with a count tail rather than falling back to the
+    // tag-only one.
+    let cols = terminal_display_width(wide.trim_end()) - 6;
+    let narrow = status_bar_text(&ctx, cols);
+    assert!(
+        narrow.starts_with("/ws/status-bar-test:t  \u{2387} main  "),
+        "{narrow:?}"
+    );
+    assert!(narrow.contains("1:main*"), "{narrow:?}");
+    assert!(narrow.contains("+2"), "{narrow:?}");
+    assert!(!narrow.contains("5:docs"), "{narrow:?}");
+    assert!(narrow.contains("\u{25cf} RUNNING"), "{narrow:?}");
+    assert!(narrow.contains("^b ?"), "{narrow:?}");
+    assert_eq!(terminal_display_width(&narrow), cols, "{narrow:?}");
+
+    // Far narrower still, the ladder degrades as before -- but any
+    // rendering that has room for the list shows the hidden count, never
+    // a silently truncated prefix.
+    let tiny = status_bar_text(&ctx, 24);
+    assert!(tiny.contains("^b ?"), "{tiny:?}");
 }

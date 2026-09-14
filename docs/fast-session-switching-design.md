@@ -486,9 +486,15 @@ Two changes to make the digits discoverable and give errors a home:
    what needs calling out). Example bar tail: `1:main* 2:review 3:build(broken)`.
    The `siblings:` prefix is dropped. Empty (single-session workspace):
    omit the segment, as today.
-   (Later refinement: the identity segment also shows the session's
-   checked-out git branch -- `⎇ <branch>`, read from `.git/HEAD` by
-   `session_git_branch`, between the tag and the state.)
+   (Later refinement: the segment is elided, not dropped whole, when the
+   terminal is too narrow for the complete list -- the renderer tries the
+   list with trailing entries replaced by a `+N` count at every layout
+   level before stepping down a layout, so a crowded workspace squeezes
+   the list instead of crowding identity and state off the bar; see
+   `sibling_elisions` in src/bin/a/terminal_status.rs. The same
+   refinement added the session's checked-out git branch to the identity
+   segment -- `⎇ <branch>`, read from `.git/HEAD` by `session_git_branch`,
+   shown between the tag and the state.)
 2. `draw_status_bar` first checks `ctx.flash`: if `Some((msg, at))` with
    `at.elapsed() < FLASH_DURATION`, render `pad_or_truncate(&format!("[{msg}]"), cols)`
    in the same reverse video instead of the normal text; if the flash has

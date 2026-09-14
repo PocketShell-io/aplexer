@@ -249,12 +249,17 @@ fn abbreviate_branch(name: &str) -> String {
 
 /// Status-bar text, adaptive by width. All layouts lead with identity and
 /// state -- the two things a returning human needs -- and drop detail from
-/// the right as the terminal narrows: full (workspace:tag, branch, state,
-/// detected agent, engine/foreground, memory, sibling list, help
-/// affordance), medium (tag-first), compact (tag + state + agent + help),
-/// and a minimum that keeps state and `^b ?` alive on even a few columns.
-/// Renders a flashed message instead of all of these while one is active
-/// (section 6.1).
+/// the right as the terminal narrows. The workspace's session list is the
+/// one segment that elides *within* a layout level before a level is
+/// dropped (`sibling_elisions`): a crowded workspace squeezes its list
+/// down to a `+N` count instead of crowding identity, state, agent, and
+/// the git branch off the bar the way the old all-or-nothing segment did
+/// when many sessions didn't fit. Layout ladder, widest first: full
+/// (workspace:tag, branch, state, detected agent, engine/foreground,
+/// memory, sibling list, help affordance), medium (tag-first, no memory),
+/// compact (tag, state, agent, help), and a minimum that keeps state and
+/// `^b ?` alive on even a few columns. Renders a flashed message instead
+/// of all of these while one is active (section 6.1).
 pub(crate) fn status_bar_text(ctx: &StatusBarCtx, cols: usize) -> String {
     {
         let prompt = ctx.prompt.lock().unwrap_or_else(PoisonError::into_inner);
@@ -317,28 +322,40 @@ pub(crate) fn status_bar_text(ctx: &StatusBarCtx, cols: usize) -> String {
     let state = format!("{glyph} {}", state_word.to_uppercase());
     let tag = &record.tag;
 
-    let sibling_segment = if siblings.is_empty() {
-        String::new()
-    } else {
-        format!("  |  {siblings}")
-    };
-
-    // Widest first; `fit_bar_text` renders each only until one fits.
-    let full = || {
+    // Widest first; `fit_bar_text` renders each only until one fits. The
+    // sibling list is tried at every elision level per layout before the
+    // layout itself narrows, so the list -- whose information survives in
+    // its `+N` count -- is what gives way first, and a single-session
+    // workspace (one elision, the empty list) renders exactly the old
+    // three layouts.
+    let elisions = sibling_elisions(&siblings);
+    let full = |sibs: &str| {
+        let sib = if sibs.is_empty() {
+            String::new()
+        } else {
+            format!("  |  {sibs}")
+        };
         let mem = mem
             .as_ref()
             .map(|mem| format!("  mem {mem}"))
             .unwrap_or_default();
-        format!("{ws}:{tag}{branch_segment}  {state}{agent_segment}  {ep}{mem}{sibling_segment}  |  ^b ?")
+        format!("{ws}:{tag}{branch_segment}  {state}{agent_segment}  {ep}{mem}{sib}  |  ^b ?")
     };
-    let medium = || format!("{tag}{branch_segment}  {state}{agent_segment}  {ep}{sibling_segment}  |  ^b ?");
+    let medium = |sibs: &str| {
+        let sib = if sibs.is_empty() {
+            String::new()
+        } else {
+            format!("  |  {sibs}")
+        };
+        format!("{tag}{branch_segment}  {state}{agent_segment}  {ep}{sib}  |  ^b ?")
+    };
     let compact = || format!("{tag}{branch_segment}  {state}{agent_segment}  ^b ?");
-    let candidates: [&dyn Fn() -> String; 3] = [&full, &medium, &compact];
-    fit_bar_text(
-        cols,
-        candidates.into_iter().map(|render| render()),
-        &format!("{state}  ^b ?"),
-    )
+    let candidates = elisions
+        .iter()
+        .map(|sibs| full(sibs))
+        .chain(elisions.iter().map(|sibs| medium(sibs)))
+        .chain(std::iter::once(compact()));
+    fit_bar_text(cols, candidates, &format!("{state}  ^b ?"))
 }
 
 /// Redraws the reserved bottom row in place: jump to the last row, clear it,
