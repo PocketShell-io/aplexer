@@ -211,13 +211,50 @@ pub(crate) fn flash_status(ctx: &StatusBarCtx, message: impl Into<String>) {
     draw_status_bar(ctx, true);
 }
 
+/// Longest branch name the identity segment shows before abbreviating. A
+/// branch name can be arbitrarily long, and an uncapped one would crowd
+/// the state and sibling segments it shares the row with before the width
+/// fitter could help; the full name is one `git status` away inside the
+/// session anyway.
+pub(crate) const BRANCH_DISPLAY_MAX: usize = 20;
+
+/// `  ⎇ <branch>` -- the checked-out git branch riding the identity
+/// segment right after the tag -- or empty outside a repository.
+pub(crate) fn git_branch_segment(branch: Option<&str>) -> String {
+    branch
+        .map(|name| format!("  \u{2387} {}", abbreviate_branch(name)))
+        .unwrap_or_default()
+}
+
+/// The branch name clipped to `BRANCH_DISPLAY_MAX` display cells, `…`
+/// marking the cut. Grapheme-aware for the same reason `pad_or_truncate`
+/// is: a wide glyph split mid-cluster would misrender the whole row.
+fn abbreviate_branch(name: &str) -> String {
+    if terminal_display_width(name) <= BRANCH_DISPLAY_MAX {
+        return name.to_string();
+    }
+    let mut clipped = String::new();
+    let mut width = 0;
+    for grapheme in name.graphemes(true) {
+        let grapheme_width = terminal_display_width(grapheme);
+        if width + grapheme_width > BRANCH_DISPLAY_MAX - 1 {
+            break;
+        }
+        clipped.push_str(grapheme);
+        width += grapheme_width;
+    }
+    clipped.push('\u{2026}');
+    clipped
+}
+
 /// Status-bar text, adaptive by width. All layouts lead with identity and
 /// state -- the two things a returning human needs -- and drop detail from
-/// the right as the terminal narrows: full (workspace:tag, state, detected
-/// agent, engine/foreground, memory, sibling list, help affordance), medium
-/// (tag-first), compact (tag + state + detected agent + help), and a minimum
-/// that keeps state and `^b ?` alive on even a few columns. Renders a flashed
-/// message instead of all of these while one is active (section 6.1).
+/// the right as the terminal narrows: full (workspace:tag, branch, state,
+/// detected agent, engine/foreground, memory, sibling list, help
+/// affordance), medium (tag-first), compact (tag + state + agent + help),
+/// and a minimum that keeps state and `^b ?` alive on even a few columns.
+/// Renders a flashed message instead of all of these while one is active
+/// (section 6.1).
 pub(crate) fn status_bar_text(ctx: &StatusBarCtx, cols: usize) -> String {
     {
         let prompt = ctx.prompt.lock().unwrap_or_else(PoisonError::into_inner);
@@ -264,6 +301,7 @@ pub(crate) fn status_bar_text(ctx: &StatusBarCtx, cols: usize) -> String {
     let agent_segment = agent.map(|name| format!("  {name}")).unwrap_or_default();
     let mem = raw.as_ref().and_then(|raw| memory_indicator(&record, raw));
     let siblings = live.siblings;
+    let branch_segment = git_branch_segment(live.branch.as_deref());
     let state_record = overlay_reported_state(&record, raw.as_ref());
     let now = now_ms();
     let (state_word, _) = session_ui_state(&state_record, now);
@@ -278,6 +316,7 @@ pub(crate) fn status_bar_text(ctx: &StatusBarCtx, cols: usize) -> String {
     };
     let state = format!("{glyph} {}", state_word.to_uppercase());
     let tag = &record.tag;
+
     let sibling_segment = if siblings.is_empty() {
         String::new()
     } else {
@@ -290,10 +329,10 @@ pub(crate) fn status_bar_text(ctx: &StatusBarCtx, cols: usize) -> String {
             .as_ref()
             .map(|mem| format!("  mem {mem}"))
             .unwrap_or_default();
-        format!("{ws}:{tag}  {state}{agent_segment}  {ep}{mem}{sibling_segment}  |  ^b ?")
+        format!("{ws}:{tag}{branch_segment}  {state}{agent_segment}  {ep}{mem}{sibling_segment}  |  ^b ?")
     };
-    let medium = || format!("{tag}  {state}{agent_segment}  {ep}{sibling_segment}  |  ^b ?");
-    let compact = || format!("{tag}  {state}{agent_segment}  ^b ?");
+    let medium = || format!("{tag}{branch_segment}  {state}{agent_segment}  {ep}{sibling_segment}  |  ^b ?");
+    let compact = || format!("{tag}{branch_segment}  {state}{agent_segment}  ^b ?");
     let candidates: [&dyn Fn() -> String; 3] = [&full, &medium, &compact];
     fit_bar_text(
         cols,

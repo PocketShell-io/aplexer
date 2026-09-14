@@ -46,6 +46,10 @@ pub(crate) struct LiveStatus {
     pub(crate) raw: Option<Value>,
     pub(crate) agent: Option<aplexer::agent_kind::DetectedAgent>,
     pub(crate) siblings: String,
+    /// The git branch (or detached commit) checked out at the session's
+    /// `cwd`, `None` outside a repository -- the one `LiveStatus` fact read
+    /// from the filesystem rather than from the worker or the registry.
+    pub(crate) branch: Option<String>,
     pub(crate) fetched_at: Option<Instant>,
 }
 
@@ -69,6 +73,7 @@ pub(crate) fn refresh_live_status(ctx: &StatusBarCtx) {
         raw: live_status(&record),
         agent: aplexer::api::record_detected(&record),
         siblings: workspace_summary(&ctx.paths, &record),
+        branch: session_git_branch(&record),
         fetched_at: Some(Instant::now()),
     };
     *ctx.live.lock().unwrap_or_else(PoisonError::into_inner) = fresh;
@@ -292,6 +297,73 @@ pub(crate) fn workspace_summary(paths: &Paths, record: &SessionRecord) -> String
         .map(|(i, r)| numbered_session_label(r, i, record.id))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The git branch checked out at the session's `cwd`, for the status
+/// bar's identity segment. Read straight from the repository's `HEAD`
+/// file -- no `git` subprocess, no library: the fetch runs on the status
+/// thread once per `LIVE_STATUS_TTL`, sharing the host with a PTY relay
+/// that must stay responsive, and `HEAD` is the entire truth of "what is
+/// checked out" for display purposes. `None` when `cwd` is not inside a
+/// work tree, or its `.git` exists but cannot be read: an absent segment
+/// beats a wrong one.
+pub(crate) fn session_git_branch(record: &SessionRecord) -> Option<String> {
+    git_head_branch(&record.cwd)
+}
+
+/// Walks up from `start` the way git itself does, stopping at the first
+/// `.git` entry: a broken or exotic `.git` *is* the repository boundary,
+/// and walking past it would report an outer repository that a nested
+/// checkout shadows.
+pub(crate) fn git_head_branch(start: &Path) -> Option<String> {
+    let mut dir = start.to_path_buf();
+    loop {
+        let dot_git = dir.join(".git");
+        if dot_git.exists() {
+            return repository_head_branch(&dot_git);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// `HEAD`'s branch for the two shapes a `.git` entry takes: a directory
+/// (an ordinary work tree) and a `gitdir:` pointer file (a linked work
+/// tree or submodule). The pointer's target is resolved against the
+/// `.git` file's directory when relative -- the same rule git applies.
+fn repository_head_branch(dot_git: &Path) -> Option<String> {
+    let head = if dot_git.is_dir() {
+        dot_git.join("HEAD")
+    } else {
+        let pointer = fs::read_to_string(dot_git).ok()?;
+        let target = Path::new(pointer.trim().strip_prefix("gitdir:")?.trim());
+        let gitdir = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            dot_git.parent()?.join(target)
+        };
+        gitdir.join("HEAD")
+    };
+    parse_head(&fs::read_to_string(head).ok()?)
+}
+
+/// `ref: refs/heads/<branch>` names the branch (an unborn branch still
+/// names the one that will be created, which is the fact a human needs);
+/// a bare object name is a detached HEAD, abbreviated the way `git log
+/// --oneline` abbreviates commits.
+fn parse_head(head: &str) -> Option<String> {
+    let line = head.trim();
+    if let Some(reference) = line.strip_prefix("ref:") {
+        return Some(
+            reference
+                .trim()
+                .trim_start_matches("refs/heads/")
+                .to_string(),
+        );
+    }
+    let object = line.len() >= 7 && line.chars().all(|c| c.is_ascii_hexdigit());
+    object.then(|| line.chars().take(7).collect())
 }
 
 /// Makes plain status-bar data safe to interpolate into terminal output.

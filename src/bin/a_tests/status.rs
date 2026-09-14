@@ -544,3 +544,96 @@ fn sample_groups() -> Vec<(PathBuf, Vec<SessionRecord>)> {
         (PathBuf::from(ws_b), vec![b1]),
     ]
 }
+
+#[test]
+fn git_branch_detection_reads_head_in_all_its_shapes() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let repo = dir.path().join("repo");
+    let cwd = repo.join("deep/nested");
+    fs::create_dir_all(&cwd).unwrap();
+    // No .git anywhere up the tree: no branch, and no panic on the walk.
+    assert_eq!(git_head_branch(&cwd), None);
+
+    // Ordinary work tree: .git/HEAD names the branch, found from any depth.
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    fs::write(repo.join(".git/HEAD"), "ref: refs/heads/feature/one\n").unwrap();
+    assert_eq!(git_head_branch(&cwd).as_deref(), Some("feature/one"));
+
+    // Unborn branch: HEAD names the branch that will be created.
+    fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    assert_eq!(git_head_branch(&cwd).as_deref(), Some("main"));
+
+    // Detached HEAD: the abbreviated object name, as `git log --oneline`.
+    fs::write(
+        repo.join(".git/HEAD"),
+        "0123456789abcdef0123456789abcdef01234567\n",
+    )
+    .unwrap();
+    assert_eq!(git_head_branch(&cwd).as_deref(), Some("0123456"));
+
+    // Linked work tree: a `gitdir:` pointer file with an absolute target.
+    let real = dir.path().join("real/.git");
+    fs::create_dir_all(&real).unwrap();
+    fs::write(real.join("HEAD"), "ref: refs/heads/wt\n").unwrap();
+    fs::remove_dir_all(repo.join(".git")).unwrap();
+    fs::write(repo.join(".git"), format!("gitdir: {}\n", real.display())).unwrap();
+    assert_eq!(git_head_branch(&cwd).as_deref(), Some("wt"));
+
+    // Same pointer shape, relative target -- resolved against the `.git`
+    // file's directory, the rule git itself applies.
+    fs::write(repo.join(".git"), "gitdir: ../real/.git\n").unwrap();
+    assert_eq!(git_head_branch(&cwd).as_deref(), Some("wt"));
+
+    // A `.git` that exists but cannot answer is the repository boundary:
+    // the walk stops there instead of reporting an outer repo a nested
+    // checkout shadows. `repo/.git` above is a pointer file, so a bare
+    // `.git` directory one level down must shadow it entirely.
+    let inner = repo.join("inner");
+    let nested_cwd = inner.join("x");
+    fs::create_dir_all(inner.join(".git")).unwrap();
+    fs::create_dir_all(&nested_cwd).unwrap();
+    assert_eq!(git_head_branch(&nested_cwd), None);
+}
+
+#[test]
+fn a_long_branch_name_is_clipped_not_crowding() {
+    assert_eq!(git_branch_segment(None), "");
+    assert_eq!(git_branch_segment(Some("main")), "  \u{2387} main");
+    let long = "release/2026.09.13/long-branch-name";
+    assert!(long.chars().count() > BRANCH_DISPLAY_MAX);
+    let segment = git_branch_segment(Some(long));
+    assert!(segment.ends_with('\u{2026}'), "{segment:?}");
+    assert_eq!(
+        terminal_display_width(&segment),
+        "  \u{2387} ".chars().count() + BRANCH_DISPLAY_MAX,
+        "{segment:?}"
+    );
+}
+
+#[test]
+fn status_bar_shows_the_sessions_git_branch() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let cwd = dir.path().join("deep");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::create_dir_all(dir.path().join(".git")).unwrap();
+    fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+
+    let ctx = status_ctx_for_test(true);
+    ctx.record.lock().unwrap().cwd = cwd;
+    refresh_live_status(&ctx);
+
+    // The branch rides the identity segment, directly after the tag.
+    let full = status_bar_text(&ctx, 256);
+    assert!(
+        full.starts_with("/ws/status-bar-test:t  \u{2387} main  "),
+        "{full:?}"
+    );
+    // Same fact survives the compact layout.
+    let compact = status_bar_text(&ctx, 48);
+    assert!(compact.contains("\u{2387} main"), "{compact:?}");
+
+    // Outside a repository the segment is absent, not a placeholder.
+    let ctx = status_ctx_for_test(true);
+    refresh_live_status(&ctx);
+    assert!(!status_bar_text(&ctx, 256).contains('\u{2387}'));
+}
