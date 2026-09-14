@@ -256,10 +256,12 @@ fn status_bar_names_the_agent_running_in_a_shell_session() {
     ctx.record.lock().unwrap().workload_pid = Some(child.id());
     refresh_live_status(&ctx);
 
-    // Full layout: the agent sits between the state and the engine cell.
+    // Full layout: the bar names the agent by the shared engine label --
+    // for a shell workload, the agent alone, exactly as `a list` does.
     let full = status_bar_text(&ctx, 256);
-    assert!(full.contains("\u{25cf} RUNNING  claude  shell"), "{full:?}");
-    // Narrow layout: the agent outlives the engine cell, same as the tag.
+    assert!(full.contains("\u{25cf} RUNNING  claude"), "{full:?}");
+    // The label outlives most of the bar in the narrow layout, same as the
+    // tag.
     let compact = status_bar_text(&ctx, 32);
     assert!(compact.contains("claude"), "{compact:?}");
 

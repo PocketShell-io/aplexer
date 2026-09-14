@@ -13,7 +13,7 @@ pub(crate) struct StatusBarCtx {
     pub(crate) term: Arc<Mutex<TermGeom>>,
     pub(crate) paths: Paths,
     pub(crate) record: Arc<Mutex<SessionRecord>>,
-    /// The worker-side facts the bar shows (memory, foreground, reported
+    /// The worker-side facts the bar shows (memory, reported
     /// state, siblings), fetched by the status thread and rendered from by
     /// everyone else -- see `LiveStatus` for why no render may fetch.
     pub(crate) live: Arc<Mutex<LiveStatus>>,
@@ -255,7 +255,7 @@ fn abbreviate_branch(name: &str) -> String {
 /// down to a `+N` count instead of crowding identity, state, agent, and
 /// the git branch off the bar the way the old all-or-nothing segment did
 /// when many sessions didn't fit. Layout ladder, widest first: full
-/// (workspace:tag, branch, state, detected agent, engine/foreground,
+/// (workspace:tag, branch, state, engine/agent label,
 /// memory, sibling list, help affordance), medium (tag-first, no memory),
 /// compact (tag, state, agent, help), and a minimum that keeps state and
 /// `^b ?` alive on even a few columns. Renders a flashed message instead
@@ -287,23 +287,15 @@ pub(crate) fn status_bar_text(ctx: &StatusBarCtx, cols: usize) -> String {
     let live = cached_live_status(ctx, record.id);
     let home = env::var_os("HOME").map(PathBuf::from);
     let ws = display_workspace(&record.workspace, home.as_deref());
-    let mut ep = engine_profile(&record);
     let raw = live.raw;
-    // Which agent is live in this session right now -- the same query-time
-    // detection every JSON surface carries (`api::record_detected`). When it
-    // names the same program as the live foreground read, the foreground
-    // annotation steps aside -- `claude  shell -> claude` would say claude
-    // twice -- so an agent not in the foreground (claude running, vim in
-    // front) shows both facts: `claude  shell -> vim`.
-    let agent = extra_agent_label(&record, live.agent.as_ref());
-    let foreground = raw
-        .as_ref()
-        .and_then(|raw| foreground_override(&record, raw))
-        .filter(|fg| Some(fg.as_str()) != agent.as_deref());
-    if let Some(fg) = foreground {
-        ep.push_str(&format!(" -> {fg}"));
-    }
-    let agent_segment = agent.map(|name| format!("  {name}")).unwrap_or_default();
+    // One engine/agent label, the same `engine_label` every other human
+    // surface renders: a shell session with an agent inside is named by
+    // the agent alone (`codex/zcodex`), a declared engine keeps its base.
+    // The bar used to append the pty's live foreground process on top --
+    // `shell -> zcodex` beside a detection that already said
+    // `codex/zcodex` -- but the detection is the fact a returning human
+    // needs; the foreground read stays on `a status` only.
+    let engine_segment = format!("  {}", engine_label(&record, live.agent.as_ref()));
     let mem = raw.as_ref().and_then(|raw| memory_indicator(&record, raw));
     let siblings = live.siblings;
     let branch_segment = git_branch_segment(live.branch.as_deref());
@@ -339,7 +331,7 @@ pub(crate) fn status_bar_text(ctx: &StatusBarCtx, cols: usize) -> String {
             .as_ref()
             .map(|mem| format!("  mem {mem}"))
             .unwrap_or_default();
-        format!("{ws}:{tag}{branch_segment}  {state}{agent_segment}  {ep}{mem}{sib}  |  ^b ?")
+        format!("{ws}:{tag}{branch_segment}  {state}{engine_segment}{mem}{sib}  |  ^b ?")
     };
     let medium = |sibs: &str| {
         let sib = if sibs.is_empty() {
@@ -347,9 +339,9 @@ pub(crate) fn status_bar_text(ctx: &StatusBarCtx, cols: usize) -> String {
         } else {
             format!("  |  {sibs}")
         };
-        format!("{tag}{branch_segment}  {state}{agent_segment}  {ep}{sib}  |  ^b ?")
+        format!("{tag}{branch_segment}  {state}{engine_segment}{sib}  |  ^b ?")
     };
-    let compact = || format!("{tag}{branch_segment}  {state}{agent_segment}  ^b ?");
+    let compact = || format!("{tag}{branch_segment}  {state}{engine_segment}  ^b ?");
     let candidates = elisions
         .iter()
         .map(|sibs| full(sibs))
