@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use super::{
-    check_cgroup_cleanup_deadline, current_cgroup_identity, kill_cgroup_path_until,
-    live_cgroup_populated_with, read_counter, signal_cgroup_path_until,
+    check_cgroup_cleanup_deadline, command_output_until, current_cgroup_identity,
+    kill_cgroup_path_until, live_cgroup_populated_with, read_counter, signal_cgroup_path_until,
     system_scope_escape_decision, systemd_run_scope, trusted_system_helper,
     verify_recorded_cgroup_identity, wait_for_scope_cgroup, CGROUP_V2_ROOT,
 };
@@ -28,6 +28,11 @@ pub struct Cgroup {
     /// this shared slot.
     pub(crate) anchor: Arc<Mutex<Option<std::process::Child>>>,
     pub(crate) initial_oom_kill: u64,
+    /// Which manager bus the scope was created on (`--user` / `--system`),
+    /// and the pre-resolved trusted `systemctl`, so teardown can retire the
+    /// unit without re-resolving helpers (see `Cgroup::retire_unit`).
+    pub(crate) bus_flag: &'static str,
+    pub(crate) systemctl: PathBuf,
 }
 
 pub(crate) fn release_anchor_child(anchor: &mut std::process::Child) -> Result<()> {
@@ -216,6 +221,8 @@ impl Cgroup {
             identity,
             anchor: Arc::new(Mutex::new(Some(anchor))),
             initial_oom_kill,
+            bus_flag,
+            systemctl,
         }))
     }
     /// Opens `cgroup.procs` for writing so the not-yet-exec'd workload child
@@ -314,5 +321,29 @@ impl Cgroup {
     pub fn cleanup(&self) {
         let _ = self.release_anchor();
         let _ = fs::remove_dir(&self.path);
+        self.retire_unit();
+    }
+
+    /// Make the manager forget the scope unit after the direct removal.
+    ///
+    /// `fs::remove_dir` above is what guarantees the containment domain is
+    /// gone, but it also destroys the manager's watch on the scope's
+    /// `cgroup.events` before the manager can observe the scope emptying:
+    /// the unit never transitions to inactive, and the `--collect` set at
+    /// creation never fires. Every capped session leaked one
+    /// permanently-"running" unit record this way (1000+ accumulated in a
+    /// week in the field; PocketShell-io/pocketshell-cli#12). A bounded,
+    /// best-effort `systemctl stop` makes the manager re-evaluate the
+    /// unit -- with the cgroup already gone, the stop completes
+    /// immediately and the record is unloaded. Like the removal itself
+    /// this is bookkeeping, not containment, so failure is ignored.
+    fn retire_unit(&self) {
+        let Some(unit) = self.path.file_name().and_then(|name| name.to_str()) else {
+            return;
+        };
+        let mut command = Command::new(&self.systemctl);
+        command.args([self.bus_flag, "stop", unit]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let _ = command_output_until(&mut command, deadline, "retire systemd scope unit");
     }
 }

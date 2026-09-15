@@ -118,6 +118,8 @@ fn live_cgroup_disappearance_is_empty_only_in_matching_domain() {
         identity: identity.clone(),
         anchor: Arc::new(Mutex::new(None)),
         initial_oom_kill: 0,
+        bus_flag: "--user",
+        systemctl: PathBuf::from("/usr/bin/systemctl"),
     };
     assert!(!collected.populated().unwrap());
 
@@ -326,6 +328,8 @@ fn cgroup_anchor_release_owns_child_through_kill_and_reap() {
         identity: current_cgroup_identity().unwrap(),
         anchor: Arc::new(Mutex::new(Some(anchor))),
         initial_oom_kill: 0,
+        bus_flag: "--user",
+        systemctl: PathBuf::from("/usr/bin/systemctl"),
     };
     let clone = cgroup.clone();
 
