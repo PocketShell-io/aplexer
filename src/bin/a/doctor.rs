@@ -53,25 +53,12 @@ fn controller_gaps() -> Result<Vec<String>, CgroupLimitProbe> {
     Ok(controllers)
 }
 
-/// A freshly created probe scope must both accept process writes and carry
-/// the controller interface files the launch path relies on.
-fn validate_probe_scope(cgroup: &Cgroup) -> Result<()> {
-    let _procs = cgroup.open_procs()?;
-    for controller_file in ["memory.max", "pids.max", "cpu.max"] {
-        let path = cgroup.locator().join(controller_file);
-        if !path.is_file() {
-            bail!("delegated scope is missing {}", path.display());
-        }
-    }
-    Ok(())
-}
-
 /// Exercise the exact launch implementation with a short-lived placeholder
-/// scope: trusted systemd-run/systemctl/sleep discovery, the systemd --user
-/// manager, Delegate=yes, all three supported controllers, and write-open
-/// access to cgroup.procs. The scope contains only the probe's `sleep`
-/// process and is cleaned immediately; no existing cgroup or workload is
-/// modified.
+/// workload: trusted systemd-run/systemctl/sleep discovery, the systemd
+/// --user manager, Delegate=yes, member placement by the manager, and all
+/// three supported controllers. The scope contains only the probe's
+/// `sleep` process and is cleaned immediately; no existing cgroup or
+/// workload is modified.
 fn probe_delegated_scope(controllers: Vec<String>) -> CgroupLimitProbe {
     let verdict = |delegated_scope: bool, detail: String| CgroupLimitProbe {
         cgroup_v2: true,
@@ -85,22 +72,11 @@ fn probe_delegated_scope(controllers: Vec<String>) -> CgroupLimitProbe {
         cpu_quota_us: Some(10_000),
         cpu_period_us: Some(100_000),
     };
-    match Cgroup::create(Uuid::new_v4(), &probe_limits, || {}) {
-        Ok(Some(cgroup)) => {
-            let validation = validate_probe_scope(&cgroup);
-            cgroup.cleanup();
-            match validation {
-                Ok(()) => verdict(
-                    true,
-                    "verified a temporary delegated systemd --user scope with memory, pids, and cpu controls".into(),
-                ),
-                Err(error) => verdict(
-                    false,
-                    format!("delegated scope validation failed: {error:#}"),
-                ),
-            }
-        }
-        Ok(None) => verdict(false, "limit probe unexpectedly created no cgroup".into()),
+    match probe_placeholder_scope(&probe_limits) {
+        Ok(()) => verdict(
+            true,
+            "verified a temporary delegated systemd --user scope with memory, pids, and cpu controls".into(),
+        ),
         Err(error) => verdict(
             false,
             format!("delegated systemd --user scope probe failed: {error:#}"),

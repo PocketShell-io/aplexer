@@ -305,26 +305,15 @@ pub(super) fn bring_up(
 
         let requested_size = initial_size.unwrap_or((24, 80));
         let (rows, cols) = screen::validate_size(requested_size.0, requested_size.1)?;
-        let cgroup = Cgroup::create(id, &record.limits, || {
-            startup.cgroup_setup_started = true;
-        })?;
-        startup.cgroup = cgroup.clone();
-        // Unlimited sessions (the common case: no memory/pids/cpu limits) have
-        // no cgroup, so this second record write would persist byte-identical
-        // containment fields plus a fresh timestamp -- a full fsync + parent
-        // fsync for no new information (benchmark PLAN P0.3). Skip the write
-        // and keep the already-persisted worker_pid record as the durable
-        // state; the in-memory failure record is still updated for rollback.
-        if cgroup.is_some() {
-            record.containment_cgroup =
-                cgroup.as_ref().map(|cgroup| cgroup.locator().to_path_buf());
-            record.containment_cgroup_identity =
-                cgroup.as_ref().map(|cgroup| cgroup.identity().clone());
-            startup.failure_record = record.clone();
-            atomic_write_json(&record_path, &record)?;
-        } else {
-            startup.failure_record = record.clone();
-        }
+        // A capped launch resolves its placement decision, trusted helpers,
+        // and kernel-side identity without spawning anything. The scope
+        // itself now comes into being around the workload in the same
+        // systemd transaction (`systemd-run` places the workload as the
+        // scope's initial process), so the containment locator is only
+        // known after the spawn below -- the durable record is written
+        // immediately after, before any injected or real post-spawn failure.
+        let cgroup_plan =
+            ScopePlan::prepare(id, &record.limits).context("resolve workload scope")?;
         startup_checkpoint("after_cgroup")?;
         let (master_read, slave) = open_pty(rows, cols)?;
         let master_write = master_read.try_clone()?;
@@ -333,33 +322,45 @@ pub(super) fn bring_up(
             &launch_environment.0,
             master_read.as_raw_fd(),
             slave,
-            cgroup.as_ref(),
+            cgroup_plan,
+            || {
+                startup.cgroup_setup_started = true;
+            },
         );
         // Launch values are one-shot: overwrite them as soon as spawn has
         // either succeeded or failed, never retaining them in the accept
         // loop or its background threads.
         drop(launch_environment);
-        let child = child_result?;
+        let (child, cgroup, workload_pid) = child_result?;
+        startup.cgroup = cgroup.clone();
         let pid = child.id();
         // Claim the leader before any code path can wait on it. The reaper
         // thread does not exist yet, but the claim is what documents (and
         // enforces) that `run_child_waiter` owns this pid's exit status.
+        // For a capped session this is the `systemd-run` wrapper; the
+        // wrapper stays the workload's parent and exits right after it.
         own_child_pid(pid);
         let child_slot = Arc::new(Mutex::new(Some(child)));
         startup.child = Some(Arc::clone(&child_slot));
-        record.workload_pid = Some(pid);
+        record.workload_pid = Some(workload_pid);
+        if cgroup.is_some() {
+            record.containment_cgroup =
+                cgroup.as_ref().map(|cgroup| cgroup.locator().to_path_buf());
+            record.containment_cgroup_identity =
+                cgroup.as_ref().map(|cgroup| cgroup.identity().clone());
+        }
         // Launch-time cgroup validation (issue #1): read where the workload
         // leader actually landed and, for a limited session, check that
-        // against the scope systemd was asked to create for it. The
-        // pre_exec cgroup.procs write is supposed to make a mismatch
-        // impossible; if the two sources of truth ever disagree, say so in
-        // worker.log instead of silently trusting the persisted locator.
-        record.workload_cgroup = crate::placement::read_process_cgroup(pid);
+        // against the scope systemd placed it in. The leader pid comes
+        // straight from the scope's membership, so a mismatch would mean
+        // systemd placed something else; say so in worker.log instead of
+        // silently trusting the persisted locator.
+        record.workload_cgroup = crate::placement::read_process_cgroup(workload_pid);
         if let (Some(cgroup), Some(actual)) = (cgroup.as_ref(), record.workload_cgroup.as_deref()) {
             let expected = cgroup.proc_path();
             if actual != expected {
                 eprintln!(
-                    "warning: workload pid {pid} is in cgroup {actual}, not the recorded \
+                    "warning: workload pid {workload_pid} is in cgroup {actual}, not the recorded \
                      containment scope {expected}; resource limits may not apply to the \
                      workload's real location"
                 );

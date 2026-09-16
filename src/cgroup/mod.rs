@@ -1,6 +1,7 @@
 //! cgroup-v2 containment: identity of the kernel domain a session was
-//! created in, trusted-helper system-scope escape, scope creation with
-//! anchor process, live probing, and bounded cleanup/kill/reap recovery of
+//! created in, trusted-helper system-scope escape, scope creation whose
+//! initial process is the workload itself, live probing, and bounded
+//! cleanup/kill/reap recovery of
 //! recorded cgroups after a worker death.
 
 mod identity;

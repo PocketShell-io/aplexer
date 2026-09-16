@@ -3,12 +3,15 @@
 //!
 //! One reason to exist: the spawn sequence has an order that must never
 //! shuffle -- secret env is loaded and dropped, the PTY is created, the
-//! pre-exec gate arms, the workload enters its containment domain, and only
+//! pre-exec gate arms, systemd places the workload in its containment
+//! domain, and only
 //! then do the flusher, termination monitor, PTY reader, and child waiter
 //! threads start. Everything that runs "for the workload" from spawn until
 //! the lifecycle takes over lives here.
 
 use super::*;
+use crate::cgroup::{Cgroup, ScopePlan};
+use std::ffi::OsString;
 
 /// The terminal aplexer presents to every workload it spawns.
 ///
@@ -32,23 +35,33 @@ pub(super) fn spawn_workload(
     launch_environment: &std::collections::BTreeMap<String, String>,
     master_fd: RawFd,
     slave: File,
-    cgroup: Option<&Cgroup>,
-) -> Result<Child> {
+    plan: Option<ScopePlan>,
+    setup_started: impl FnOnce(),
+) -> Result<(Child, Option<Cgroup>, u32)> {
     let program = record
         .command
         .first()
         .ok_or_else(|| anyhow!("empty workload command"))?;
     let slave_fd = slave.as_raw_fd();
-    // The child attaches itself to the cgroup from inside pre_exec, before
-    // it execs the real program. Any process may write its own pid into a
-    // cgroup.procs it has access to, so this needs no rendezvous with the
-    // parent after fork -- see Cgroup::open_procs for why a post-fork
-    // handshake would deadlock here.
-    let cgroup_procs = cgroup.map(Cgroup::open_procs).transpose()?;
-    let cgroup_procs_fd = cgroup_procs.as_ref().map(|f| f.as_raw_fd());
-    let mut command = Command::new(program);
+    // A capped launch wraps the workload argv in `systemd-run --scope` so
+    // the scope's initial process IS the workload: systemd places it at
+    // unit start and nothing ever migrates into the delegated subtree
+    // (outside-in migration is exactly what `nsdelegate` refuses). The
+    // wrapper is the worker's direct child for the session's whole life and
+    // exits only after the workload does, propagating its exit status --
+    // fatal signals are re-raised, so `Child::wait` keeps reporting the
+    // workload's own death faithfully. The real workload pid is discovered
+    // from the scope's membership in `finish_startup`.
+    let argv: Vec<OsString> = record.command.iter().map(Into::into).collect();
+    let mut command = match &plan {
+        Some(plan) => plan.scope_command(&argv),
+        None => {
+            let mut command = Command::new(program);
+            command.args(&record.command[1..]);
+            command
+        }
+    };
     command
-        .args(&record.command[1..])
         .current_dir(&record.cwd)
         // aplexer owns the workload's PTY, so aplexer -- not whatever shell
         // happened to run `a start` -- is the terminal the workload is
@@ -180,25 +193,30 @@ pub(super) fn spawn_workload(
             }
             let pgid = libc::getpid();
             libc::tcsetpgrp(0, pgid);
-            if let Some(fd) = cgroup_procs_fd {
-                let text = pgid.to_string();
-                let bytes = text.as_bytes();
-                let n = libc::write(fd, bytes.as_ptr() as *const libc::c_void, bytes.len());
-                if n < 0 || n as usize != bytes.len() {
-                    return Err(io::Error::last_os_error());
-                }
-                libc::close(fd);
-            }
             Ok(())
         });
     }
-    let child = command.spawn().context("spawn workload")?;
+    let mut child = command.spawn().with_context(|| {
+        if plan.is_some() {
+            "spawn systemd-run workload scope; limits fail closed"
+        } else {
+            "spawn workload"
+        }
+    })?;
     drop(slave);
-    drop(cgroup_procs);
-    if let Some(cgroup) = cgroup {
-        cgroup.release_anchor()?;
-    }
-    Ok(child)
+    let (cgroup, leader_pid) = match &plan {
+        Some(plan) => {
+            // From this point systemd owns a scope member outside the
+            // worker's procfs descendant tree. Let the caller preserve
+            // recovery evidence until an authoritative cgroup path has been
+            // recorded.
+            setup_started();
+            let (cgroup, leader) = plan.finish_startup(&mut child)?;
+            (Some(cgroup), leader)
+        }
+        None => (None, child.id()),
+    };
+    Ok((child, cgroup, leader_pid))
 }
 
 pub(super) fn spawn_startup_thread<F>(

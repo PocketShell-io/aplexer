@@ -171,9 +171,9 @@ pub(super) static CHILD_EVENT_FD: AtomicI32 = AtomicI32::new(-1);
 ///
 /// The invariant the rest of the worker keeps: **no self-waited child is
 /// spawned after the reaper is armed** (`install_child_reaper_handler`,
-/// the last step of `start_worker_threads`). The workload leader and the
-/// `systemd-run` scope anchor and `systemctl` query helpers of
-/// `Cgroup::create` are all spawned during startup, before that point.
+/// the last step of `start_worker_threads`). The workload -- for a capped session its `systemd-run --scope`
+/// wrapper -- and the `systemctl` query helpers of `ScopePlan` are all
+/// spawned during startup, before that point.
 /// Their *waits* may finish later -- `reap_helper_child_async` waits on a
 /// detached thread -- and that is safe, because a pid stays registered
 /// here until its owner's wait has returned. What would not be safe is a

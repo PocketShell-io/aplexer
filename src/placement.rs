@@ -38,7 +38,7 @@ pub const LAUNCH_SYSTEM_SCOPE_VALUE: &str = "system";
 
 /// Whether the ambient process explicitly opted into the system-scope
 /// escape. Read once per launch by the `a start` client (worker placement)
-/// and by `Cgroup::create` (workload scope placement), so both ends of one
+/// and by `ScopePlan::prepare` (workload scope placement), so both ends of one
 /// launch answer the same way without new plumbing between them.
 pub fn system_scope_requested() -> bool {
     std::env::var(LAUNCH_SYSTEM_SCOPE_ENV).as_deref() == Ok(LAUNCH_SYSTEM_SCOPE_VALUE)

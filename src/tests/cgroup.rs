@@ -116,7 +116,6 @@ fn live_cgroup_disappearance_is_empty_only_in_matching_domain() {
     let collected = Cgroup {
         path: missing_path,
         identity: identity.clone(),
-        anchor: Arc::new(Mutex::new(None)),
         initial_oom_kill: 0,
         bus_flag: "--user",
         systemctl: PathBuf::from("/usr/bin/systemctl"),
@@ -317,43 +316,4 @@ fn cgroup_setup_helper_pipe_cannot_outlive_deadline() {
     .expect_err("inherited helper pipe must not defeat deadline");
     assert!(error.to_string().contains("timed out waiting"));
     assert!(started.elapsed() < Duration::from_millis(500));
-}
-
-#[test]
-fn cgroup_anchor_release_owns_child_through_kill_and_reap() {
-    let anchor = Command::new("/bin/sleep").arg("30").spawn().unwrap();
-    let anchor_pid = anchor.id();
-    let cgroup = Cgroup {
-        path: PathBuf::from("/does/not/exist"),
-        identity: current_cgroup_identity().unwrap(),
-        anchor: Arc::new(Mutex::new(Some(anchor))),
-        initial_oom_kill: 0,
-        bus_flag: "--user",
-        systemctl: PathBuf::from("/usr/bin/systemctl"),
-    };
-    let clone = cgroup.clone();
-
-    cgroup.release_anchor().unwrap();
-    assert!(cgroup.anchor.lock().unwrap().is_none());
-    clone.release_anchor().unwrap();
-
-    let mut status = 0;
-    assert_eq!(
-        unsafe { libc::waitpid(anchor_pid as libc::pid_t, &mut status, libc::WNOHANG) },
-        -1,
-        "anchor must already be reaped exactly once"
-    );
-    assert_eq!(
-        io::Error::last_os_error().raw_os_error(),
-        Some(libc::ECHILD)
-    );
-}
-
-#[test]
-fn cgroup_anchor_release_retains_handle_when_reaping_fails() {
-    let mut slot = Some(7_u8);
-    let error = release_anchor_slot(&mut slot, |_| bail!("injected release failure"))
-        .expect_err("release must fail");
-    assert!(error.to_string().contains("injected release failure"));
-    assert_eq!(slot, Some(7), "failed release must preserve ownership");
 }

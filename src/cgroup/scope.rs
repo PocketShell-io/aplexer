@@ -1,20 +1,33 @@
-//! A live, delegated workload scope: creation through `systemd-run` with an
-//! anchor process, membership and telemetry probes, and anchor release.
+//! A live, delegated workload scope whose initial process IS the workload.
+//!
+//! One reason this shape exists: the workload must be PLACED in the scope by
+//! systemd, never moved in after the fact. Under Ubuntu's default
+//! `nsdelegate` cgroup2 mount policy the delegated `user@1000.service`
+//! subtree is a boundary that processes outside it (the worker lives in a
+//! logind session scope) cannot cross -- writing even their own pid into a
+//! `cgroup.procs` inside the subtree fails with EACCES, so the earlier
+//! anchor-plus-migration design failed closed on exactly the boxes that
+//! most need the containment (PocketShell-io/pocketshell-cli#13). What the
+//! probes proved works is what `systemd-run --scope` already does for every
+//! user service on the box: the child's pid rides the `StartTransientUnit`
+//! call as `PIDs=`, and the manager -- which owns the delegated subtree --
+//! places it at unit start. The worker therefore spawns `systemd-run` with
+//! the workload argv after `--`, and the workload is born inside the scope.
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use super::{
     check_cgroup_cleanup_deadline, command_output_until, current_cgroup_identity,
-    kill_cgroup_path_until, live_cgroup_populated_with, read_counter, signal_cgroup_path_until,
-    system_scope_escape_decision, systemd_run_scope, trusted_system_helper,
-    verify_recorded_cgroup_identity, wait_for_scope_cgroup, CGROUP_V2_ROOT,
+    kill_cgroup_path_until, read_counter, signal_cgroup_path_until, system_scope_escape_decision,
+    systemd_run_scope, trusted_system_helper, verify_recorded_cgroup_identity,
+    wait_for_scope_cgroup, CGROUP_V2_ROOT,
 };
 use crate::{ensure_sigchld_compatible_for_child_management, CgroupIdentity, Limits};
 
@@ -22,11 +35,6 @@ use crate::{ensure_sigchld_compatible_for_child_management, CgroupIdentity, Limi
 pub struct Cgroup {
     pub(crate) path: PathBuf,
     pub(crate) identity: CgroupIdentity,
-    /// Keep exclusive ownership of the unreaped child until release. An
-    /// unreaped child reserves its pid, so Child::kill cannot be redirected
-    /// to a recycled process; clones serialize the single kill+wait through
-    /// this shared slot.
-    pub(crate) anchor: Arc<Mutex<Option<std::process::Child>>>,
     pub(crate) initial_oom_kill: u64,
     /// Which manager bus the scope was created on (`--user` / `--system`),
     /// and the pre-resolved trusted `systemctl`, so teardown can retire the
@@ -35,82 +43,258 @@ pub struct Cgroup {
     pub(crate) systemctl: PathBuf,
 }
 
-pub(crate) fn release_anchor_child(anchor: &mut std::process::Child) -> Result<()> {
-    let pid = anchor.id();
-    match anchor.kill() {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
-        Err(error) => return Err(error).context("kill systemd-run anchor"),
-    }
-    let waited = anchor.wait().context("reap systemd-run anchor");
-    // Released only after the wait has returned, so the worker's descendant
-    // reaper can never consume this status first.
-    crate::worker::disown_child_pid(pid);
-    waited?;
-    Ok(())
+/// Everything a capped launch resolves BEFORE any process is spawned: the
+/// placement decision, the trusted helpers, the unit name, and the kernel
+/// cgroup identity the scope must validate against. Spawning is split off
+/// (`ScopePlan::scope_command` + `ScopePlan::finish_startup`) because the
+/// scope and the workload are one transaction now -- there is no anchor to
+/// create first, so "create the containment domain" and "start the
+/// workload" are the same systemd unit-start.
+#[derive(Debug, Clone)]
+pub struct ScopePlan {
+    pub(crate) id: Uuid,
+    pub(crate) unit: String,
+    pub(crate) bus_flag: &'static str,
+    pub(crate) systemd_run: PathBuf,
+    pub(crate) systemctl: PathBuf,
+    pub(crate) identity: CgroupIdentity,
+    pub(crate) limits: Limits,
 }
 
-pub(crate) fn release_anchor_slot<T>(
-    slot: &mut Option<T>,
-    release: impl FnOnce(&mut T) -> Result<()>,
-) -> Result<()> {
-    if let Some(anchor) = slot.as_mut() {
-        release(anchor)?;
-        *slot = None;
+impl ScopePlan {
+    /// Resolve every decision and helper for a capped launch without
+    /// spawning anything. `Ok(None)` means no limit was requested -- the
+    /// common case -- and the caller spawns the workload directly with no
+    /// scope at all.
+    ///
+    // Which manager owns the new scope is a placement decision with a real
+    // failure-domain consequence (issue #1): the default `--user` scope
+    // lives beneath user@UID.service and dies with the per-user manager's
+    // exit.target; the opt-in `--system` scope (APLEXER_LAUNCH_SYSTEM_SCOPE
+    // = system, probed first via `system_scope_escape_decision`) lives under
+    // the system manager and survives it. Probe failure downgrades to the
+    // user manager with a printed warning -- limits still apply either way;
+    // only the survival domain differs. A failure *after* a successful probe
+    // fails closed exactly as the `--user` path always has: a validated
+    // backend that then breaks is a real error, not a placement preference
+    // to silently swap.
+    pub fn prepare(id: Uuid, limits: &Limits) -> Result<Option<Self>> {
+        ensure_sigchld_compatible_for_child_management()?;
+        if !limits.requested() {
+            return Ok(None);
+        }
+        let system_scope = match system_scope_escape_decision() {
+            Ok(system_scope) => system_scope,
+            Err(error) => {
+                eprintln!(
+                    "warning: APLEXER_LAUNCH_SYSTEM_SCOPE=system requested, but the \
+                     system-scope backend is unavailable ({error:#}); the workload scope \
+                     falls back to the per-user manager and inherits its exit.target \
+                     failure domain"
+                );
+                false
+            }
+        };
+        let bus_flag = if system_scope { "--system" } else { "--user" };
+        // Resolve every executable before starting the scope. Ambient PATH is
+        // intentionally irrelevant: a user-controlled shadow helper must not
+        // choose or fabricate the containment domain we later trust.
+        let systemd_run = trusted_system_helper("systemd-run")?;
+        let systemctl = trusted_system_helper("systemctl")?;
+        let identity = current_cgroup_identity()?;
+        Ok(Some(Self {
+            id,
+            unit: format!("aplexer-workload-{id}"),
+            bus_flag,
+            systemd_run,
+            systemctl,
+            identity,
+            limits: limits.clone(),
+        }))
     }
-    Ok(())
-}
 
-pub(crate) fn cleanup_anchor_after_failure(
-    anchor: &mut std::process::Child,
-    error: anyhow::Error,
-) -> anyhow::Error {
-    match release_anchor_child(anchor) {
-        Ok(()) => error,
-        Err(cleanup_error) => {
-            anyhow!("{error:#}; systemd-run anchor cleanup failed: {cleanup_error:#}")
+    /// `systemd-run <bus> --scope --collect --unit=<unit> -p Delegate=yes`
+    /// plus one unit property per requested limit, with the workload argv
+    /// verbatim after `--` as the scope's initial process. The env, PTY, and
+    /// session setup the caller layers onto this `Command` land on the
+    /// `systemd-run` wrapper and are inherited by its child: for `--scope`,
+    /// systemd-run forks, the parent drives the bus transaction, and the
+    /// forked child -- the pid handed to systemd as `PIDs=` -- execs the argv
+    /// with the wrapper's environment, cwd, and stdio intact.
+    pub fn scope_command(&self, workload: &[OsString]) -> Command {
+        let mut command =
+            systemd_run_scope(self.systemd_run.clone(), self.bus_flag, &self.unit, false);
+        command.arg("-p").arg("Delegate=yes");
+        if let Some(value) = self.limits.memory_bytes {
+            command.arg("-p").arg(format!("MemoryMax={value}"));
+            // Without a swap cap, hitting MemoryMax doesn't OOM-kill the
+            // workload -- it swaps unboundedly instead, which both defeats
+            // the purpose of a memory limit and risks host-wide I/O
+            // pressure that *would* leak into unrelated sessions. A
+            // memory-limited session gets no swap; a configurable swap
+            // allowance is not yet exposed by the CLI.
+            command.arg("-p").arg("MemorySwapMax=0");
+        }
+        if let Some(value) = self.limits.pids {
+            command.arg("-p").arg(format!("TasksMax={value}"));
+        }
+        if let Some(quota) = self.limits.cpu_quota_us {
+            let period = self.limits.cpu_period_us.unwrap_or(100_000);
+            let percent = ((quota as f64 / period as f64) * 100.0).ceil().max(1.0) as u64;
+            command.arg("-p").arg(format!("CPUQuota={percent}%"));
+        }
+        command.arg("--");
+        for arg in workload {
+            command.arg(arg);
+        }
+        command
+    }
+
+    /// Complete the capped launch after the wrapper has been spawned: wait
+    /// for the scope systemd was asked to create, fail closed if the
+    /// delegated controllers a requested limit needs are missing, discover
+    /// the workload leader from the scope's own membership, and pin the OOM
+    /// baseline. Returns the live cgroup and the leader's pid (the worker
+    /// tracks the wrapper as its direct child, but the leader is the pid
+    /// liveness, reclaim, and status reporting are all about).
+    ///
+    /// Any failure here tears the transaction down -- wrapper included --
+    /// and returns the error: an uncapped workload must never survive a
+    /// capped start attempt, so limits fail closed (the scope may hold a
+    /// briefly-running workload while this verdict is being formed; the
+    /// teardown kills it).
+    pub fn finish_startup(&self, supervisor: &mut std::process::Child) -> Result<(Cgroup, u32)> {
+        let outcome = self.verify_and_pin();
+        match outcome {
+            Ok((cgroup, leader)) => Ok((cgroup, leader)),
+            Err(error) => Err(self.failure_teardown(supervisor, error)),
         }
     }
+
+    fn verify_and_pin(&self) -> Result<(Cgroup, u32)> {
+        let path = wait_for_scope_cgroup(
+            self.id,
+            &self.unit,
+            &self.identity,
+            &self.systemctl,
+            self.bus_flag,
+            Duration::from_secs(5),
+        )
+        .context("limits fail closed")?;
+        verify_delegated_controllers(&path, &self.limits)?;
+        let leader = scope_leader_pid(&path, &self.unit)?;
+        let cgroup = Cgroup {
+            path,
+            identity: self.identity.clone(),
+            initial_oom_kill: 0,
+            bus_flag: self.bus_flag,
+            systemctl: self.systemctl.clone(),
+        };
+        let initial_oom_kill = oom_kill_count(&cgroup.path);
+        Ok((
+            Cgroup {
+                initial_oom_kill,
+                ..cgroup
+            },
+            leader,
+        ))
+    }
+
+    /// Kill the wrapper, empty the scope, and retire the unit, folding every
+    /// cleanup failure into the original error. Order matters: the wrapper
+    /// dies first, so a child still waiting for its start signal can never
+    /// start; anything that already exec'd is SIGKILLed through the scope;
+    /// the removal and unit stop are bookkeeping on the way out.
+    fn failure_teardown(
+        &self,
+        supervisor: &mut std::process::Child,
+        error: anyhow::Error,
+    ) -> anyhow::Error {
+        let mut failures = Vec::new();
+        match kill_supervisor_child(supervisor) {
+            Ok(()) => {}
+            Err(cleanup_error) => {
+                failures.push(format!("stop systemd-run wrapper: {cleanup_error:#}"))
+            }
+        }
+        // The authoritative path is known only once the scope query has
+        // succeeded; before that, the unit stop is the best-effort fallback
+        // (KillMode=control-group takes the members with it).
+        if let Ok(path) = self.query_scope_path() {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            if let Err(cleanup_error) = kill_cgroup_path_until(&path, deadline) {
+                failures.push(format!("kill scope members: {cleanup_error:#}"));
+            }
+            let _ = fs::remove_dir(&path);
+        }
+        retire_scope_unit(
+            &self.systemctl,
+            self.bus_flag,
+            &format!("{}.scope", self.unit),
+        );
+        if failures.is_empty() {
+            error
+        } else {
+            anyhow!(
+                "{error:#}; scope teardown failures: {}",
+                failures.join("; ")
+            )
+        }
+    }
+
+    fn query_scope_path(&self) -> Result<PathBuf> {
+        let mut command = Command::new(&self.systemctl);
+        command.args([
+            self.bus_flag,
+            "show",
+            &format!("{}.scope", self.unit),
+            "-p",
+            "ControlGroup",
+            "--value",
+        ]);
+        let output = command_output_until(
+            &mut command,
+            Instant::now() + Duration::from_secs(5),
+            "query systemd scope for teardown",
+        )?;
+        if !output.status.success() {
+            bail!("systemctl show exited with {}", output.status);
+        }
+        let value = std::str::from_utf8(&output.stdout)
+            .context("decode systemd ControlGroup output")?
+            .trim();
+        if value.is_empty() || value == "/" {
+            bail!("scope has no ControlGroup to tear down");
+        }
+        super::control_group_locator(self.id, value)
+    }
 }
 
-/// `systemd-run` for the delegated workload scope: `Delegate=yes` plus one
-/// unit property per requested limit, with a placeholder `sleep infinity`
-/// holding the scope open until the real workload moves in.
-fn workload_scope_command(
-    systemd_run: PathBuf,
-    bus_flag: &str,
-    unit: &str,
-    limits: &Limits,
-    sleep: &Path,
-) -> Command {
-    let mut command = systemd_run_scope(systemd_run, bus_flag, unit, false);
-    command.arg("-p").arg("Delegate=yes");
-    if let Some(value) = limits.memory_bytes {
-        command.arg("-p").arg(format!("MemoryMax={value}"));
-        // Without a swap cap, hitting MemoryMax doesn't OOM-kill the
-        // workload -- it swaps unboundedly instead, which both defeats
-        // the purpose of a memory limit and risks host-wide I/O
-        // pressure that *would* leak into unrelated sessions. A
-        // memory-limited session gets no swap; a configurable swap
-        // allowance is not yet exposed by the CLI.
-        command.arg("-p").arg("MemorySwapMax=0");
+/// The workload leader systemd placed in the scope: the scope's initial --
+/// and at this point only -- member. Polled briefly because the START job
+/// that moves the wrapper's child into the scope completes before the
+/// wrapper's parent exits, but the cgroup directory and its first member
+/// can become visible a beat apart. The leader is the smallest pid present:
+/// members the workload forked in its first milliseconds are strictly
+/// younger than the pid systemd was handed at placement.
+fn scope_leader_pid(path: &Path, unit: &str) -> Result<u32> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(text) = fs::read_to_string(path.join("cgroup.procs")) {
+            let leader = text
+                .split_whitespace()
+                .filter_map(|pid| pid.parse::<u32>().ok())
+                .min();
+            if let Some(leader) = leader {
+                return Ok(leader);
+            }
+        }
+        check_cgroup_cleanup_deadline(
+            deadline,
+            &format!("wait for systemd to place the workload leader of {unit} in its scope"),
+        )?;
+        thread::sleep(Duration::from_millis(10));
     }
-    if let Some(value) = limits.pids {
-        command.arg("-p").arg(format!("TasksMax={value}"));
-    }
-    if let Some(quota) = limits.cpu_quota_us {
-        let period = limits.cpu_period_us.unwrap_or(100_000);
-        let percent = ((quota as f64 / period as f64) * 100.0).ceil().max(1.0) as u64;
-        command.arg("-p").arg(format!("CPUQuota={percent}%"));
-    }
-    command
-        .arg("--")
-        .arg(sleep)
-        .arg("infinity")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    command
 }
 
 /// A scope without the controller a requested limit needs cannot enforce
@@ -133,115 +317,41 @@ fn oom_kill_count(path: &Path) -> u64 {
     read_counter(&path.join("memory.events"), "oom_kill").unwrap_or(0)
 }
 
+/// Kill a spawned wrapper child and reap it, tolerating an already-dead
+/// child (its status may have been collected by an earlier best-effort
+/// pass). The wrapper is a pre-reaper-arming startup child, so a plain
+/// blocking `wait` owns its status exactly once.
+fn kill_supervisor_child(supervisor: &mut std::process::Child) -> Result<()> {
+    match supervisor.kill() {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+        Err(error) => return Err(error).context("kill systemd-run wrapper"),
+    }
+    supervisor.wait().context("reap systemd-run wrapper")?;
+    Ok(())
+}
+
+/// Make the manager forget a scope unit after the direct removal.
+///
+/// `fs::remove_dir` is what guarantees the containment domain is gone, but
+/// it also destroys the manager's watch on the scope's `cgroup.events`
+/// before the manager can observe the scope emptying: the unit never
+/// transitions to inactive, and the `--collect` set at creation never
+/// fires. Every capped session leaked one permanently-"running" unit record
+/// this way (1000+ accumulated in a week in the field;
+/// PocketShell-io/pocketshell-cli#12). A bounded, best-effort `systemctl
+/// stop` makes the manager re-evaluate the unit -- with the cgroup already
+/// gone, the stop completes immediately and the record is unloaded. Like
+/// the removal itself this is bookkeeping, not containment, so failure is
+/// ignored.
+fn retire_scope_unit(systemctl: &Path, bus_flag: &str, unit: &str) {
+    let mut command = Command::new(systemctl);
+    command.args([bus_flag, "stop", unit]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let _ = command_output_until(&mut command, deadline, "retire systemd scope unit");
+}
+
 impl Cgroup {
-    // A worker's own ambient cgroup (inherited from whatever spawned `a start`,
-    // e.g. a tmux pane or SSH session) is never a safe place to nest a
-    // resource-limited child: cgroup v2 refuses to enable controllers in
-    // cgroup.subtree_control while the parent still has processes attached
-    // directly ("no internal process" constraint) -- and the worker, plus
-    // everything else in that ambient session, is exactly such a process.
-    // Writing to memory.max there fails closed with EACCES rather than
-    // applying a limit; forcing it through would risk taking down unrelated
-    // sessions sharing that ambient cgroup, which is the one failure mode
-    // this project exists to prevent.
-    //
-    // Instead we ask systemd-run to create a fresh, independently delegated
-    // scope (a sibling, not a nested child, of the ambient cgroup) and hold
-    // it open with a placeholder process until the real workload can be
-    // moved in.
-    //
-    // Which manager owns the new scope is a placement decision with a real
-    // failure-domain consequence (issue #1): the default `--user` scope
-    // lives beneath user@UID.service and dies with the per-user manager's
-    // exit.target; the opt-in `--system` scope (APLEXER_LAUNCH_SYSTEM_SCOPE
-    // = system, probed first via `system_scope_escape_decision`) lives under
-    // the system manager and survives it. Probe failure downgrades to the
-    // user manager with a printed warning -- limits still apply either way;
-    // only the survival domain differs. A failure *after* a successful probe
-    // (spawn, scope wait, controller delegation) fails closed exactly as the
-    // `--user` path always has: a validated backend that then breaks is a
-    // real error, not a placement preference to silently swap.
-    pub fn create<F>(id: Uuid, limits: &Limits, setup_started: F) -> Result<Option<Self>>
-    where
-        F: FnOnce(),
-    {
-        ensure_sigchld_compatible_for_child_management()?;
-        if !limits.requested() {
-            return Ok(None);
-        }
-        let system_scope = match system_scope_escape_decision() {
-            Ok(system_scope) => system_scope,
-            Err(error) => {
-                eprintln!(
-                    "warning: APLEXER_LAUNCH_SYSTEM_SCOPE=system requested, but the \
-                     system-scope backend is unavailable ({error:#}); the workload scope \
-                     falls back to the per-user manager and inherits its exit.target \
-                     failure domain"
-                );
-                false
-            }
-        };
-        let bus_flag = if system_scope { "--system" } else { "--user" };
-        let identity = current_cgroup_identity()?;
-        // Resolve every executable before starting the scope. Ambient PATH is
-        // intentionally irrelevant: a user-controlled shadow helper must not
-        // choose or fabricate the containment domain we later trust.
-        let systemd_run = trusted_system_helper("systemd-run")?;
-        let systemctl = trusted_system_helper("systemctl")?;
-        let sleep = trusted_system_helper("sleep")?;
-        let unit = format!("aplexer-workload-{id}");
-        let mut anchor = workload_scope_command(systemd_run, bus_flag, &unit, limits, &sleep)
-            .spawn()
-            .context("spawn systemd-run anchor; limits fail closed")?;
-        // The worker waits on this pid itself (`release_anchor_child`), so
-        // register it before anything else in the process can observe it as
-        // a child. See `worker::OWNED_CHILD_PIDS`.
-        crate::worker::own_child_pid(anchor.id());
-        // From this point, systemd may own a scope member outside the worker's
-        // procfs descendant tree. Let the caller preserve recovery evidence
-        // until an authoritative cgroup path has been recorded.
-        setup_started();
-        let path = match wait_for_scope_cgroup(
-            id,
-            &unit,
-            &identity,
-            &systemctl,
-            bus_flag,
-            Duration::from_secs(5),
-        )
-        .context("limits fail closed")
-        .and_then(|path| verify_delegated_controllers(&path, limits).map(|()| path))
-        {
-            Ok(path) => path,
-            Err(error) => return Err(cleanup_anchor_after_failure(&mut anchor, error)),
-        };
-        let initial_oom_kill = oom_kill_count(&path);
-        Ok(Some(Self {
-            path,
-            identity,
-            anchor: Arc::new(Mutex::new(Some(anchor))),
-            initial_oom_kill,
-            bus_flag,
-            systemctl,
-        }))
-    }
-    /// Opens `cgroup.procs` for writing so the not-yet-exec'd workload child
-    /// can move itself into the cgroup from inside a `pre_exec` closure
-    /// (any process may write its own pid into a cgroup it has access to;
-    /// this needs no cooperation from the parent after fork).
-    ///
-    /// We deliberately do not have the parent write the child's pid into
-    /// `cgroup.procs` after `Command::spawn()` returns: `spawn()` itself
-    /// blocks in the parent until the child either execs or reports a
-    /// pre_exec failure, so any post-spawn, pre-exec rendezvous between
-    /// parent and child (e.g. a gate the child waits on) deadlocks --
-    /// the parent can never reach the code that would release it.
-    pub fn open_procs(&self) -> Result<File> {
-        OpenOptions::new()
-            .write(true)
-            .open(self.path.join("cgroup.procs"))
-            .with_context(|| format!("open {}/cgroup.procs", self.path.display()))
-    }
     pub fn locator(&self) -> &Path {
         &self.path
     }
@@ -261,17 +371,6 @@ impl Cgroup {
     pub fn identity(&self) -> &CgroupIdentity {
         &self.identity
     }
-    /// Kills the placeholder process that was keeping the delegated scope
-    /// alive. Call this only after the real workload pid has been added to
-    /// the cgroup, so the cgroup never goes empty (and gets garbage
-    /// collected by systemd) before the real workload takes residence.
-    pub fn release_anchor(&self) -> Result<()> {
-        let mut slot = self
-            .anchor
-            .lock()
-            .map_err(|_| anyhow!("systemd-run anchor lock poisoned"))?;
-        release_anchor_slot(&mut slot, release_anchor_child)
-    }
     /// The path, once the live kernel domain has been re-pinned to the one
     /// this cgroup was created in: the precondition for every destructive
     /// pass over its members.
@@ -287,7 +386,7 @@ impl Cgroup {
         kill_cgroup_path_until(self.recovered_path(deadline)?, deadline)
     }
     pub fn populated(&self) -> Result<bool> {
-        live_cgroup_populated_with(&self.identity, || {
+        super::live_cgroup_populated_with(&self.identity, || {
             read_counter(&self.path.join("cgroup.events"), "populated")
         })
     }
@@ -319,31 +418,174 @@ impl Cgroup {
         })
     }
     pub fn cleanup(&self) {
-        let _ = self.release_anchor();
         let _ = fs::remove_dir(&self.path);
-        self.retire_unit();
+        retire_scope_unit(&self.systemctl, self.bus_flag, &self.unit_for_retire());
+    }
+    fn unit_for_retire(&self) -> String {
+        self.path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+}
+
+/// `a doctor`'s delegated-scope probe: exercise the exact launch
+/// implementation end to end with a short-lived placeholder workload --
+/// trusted helper resolution, the scope transaction, controller delegation,
+/// and member placement -- by launching `sleep 2` as the scope's initial
+/// process and letting it exit on its own. No existing cgroup or workload
+/// is modified; `--collect` reaps the probe scope once the placeholder
+/// exits.
+pub fn probe_placeholder_scope(limits: &Limits) -> Result<()> {
+    let id = Uuid::new_v4();
+    let plan = prepare_scope_plan(id, limits)?
+        .ok_or_else(|| anyhow!("limit probe prepared no scope despite requested limits"))?;
+    let sleep = trusted_system_helper("sleep")?;
+    let workload = vec![sleep.into_os_string(), OsString::from("2")];
+    let mut command = plan.scope_command(&workload);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut supervisor = command
+        .spawn()
+        .context("spawn systemd-run probe scope; limits fail closed")?;
+    let probe = (|| -> Result<()> {
+        let (cgroup, _leader) = plan.finish_startup(&mut supervisor)?;
+        // The launch path verifies memory and pids delegation; the doctor's
+        // bar is stricter -- it advertises cpu too, so prove that file as
+        // well rather than let `a doctor` say "ok" past a missing one.
+        if limits.cpu_quota_us.is_some() && !cgroup.locator().join("cpu.max").is_file() {
+            bail!(
+                "delegated scope is missing {}",
+                cgroup.locator().join("cpu.max").display()
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match supervisor.try_wait()? {
+                Some(status) if status.success() => break,
+                Some(status) => bail!("probe scope's placeholder exited with {status}"),
+                None if Instant::now() >= deadline => {
+                    bail!("probe scope's placeholder did not exit within 10s")
+                }
+                None => thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        cgroup.cleanup();
+        Ok(())
+    })();
+    if probe.is_err() {
+        // No-op once the wrapper has already been reaped by a teardown pass.
+        let _ = kill_supervisor_child(&mut supervisor);
+    }
+    probe
+}
+
+/// Resolve every decision and helper for a capped launch without spawning
+/// anything; see [`ScopePlan::prepare`].
+pub fn prepare_scope_plan(id: Uuid, limits: &Limits) -> Result<Option<ScopePlan>> {
+    ScopePlan::prepare(id, limits)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn plan_with_limits(limits: Limits) -> ScopePlan {
+        ScopePlan {
+            id: Uuid::new_v4(),
+            unit: "aplexer-workload-test".into(),
+            bus_flag: "--user",
+            systemd_run: PathBuf::from("/usr/bin/systemd-run"),
+            systemctl: PathBuf::from("/usr/bin/systemctl"),
+            identity: current_cgroup_identity().unwrap(),
+            limits,
+        }
     }
 
-    /// Make the manager forget the scope unit after the direct removal.
-    ///
-    /// `fs::remove_dir` above is what guarantees the containment domain is
-    /// gone, but it also destroys the manager's watch on the scope's
-    /// `cgroup.events` before the manager can observe the scope emptying:
-    /// the unit never transitions to inactive, and the `--collect` set at
-    /// creation never fires. Every capped session leaked one
-    /// permanently-"running" unit record this way (1000+ accumulated in a
-    /// week in the field; PocketShell-io/pocketshell-cli#12). A bounded,
-    /// best-effort `systemctl stop` makes the manager re-evaluate the
-    /// unit -- with the cgroup already gone, the stop completes
-    /// immediately and the record is unloaded. Like the removal itself
-    /// this is bookkeeping, not containment, so failure is ignored.
-    fn retire_unit(&self) {
-        let Some(unit) = self.path.file_name().and_then(|name| name.to_str()) else {
-            return;
+    #[test]
+    pub(super) fn scope_command_wraps_the_workload_verbatim() {
+        let limits = Limits {
+            memory_bytes: Some(64 * 1024 * 1024),
+            pids: Some(16),
+            cpu_quota_us: Some(10_000),
+            cpu_period_us: Some(100_000),
         };
-        let mut command = Command::new(&self.systemctl);
-        command.args([self.bus_flag, "stop", unit]);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let _ = command_output_until(&mut command, deadline, "retire systemd scope unit");
+        let plan = plan_with_limits(limits);
+        let workload = vec![OsString::from("/bin/bash"), OsString::from("-l")];
+        let command = plan.scope_command(&workload);
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let separator = args
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("-- separator");
+        assert_eq!(
+            &args[..separator],
+            &[
+                "--user",
+                "--scope",
+                "--collect",
+                "--unit=aplexer-workload-test",
+                "-p",
+                "Delegate=yes",
+                "-p",
+                "MemoryMax=67108864",
+                "-p",
+                "MemorySwapMax=0",
+                "-p",
+                "TasksMax=16",
+                "-p",
+                "CPUQuota=10%",
+            ],
+            "scope properties must stay launch-shaped: {args:?}"
+        );
+        assert_eq!(&args[separator + 1..], &["/bin/bash", "-l"]);
+        assert_eq!(
+            command.get_program(),
+            "/usr/bin/systemd-run",
+            "the trusted helper, not a PATH lookup, must be the program"
+        );
+    }
+
+    #[test]
+    pub(super) fn controller_verification_fails_closed_on_missing_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let limits = Limits {
+            memory_bytes: Some(1024),
+            pids: None,
+            cpu_quota_us: None,
+            cpu_period_us: None,
+        };
+        assert!(
+            verify_delegated_controllers(directory.path(), &limits).is_err(),
+            "a scope without memory.max must fail a memory-limited launch"
+        );
+        fs::write(directory.path().join("memory.max"), b"max\n").unwrap();
+        assert!(
+            verify_delegated_controllers(directory.path(), &limits).is_ok(),
+            "with memory.max present the memory limit is enforceable"
+        );
+    }
+
+    #[test]
+    pub(super) fn scope_leader_is_the_smallest_member_pid() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("cgroup.procs"), b"4100 42 7\n").unwrap();
+        let leader = scope_leader_pid(directory.path(), "aplexer-workload-test").unwrap();
+        assert_eq!(leader, 7, "the placement pid predates any forked member");
+
+        let empty = tempfile::tempdir().unwrap();
+        fs::write(empty.path().join("cgroup.procs"), b"\n").unwrap();
+        let error = scope_leader_pid(empty.path(), "aplexer-workload-test");
+        assert!(
+            error.is_err(),
+            "an unpopulated scope must not yield a leader pid"
+        );
     }
 }

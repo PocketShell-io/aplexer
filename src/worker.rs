@@ -157,7 +157,7 @@ pub fn run_worker(id: Uuid, initial_size: Option<(u16, u16)>) -> Result<()> {
     normalize_sigchld_for_child_management()?;
     install_termination_handlers()?;
     // This is process-wide and must precede every helper or workload spawn.
-    // In particular, Cgroup::create invokes systemd-run and a waiter thread;
+    // In particular, the workload-scope resolution invokes systemd-run helpers;
     // enabling the subreaper afterwards leaves a startup-time escape window.
     enable_child_subreaper()?;
     let paths = Paths::discover()?;

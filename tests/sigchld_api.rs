@@ -3,7 +3,7 @@
 //! process-wide.
 
 use aplexer::api::{start_session, StartRequest};
-use aplexer::{Cgroup, Limits, Paths};
+use aplexer::{Limits, Paths, ScopePlan};
 use std::collections::BTreeMap;
 use std::env;
 use std::path::PathBuf;
@@ -182,7 +182,7 @@ fn exercise_child(mode: &str) {
         _ => unreachable!(),
     }
 
-    let cgroup = Cgroup::create(Uuid::new_v4(), &Limits::default(), || {});
+    let cgroup = ScopePlan::prepare(Uuid::new_v4(), &Limits::default());
     match mode {
         "custom" => assert!(cgroup.unwrap().is_none()),
         "ignored" => assert!(
