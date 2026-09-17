@@ -9,7 +9,7 @@ that keep running when you detach, survive a dropped connection, and stay
 addressable by *project* and *name* from any terminal.
 
 [![PyPI](https://img.shields.io/pypi/v/aplexer)](https://pypi.org/project/aplexer/)
-[![Python](https://img.shields.io/pypi/pyversions/aplexer)](https://pypi.org/project/aplexer/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/aplexer/)
 [![CI](https://github.com/alexeygrigorev/aplexer/actions/workflows/ci.yml/badge.svg)](https://github.com/alexeygrigorev/aplexer/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-fcc624?logo=linux&logoColor=black)](#requirements)
