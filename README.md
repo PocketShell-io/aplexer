@@ -2,10 +2,10 @@
 
 # aplexer
 
-**Durable PTY sessions for coding agents — no daemon required.**
+**Durable PTY sessions for coding agents - no daemon required.**
 
-Run `claude`, `codex`, `gemini`, a plain shell, or any command in sessions
-that keep running when you detach, survive a dropped connection, and stay
+Run `claude`, `codex`, `gemini`, a plain shell, or any command. Sessions
+keep running when you detach, survive a dropped connection, and stay
 addressable by *project* and *name* from any terminal.
 
 [![PyPI](https://img.shields.io/pypi/v/aplexer)](https://pypi.org/project/aplexer/)
@@ -16,20 +16,20 @@ addressable by *project* and *name* from any terminal.
 
 </div>
 
----
-
 aplexer is a Linux-native, agent-aware alternative to tmux. Instead of
-numbered panes on one server, you get one lightweight worker per session —
-each with its own PTY, socket, and scrollback history — grouped by the
-directory they run in (the **workspace**) and named with a **tag** you pick.
-Sessions can be capped with cgroup-v2 resource limits, driven
-programmatically (`send`, `capture`, a Python client), and can even talk to
+numbered panes on one server, you get one lightweight worker per session,
+each with its own PTY, socket, and scrollback history. Sessions are grouped
+by the directory they run in (the **workspace**) and named with a **tag**
+you pick. You can cap them with cgroup-v2 resource limits, drive them
+programmatically (`send`, `capture`, a Python client), and let them talk to
 each other.
 
-## Why aplexer?
+## Why aplexer
+
+Five things it does differently:
 
 - **Sessions outlive your terminal.** Detach, close the laptop, SSH back in
-  from elsewhere — the workload is still there, scrollback intact.
+  from elsewhere - the workload is still there, scrollback intact.
 - **Nothing to babysit.** No daemon, no server process. A worker exists only
   while its session does.
 - **Built for agents, not just shells.** Sessions know which engine they run,
@@ -42,12 +42,16 @@ each other.
 
 ## Requirements
 
+You need:
+
 - Linux (x86_64 or aarch64)
 - Python 3.11+ for the pip install (the binaries are precompiled)
 - Optional: a systemd user session with cgroup-v2 delegation for `--memory`
-  / `--pids` / `--cpu-*` limits — everything else works without it
+  / `--pids` / `--cpu-*` limits - everything else works without it
 
 ## Install
+
+The package is on PyPI:
 
 ```bash
 python -m pip install aplexer
@@ -58,7 +62,7 @@ That gives you three things:
 | What | Where you'll see it |
 |---|---|
 | the `a` command | your everyday interface |
-| the `aplexer` worker binary | started for you, not for you |
+| the `aplexer` worker binary | the background process behind each session - `a` launches it, you never invoke it yourself |
 | the `aplexer` Python package | `from aplexer import Client` |
 
 <details>
@@ -90,6 +94,8 @@ a completions fish > ~/.config/fish/completions/a.fish
 
 ## Quick start
 
+Three commands cover the whole loop:
+
 ```bash
 # 1. Start a session in the current directory (a shell, tagged "main")
 a start
@@ -101,12 +107,12 @@ a list
 a attach main
 ```
 
-While attached, press **`Ctrl-b` then `d`** to detach — whatever was running
+While attached, press **`Ctrl-b` then `d`** to detach - whatever was running
 keeps running. That's the whole loop.
 
-You can skip step 1 entirely: `a -` (read it as *"here"*) creates a session
+You can skip step 1 entirely. `a -` (read it as *"here"*) creates a session
 on the spot and attaches to it, or attaches if one already exists. Close your
-terminal, reopen it later, run `a -` again — you're back where you left off.
+terminal, reopen it later, run `a -` again - you're back where you left off.
 
 ## Everyday shortcuts
 
@@ -128,24 +134,20 @@ a new --engine codex --tag refactor
 
 `a list` looks like this:
 
-```
-[3] ~/git/dtc-website (◐ running 3/5)
-├──  1  main           claude           ● running
-├──  2  illustrations  codex            ● running
-├──  3  make-run       shell            ● running
-├──  4  layout         shell            ✗ broken
-└──  5  clean-code     shell            ○ exited
-```
+<p align="center">
+  <img src="assets/a-list.png" alt="Output of a list: each workspace with its numbered sessions, engine, state, and last activity" width="720">
+</p>
 
 Those bracketed numbers on the left are what `a 3` and `a 3 review` refer to.
 
 ## While attached
 
-`Ctrl-b` is the prefix key, just like tmux. The bindings you'll actually use:
+`Ctrl-b` is the prefix key, just like tmux, and these are the bindings you'll
+actually use:
 
 | Keys | Does |
 |---|---|
-| `Ctrl-b` `d` | detach — the workload keeps running |
+| `Ctrl-b` `d` | detach - the workload keeps running |
 | `Ctrl-b` `←` / `→` | previous / next session in this workspace |
 | `Ctrl-b` `↑` / `↓` | previous / next workspace |
 | `Ctrl-b` `1`–`9` | jump to the numbered session in the status bar |
@@ -154,15 +156,15 @@ Those bracketed numbers on the left are what `a 3` and `a 3 review` refer to.
 | `Ctrl-b` `R` | rename this session's tag |
 | `Ctrl-b` `?` | show the full key reference on screen |
 
-The mouse wheel scrolls back too (unless the running program wants the mouse).
-Hold `Ctrl-b` briefly and the whole cheat sheet appears.
+The mouse wheel scrolls back too (unless the running program wants the mouse),
+and holding `Ctrl-b` briefly puts the whole cheat sheet on screen.
 
 <details>
 <summary><strong>Full key reference</strong></summary>
 
 <!-- Keep in sync with `a keys` -->
 
-```
+```text
 Right / Left  next / previous session in this workspace
 Down / Up     next / previous workspace (at its most recent session)
 n             create another session in this workspace and switch to it
@@ -178,11 +180,11 @@ R             rename this session's tag (Enter confirms, Esc cancels)
 ?             show this reference in the status bar
 ```
 
-In the scrollback pager: `PgUp`/`PgDn` or `Space` a screen at a time,
+In the scrollback pager, `PgUp`/`PgDn` or `Space` scrolls a screen at a time,
 `k`/`j` or arrows a line at a time, `g`/`G` for top/bottom, `q` or `Esc` back
-to live. Keys never reach the session while paging — press `i` to hand the
-keyboard over anyway. Scrollback defaults to 2000 lines
-(`APLEXER_HISTORY_LIMIT`); `APLEXER_MOUSE=off` gives mouse selection back to
+to live. Keys never reach the session while paging - press `i` to send your
+typing to the session anyway. Scrollback defaults to 2000 lines
+(`APLEXER_HISTORY_LIMIT`). `APLEXER_MOUSE=off` gives mouse selection back to
 your terminal.
 
 </details>
@@ -207,6 +209,8 @@ a status review
 
 ## Session lifecycle
 
+The lifecycle is four commands:
+
 ```bash
 a kill review        # signal the workload and clean up its records
 a forget <selector>  # drop records of a dead session you don't care about
@@ -215,16 +219,16 @@ a rename review --tag blocked   # change a session's tag
 ```
 
 A session is addressed as a UUID (or prefix), a `workspace:tag` pair, or a
-bare tag in the current workspace. What happens when the tag is already alive
-depends on how you ask: `a -` attaches to the existing session, `a new`
-claims the next free `<tag>-2`, `<tag>-3`, … suffix, and plain `a start`
-keeps the strict create-by-exact-tag contract and fails.
+bare tag in the current workspace. When the tag is already alive, what
+happens next depends on how you ask. `a -` attaches to the existing session,
+`a new` claims the next free `<tag>-2` suffix, and plain `a start` demands
+the exact tag and fails when it's taken.
 
 ## Engines, profiles & configuration
 
 An **engine** is a command template: a coding agent like `claude`, `codex`,
 `gemini`, `grok`, or `opencode`, or the plain `shell`. aplexer discovers
-agents on your `PATH` automatically — run `a engines` to see what it found.
+agents on your `PATH` automatically - run `a engines` to see what it found.
 A **profile** is a named variant of an engine (another account, another
 config), listed with `a profiles`.
 
@@ -258,7 +262,7 @@ a start --memory 512M --pids 100
 a start --engine codex --memory 2G
 ```
 
-Check that your environment supports this with `a doctor` — it verifies the
+Check that your environment supports this with `a doctor` - it verifies the
 cgroup controls end to end and tells you exactly what's missing if not.
 
 ## Agent awareness
@@ -271,7 +275,7 @@ a init --check
 ```
 
 With hooks installed, `a list` and the machine-readable event stream reflect
-what each agent is actually doing — grinding away, waiting on you, or idle.
+what each agent is actually doing - grinding away, waiting on you, or idle.
 
 ```bash
 a whoami                    # your session's identity (workspace/tag/engine/profile)
@@ -282,7 +286,7 @@ a watch --jsonl             # stream lifecycle events as they happen
 
 ## Messaging between sessions
 
-Sibling sessions in a workspace share a durable inbox — handy when one agent
+Sibling sessions in a workspace share a durable inbox - handy when one agent
 needs to hand off to another:
 
 ```bash
@@ -362,15 +366,9 @@ and `APLEXER_WORKER` identify it to tools like `a whoami`.
 
 ## Troubleshooting
 
-Start with:
-
-```bash
-a doctor
-```
-
-It checks the runtime and state directories, socket paths, cgroup-v2
-delegation, config, and session records, and suggests the fix for anything
-it flags (most commonly `a prune` for stale records).
+Start with `a doctor`, which checks the runtime and state directories, socket
+paths, cgroup-v2 delegation, config, and session records. When something
+fails, it suggests the fix (most commonly `a prune` for stale records).
 
 ## Development
 
@@ -385,4 +383,4 @@ The Rust core lives in `src/`, the thin Python CLI wrapper in
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+Licensed under Apache-2.0 - see [LICENSE](LICENSE).
