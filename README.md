@@ -1,509 +1,388 @@
+<div align="center">
+
 # aplexer
 
-`aplexer` is an **agent multiplexer** — an agent-first alternative to tmux for running coding agents (Claude, Codex, Gemini, Grok) and shells side by side. tmux is a generic terminal grid that doesn't know what's running in a pane; aplexer is built around the idea that an AI agent is a first-class thing to run, address, isolate, and talk to, not an afterthought bolted onto a pane. The short `a` binary is the user-facing CLI; `aplexer` is the per-session worker executable.
+**Durable PTY sessions for coding agents — no daemon required.**
 
-## What's different from tmux
+Run `claude`, `codex`, `gemini`, a plain shell, or any command in sessions
+that keep running when you detach, survive a dropped connection, and stay
+addressable by *project* and *name* from any terminal.
 
-- **Sessions are `workspace + tag + engine + profile`, not flat pane names.** `~/git/pocketshell:review` running `codex/zai` is a real, addressable identity (spec.md §§1–3) — `a list` groups sessions by workspace and shows engine/profile for each, instead of a flat list of pane titles you have to keep straight yourself. And when a session is started from *inside* another session (an agent spawning `a start`), the child records its parent (`parent_session` in the record and every `--json` payload; `↳ parent` in `a list`, a `parent` line in `a status`), so agent-spawned sessions stay traceable to where they came from.
-- **Aplexer owns how each agent actually launches**, not just how it's displayed. Engine definitions (spec.md §8) capture the real launch command, permission-bypass flags, and profile config-dir wiring per engine — `a start --engine claude --profile zlaude` starts Claude routed through its Z.AI profile (the right `CLAUDE_CONFIG_DIR` set automatically), instead of a hand-assembled command line you have to get right every time. See [Engines and profiles](#engines-and-profiles).
-- **Every session is independently resource-isolated**, because agent workloads — a runaway test loop, an agent that spawns its own build — are exactly the kind of thing that eats memory unpredictably. A `--memory`-capped session gets OOM-killed on its own by the kernel's real cgroup OOM killer, without taking any other session down. See [Resource isolation](#resource-isolation) and [Daemonless vs. tmux](#daemonless-vs-tmux) below.
-- **Agents can find out where they are and talk to each other.** `a whoami` lets an agent (or a hook, or a script) running inside a session ask "which session am I, what engine/profile, what workspace" — there's no tmux equivalent because a tmux pane has no agent identity to ask about. `a message` gives sibling agents in the same workspace a durable inbox plus direct-to-pane delivery for real handoffs ("backend's done, see api.md"). See [Inter-agent messaging](#inter-agent-messaging).
+[![PyPI](https://img.shields.io/pypi/v/aplexer)](https://pypi.org/project/aplexer/)
+[![Python](https://img.shields.io/pypi/pyversions/aplexer)](https://pypi.org/project/aplexer/)
+[![CI](https://github.com/alexeygrigorev/aplexer/actions/workflows/ci.yml/badge.svg)](https://github.com/alexeygrigorev/aplexer/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux-fcc624?logo=linux&logoColor=black)](#requirements)
 
-None of this gives up what tmux is actually good at operationally — persistent, reattachable sessions that survive a disconnected client (see [First session](#first-session)) — aplexer just refuses to also be a shared failure domain while doing it, which is enough of an architectural difference to get its own section: **one session may fail, OOM, or be killed without causing unrelated sessions to disappear.** See [Daemonless vs. tmux](#daemonless-vs-tmux).
+</div>
 
-## Goals
+---
 
-- **Standalone tmux / `tmuxctl` replacement**, usable on its own for plain shells too — see [What's different from tmux](#whats-different-from-tmux) above and [spec.md](spec.md) sections 1–2 for the full model.
-- **Backing runtime for two sibling client projects**, also cloned under `~/git`:
-  - [pocketshell](https://github.com/alexeygrigorev/pocketshell) — a voice-first, tmux-native, agent-aware Android SSH client. It's meant to move off owning tmux session lifecycle / `tmuxctl` wrappers / agent engine discovery itself and instead become an aplexer client (see [spec.md](spec.md) section 22).
-  - [pocketshell-electron](https://github.com/alexeygrigorev/pocketshell-electron) — a desktop **Electron** port of PocketShell (Vue 3 + Vite + `ssh2` + `xterm.js`), the keyboard-first desktop companion to PocketShell Android. It integrates with tmux today; aplexer is intended to be its session runtime as well. (Note: an earlier, unrelated desktop project, `pocketshell-desktop`, a VS Code fork, is now archived — this is the active one.)
+aplexer is a Linux-native, agent-aware alternative to tmux. Instead of
+numbered panes on one server, you get one lightweight worker per session —
+each with its own PTY, socket, and scrollback history — grouped by the
+directory they run in (the **workspace**) and named with a **tag** you pick.
+Sessions can be capped with cgroup-v2 resource limits, driven
+programmatically (`send`, `capture`, a Python client), and can even talk to
+each other.
 
-## Build
+## Why aplexer?
+
+- **Sessions outlive your terminal.** Detach, close the laptop, SSH back in
+  from elsewhere — the workload is still there, scrollback intact.
+- **Nothing to babysit.** No daemon, no server process. A worker exists only
+  while its session does.
+- **Built for agents, not just shells.** Sessions know which engine they run,
+  report *working / waiting / idle* state via agent hooks, and can message
+  sibling sessions in the same workspace.
+- **Human *and* machine friendly.** Every command takes `--json`, and
+  selectors like `myrepo:review` work the same for you and your scripts.
+- **Optional resource isolation.** Give a runaway agent a 2 GB memory cap and
+  a process limit with two flags.
+
+## Requirements
+
+- Linux (x86_64 or aarch64)
+- Python 3.11+ for the pip install (the binaries are precompiled)
+- Optional: a systemd user session with cgroup-v2 delegation for `--memory`
+  / `--pids` / `--cpu-*` limits — everything else works without it
+
+## Install
 
 ```bash
-cargo build --release --bins
-install -m 0755 target/release/a target/release/aplexer ~/.local/bin/
+python -m pip install aplexer
 ```
 
-Rust 1.85 or newer is recommended. Runtime state defaults to `$XDG_RUNTIME_DIR/aplexer`; durable records and bounded output history default to `$XDG_STATE_HOME/aplexer` (or `~/.local/state/aplexer`). Override these with `APLEXER_RUNTIME_DIR`, `APLEXER_STATE_DIR`, and `APLEXER_CONFIG`.
+That gives you three things:
 
-## Shell completions
+| What | Where you'll see it |
+|---|---|
+| the `a` command | your everyday interface |
+| the `aplexer` worker binary | started for you, not for you |
+| the `aplexer` Python package | `from aplexer import Client` |
 
-For bash, source a self-updating script that completes subcommands and flags **plus live values** — session selectors (`workspace:tag`) and tags for `attach`/`status`/`kill`/`send`/…, engine ids for `--engine`, profile ids for `--profile`. The hook re-runs `a` itself on every TAB, so candidates always match the running sessions:
+<details>
+<summary><strong>Install from source</strong> (Rust 1.85+)</summary>
 
 ```bash
-# ~/.bashrc
-source <(COMPLETE=bash a)
+git clone https://github.com/alexeygrigorev/aplexer
+cd aplexer
+cargo install --path .   # puts `a` and `aplexer` on your PATH
 ```
 
-`a completions <shell>` prints a static script instead, for `bash`, `zsh`, `fish`, `elvish`, and `powershell` (via [`clap_complete`](https://docs.rs/clap_complete)). Static scripts know subcommands and flags only, but need no per-TAB callback:
+</details>
+
+<details>
+<summary><strong>Shell completions</strong></summary>
 
 ```bash
-# bash (per-user; requires the bash-completion package to auto-load it)
-mkdir -p ~/.local/share/bash-completion/completions
+# bash: static script, or `source <(COMPLETE=bash a)` for live completions
 a completions bash > ~/.local/share/bash-completion/completions/a
 
-# zsh
-mkdir -p ~/.zfunc
-a completions zsh > ~/.zfunc/_a
-# then, before `compinit` in ~/.zshrc:
-#   fpath+=(~/.zfunc)
+# zsh: restart the shell afterwards so compinit picks it up
+a completions zsh > "${fpath[1]}/_a"
 
-# fish (auto-loaded, no extra config needed)
+# fish
 a completions fish > ~/.config/fish/completions/a.fish
 ```
 
-## First session
+</details>
+
+## Quick start
 
 ```bash
-a start --workspace "$PWD" --tag shell -- /bin/bash -l
+# 1. Start a session in the current directory (a shell, tagged "main")
+a start
+
+# 2. See every session, grouped by workspace
 a list
-a attach --workspace "$PWD" --tag shell
-# Ctrl-b d detaches without terminating the workload.
+
+# 3. Attach to it
+a attach main
 ```
 
-**Scrolling back.** Attach holds the host terminal on the alternate screen, so the `a` session list (and anything else on the primary screen) stays frozen underneath and cannot mix into the live view when you scroll. Wheel / Shift+PageUp never block typing. If the live screen itself looks wrong, **Ctrl-b r** repaints it from the session's current screen. Output from while you were detached is `a capture --bytes N | less -R`. On detach the primary screen — and its history — comes back.
+While attached, press **`Ctrl-b` then `d`** to detach — whatever was running
+keeps running. That's the whole loop.
 
-The canonical identity printed by `start` is a UUID. Commands accept a full UUID, an unambiguous prefix, or `--workspace PATH --tag TAG`. Core commands include `start`, `list`/`snapshot`, `attach`, `send`, `capture`, `status`, `kill`, `forget`, `rename`, `engines`, `profiles`, `watch`, and `doctor`.
+You can skip step 1 entirely: `a -` (read it as *"here"*) creates a session
+on the spot and attaches to it, or attaches if one already exists. Close your
+terminal, reopen it later, run `a -` again — you're back where you left off.
 
-`a snapshot --json` returns a bare array in stable newest-first creation order.
-It has no enclosing object or global generation, and it is not an atomic view
-across independently updating session workers.
+## Everyday shortcuts
 
-Every `a list --json` / `a snapshot` row and every `a status --json` object
-carries `agent`: which coding agent (`claude`, `codex`, `opencode`, `grok`, or
-`null`) aplexer can see running inside the session right now, detected at
-query time from the workload's descendant process tree rather than from
-configuration. A session is usually `engine: "shell"` with the agent started
-by hand inside it, so `engine` cannot answer that question; nothing is
-persisted, so the answer cannot go stale. Alongside it, `agent_profile`
-names which of that agent's configured variations it is running as — a
-profile id (`zcodex`, `godex`, …) resolved from the agent process's own
-environment (`CODEX_HOME`/`CLAUDE_CONFIG_DIR`) or from a variation binary
-the config defines, or `"default"` for the engine's own config (`null`
-exactly when `agent` is). The TTY list shows the same fact as
-`codex/zcodex` in the engine column.
-
-**Reattach repaints the live screen, tmux-style.** The worker feeds every PTY byte through a terminal-state model continuously — attached or not — so `a attach` renders *the screen as it is right now* (cursor position, colors, alternate screen, bracketed paste and mouse modes, scroll margins) rather than replaying a tail of raw byte history. Reattaching to a running full-screen agent TUI puts it back exactly where the agent thinks it is, instead of leaving a stale cursor and a half-drawn frame, and the payload is a few hundred bytes to a few KB instead of a fixed 32 KB. `a attach --history-bytes N` is the escape hatch back to the old raw-tail replay (byte-exact scripted consumers, or seeding your terminal's native scrollback). See [docs/terminal-state-design.md](docs/terminal-state-design.md).
-
-**Concurrent attaches share one live terminal.** Input from every attached device goes to the same PTY, and every byte the workload emits is fanned out to every attached device, so text entered on device B is visible on device A. For differently sized devices, aplexer follows tmux's default `window-size=latest` policy: the newly attached, most recently typing, or most recently resized device controls the PTY size; when it detaches, the most recently active remaining device takes over. Unlike tmux, aplexer does not yet render a clipped/padded viewport separately for each inactive client, so a passive differently sized terminal may look clipped until it becomes active and the workload handles `SIGWINCH`.
+aplexer's most common moves are one or two words long:
 
 ```bash
-a send --workspace "$PWD" --tag shell --enter 'printf "hello\\n"'
-a capture --workspace "$PWD" --tag shell
-a capture --workspace "$PWD" --tag shell --screen --plain   # current screen as text
-a status --workspace "$PWD" --tag shell
-a kill --workspace "$PWD" --tag shell --signal TERM --grace-ms 2000
+a                 # sessions at a glance (same as `a list`)
+a -               # create-or-attach session "main" right here
+a -review         # create-or-attach a session tagged "review" right here
+a - codex review  # create-or-attach codex, tagged "review"
+
+a 2               # attach to workspace #2 from `a list`
+a 2 review        # attach to "review" in workspace #2
+a open review     # attach by tag in the current workspace
+
+a new             # always a fresh session here, attached
+a new --engine codex --tag refactor
 ```
 
-Output capture is byte-preserving. `send --stdin` and the Python API also transport bytes directly rather than asking a shell to reinterpret them. `capture --screen` asks for the live screen instead of the byte history: as paintable escape sequences by default, or as plain text with `--plain`. With `--json`, capture returns `{ "id": "...", "bytes": N, "encoding": "base64", "data": "..." }`; `utf8` is added as a convenience only when the captured bytes are valid UTF-8.
+`a list` looks like this:
 
-## Terminal-first human CLI
-
-The UUID/--workspace/--tag forms above are the automation contract and never change. At a real terminal, the same model is also reachable through a task-shaped vocabulary — see [docs/cli-ux.md](docs/cli-ux.md) for the full design:
-
-```console
-a                         sessions at a glance (workspaces, states, what needs you)
-a here                    create or reattach the main session in this directory
-a here codex review       create or reattach Codex, tagged review
-a open review             attach by tag in the current workspace
-a new                     another fresh session in this workspace, attached
-                          (tag already live? it takes the next free main-2, main-3, …)
-a new --engine shell      start and attach, with start's full flag surface
-a current                 which session is this shell inside?
-a keys                    the attach-mode key reference
+```
+[3] ~/git/dtc-website (◐ running 3/5)
+├──  1  main           claude           ● running
+├──  2  illustrations  codex            ● running
+├──  3  make-run       shell            ● running
+├──  4  layout         shell            ✗ broken
+└──  5  clean-code     shell            ○ exited
 ```
 
-`a list --sort name|created|accessed|activity` reorders the workspace tree (newest first for the time keys). The choice is remembered, so the `[N]` numbers `a N` uses stay the ones you just saw. Relative times use two units when they help (`5d 5h ago`, `5h 1m ago`).
+Those bracketed numbers on the left are what `a 3` and `a 3 review` refer to.
 
-`a 2`, `a 2 review`, and `a - [engine [tag]]` keep working as the compact forms of the same operations. The create verbs split cleanly: `here`/`a -` are **create-or-attach** (a live session with that tag is reattached), `new` is **always creates** (`--fresh` on `start`: a live holder moves the start to the next free `<tag>-2` suffix instead of refusing). The same `--fresh` flag is the machine path — `a --json start --workspace W --tag main --fresh` returns the record with the tag it actually claimed, so a client can add a session to a workspace without inventing unique names itself.
+## While attached
 
-Presentation is TTY-aware by construction: richer tables, semantic agent states (`working`/`waiting`/`idle` from a fresh `a state-report`, honest `active`/`quiet` from PTY-recency otherwise), and the one-line attach status bar exist only when stdout is a real terminal. Redirected output and every `--json` path keep their exact pre-existing format, and `Ctrl-b ?` (attach help flash) never sends a byte to the workload. While attached, the status bar keeps task identity (workspace, tag, and the session's checked-out git branch), semantic state, sibling sessions, and `^b ?` visible, dropping detail from the right on narrow terminals; when a workspace's session list itself is what doesn't fit, the list elides to entries plus a `+N` count rather than crowding the other segments off the bar.
+`Ctrl-b` is the prefix key, just like tmux. The bindings you'll actually use:
 
-## Engines and profiles
+| Keys | Does |
+|---|---|
+| `Ctrl-b` `d` | detach — the workload keeps running |
+| `Ctrl-b` `←` / `→` | previous / next session in this workspace |
+| `Ctrl-b` `↑` / `↓` | previous / next workspace |
+| `Ctrl-b` `1`–`9` | jump to the numbered session in the status bar |
+| `Ctrl-b` `[` | scroll back through output (`q` or `Esc` to return) |
+| `Ctrl-b` `n` | create another session in this workspace |
+| `Ctrl-b` `R` | rename this session's tag |
+| `Ctrl-b` `?` | show the full key reference on screen |
 
-Configuration is one TOML file, `~/.config/aplexer/config.toml` (override with `APLEXER_CONFIG`). It declares two related things together, in the same place, so it's clear how they relate:
+The mouse wheel scrolls back too (unless the running program wants the mouse).
+Hold `Ctrl-b` briefly and the whole cheat sheet appears.
 
-- **`[engines.<id>]`** — how to launch an agent/shell/command: argv plus any env. `codex` is a plain engine entry — `a - codex` just runs `codex` with no profile.
-- **`[profiles.<id>]`** — an engine variant, usually a different config directory via that engine's env var (`CLAUDE_CONFIG_DIR` for claude, `CODEX_HOME` for codex) — an alternate account or provider.
+<details>
+<summary><strong>Full key reference</strong></summary>
 
-Both layer identically: aplexer ships built-in/auto-discovered defaults for each map, then your config file's `[engines.*]` / `[profiles.*]` tables extend it, and your file wins on any id collision.
+<!-- Keep in sync with `a keys` -->
 
-### Engines
+```
+Right / Left  next / previous session in this workspace
+Down / Up     next / previous workspace (at its most recent session)
+n             create another session in this workspace and switch to it
+s             list this workspace's sessions; 1-9 attaches, Esc cancels
+w             list every workspace; 1-9 enters it, Esc cancels
+d             detach (the workload keeps running)
+[             scroll back through this session's output (i types, q/Esc leaves)
+N / P         next / previous session across all workspaces
+1-9           jump to the numbered session in the status bar
+l             return to the previously attached session
+r             redraw the live screen (recover a garbled display)
+R             rename this session's tag (Enter confirms, Esc cancels)
+?             show this reference in the status bar
+```
 
-Built-ins (before any config file is read):
+In the scrollback pager: `PgUp`/`PgDn` or `Space` a screen at a time,
+`k`/`j` or arrows a line at a time, `g`/`G` for top/bottom, `q` or `Esc` back
+to live. Keys never reach the session while paging — press `i` to hand the
+keyboard over anyway. Scrollback defaults to 2000 lines
+(`APLEXER_HISTORY_LIMIT`); `APLEXER_MOUSE=off` gives mouse selection back to
+your terminal.
+
+</details>
+
+## Driving sessions without attaching
+
+Anything you can do attached, you can do scripted:
+
+```bash
+# type into a session (any selector works: tag, workspace:tag, or UUID prefix)
+a send review "cargo test" --enter
+
+# peek at what a session shows right now
+a capture review --screen
+
+# stream a file into a session
+a send review --stdin < patch.diff
+
+# phase, exit info, liveness
+a status review
+```
+
+## Session lifecycle
+
+```bash
+a kill review        # signal the workload and clean up its records
+a forget <selector>  # drop records of a dead session you don't care about
+a prune              # remove all dead, unreclaimable session records
+a rename review --tag blocked   # change a session's tag
+```
+
+A session is addressed as a UUID (or prefix), a `workspace:tag` pair, or a
+bare tag in the current workspace. What happens when the tag is already alive
+depends on how you ask: `a -` attaches to the existing session, `a new`
+claims the next free `<tag>-2`, `<tag>-3`, … suffix, and plain `a start`
+keeps the strict create-by-exact-tag contract and fails.
+
+## Engines, profiles & configuration
+
+An **engine** is a command template: a coding agent like `claude`, `codex`,
+`gemini`, `grok`, or `opencode`, or the plain `shell`. aplexer discovers
+agents on your `PATH` automatically — run `a engines` to see what it found.
+A **profile** is a named variant of an engine (another account, another
+config), listed with `a profiles`.
+
+Tweak any of this in `~/.config/aplexer/config.toml`:
 
 ```toml
+version = 1
+default_engine = "shell"
+
 [engines.shell]
-command = ["$SHELL", "-l"]   # resolved from $SHELL at load time, "/bin/sh" as a last resort
+command = ["/bin/bash", "-l"]
 
-[engines.codex]
-command = ["codex", "-c", "check_for_update_on_startup=false"]
-
-[engines.claude]
-command = ["claude"]
-
-[engines.gemini]
-command = ["gemini"]
-
-[engines.grok]
-command = ["grok"]
-```
-
-Override or add an engine in your config file the same way. Codex's builtin already suppresses the startup update-check modal (the same flag PocketShell's host CLI has used since #703). **Variant engines are deliberately not built-ins**: a fork like `zcodex` — a codex-rs fork with the same CLI surface and the same rollout log (`CODEX_HOME`, defaulting to `~/.codex`) — is one installation's setup, not something every installation should ship. Define it in your config file (the worked example below does exactly that); aplexer only records that the engine id `zcodex` parses like codex (`engine_family` in `src/config/builtins.rs`), so its conversation-log handling (`a transcript`, below) rides the codex machinery while sessions and emitted events keep the `zcodex` engine id.
-
-Agent engine ids (every id except the literal `shell` engine) always add the
-built-in provider/cloud credential list to `env_unset`, preserving the
-subscription-auth policy. `shell` is intentionally different: it applies only
-its configured `env_unset`, so ordinary commands and explicit `a start
---engine shell --env NAME=value` overrides keep their environment. Add a name
-to `[engines.shell].env_unset` when a shell-specific removal is desired.
-
-### Profiles
-
-Only claude and codex currently support profiles. Zero-config auto-discovery (ported from PocketShell's `tools/pocketshell/src/pocketshell/profiles.py`, spec.md 9.2/23) scans the top level of `$HOME` for `~/.<name>` directories that: aren't the engine's own default dir (`~/.claude` / `~/.codex`), have a name containing a hint for that engine (claude: `claude`/`laude`; codex: `codex`/`odex` — catching swaps like `zlaude`), and carry a real marker file (claude: `.claude.json` or `settings.json`; codex: `config.toml` or `auth.json`). A match becomes a profile named after its own directory stem — never a humanized display name, since `[profiles.*]` is one flat namespace shared by every engine and two engines' same-sounding profiles (e.g. both called "zai") would otherwise clobber each other. On a machine with a Z.AI-routed codex account at `~/.zodex`, discovery derives the equivalent of:
-
-```toml
-# what discovery derives automatically from ~/.zodex -- shown for reference,
-# you don't need to write this yourself unless you want to override it
-[profiles.zodex]
-engine = "codex"
-
-[profiles.zodex.env]
-CODEX_HOME = "/home/alexey/.zodex"
-```
-
-Add your own, or override a discovered one, in your config file the same way:
-
-```toml
-[profiles.review]
+[profiles.large]
 engine = "shell"
-args = []
-history_bytes = 8388608
+history_bytes = 8388608          # 8 MiB of scrollback for `a capture`
 
-[profiles.review.env]
-MODE = "review"
-
-[profiles.review.limits]
-memory_bytes = 2147483648
+[profiles.large.limits]
+memory_bytes = 2147483648        # 2 GiB
 pids = 256
 ```
 
-`history_bytes` may be `0` through `16777216` (16 MiB) per session; larger
-values are rejected before a worker is spawned because the ring is held in
-worker memory and its readable capture payload is bounded to the same size.
-Records created by older versions with a larger value remain visible and can
-still be inspected, captured, or forgotten; the ceiling applies when a new
-worker would allocate a history ring.
+Then use it: `a start --profile large`.
 
-Dirty history is checkpointed at most every 500 ms. Normal checkpoints append
-only new PTY bytes, sync them, and publish a small checksummed generation;
-whole-tail compaction happens only after roughly another ring's worth of
-output. Two alternating data banks and commit records preserve the previous
-valid generation across a torn write. `history.bin` remains a raw compatibility
-view for older clients: it is appended on the same checkpoints, compacted at
-twice the configured cap, and reduced to the exact tail on clean exit. New
-readers use the checksummed generations for crash recovery and dead capture.
+## Resource limits
 
-A profile can also swap the binary itself, not just the config dir: `executable` replaces only argv[0] of the engine's command, and `command`/`args` replace the whole argv — that is how a fork of an agent CLI becomes a first-class launch target (see the worked example below).
-
-Launch a profile explicitly with `a start --engine codex --profile zodex`, or from inside a workspace `a start --profile zodex` (the profile's own `engine` field fills in `--engine`).
-
-### A real config
-
-Everything above, working together on a machine that runs plain Codex/Claude plus a codex fork (`zcodex`) and Z.AI/Go-proxied sibling accounts (`~/.zodex`, `~/.godex`, `~/.zlaude`). This is a real `~/.config/aplexer/config.toml`, annotated:
-
-```toml
-# Pin absolute paths. Several engine binaries live under nvm's active node
-# version, which is only on PATH for INTERACTIVE shells (~/.bashrc sources
-# nvm below its non-interactive early-return guard). A client that drives
-# `a start` over non-interactive SSH has a minimal PATH, and a bare command
-# name silently fails with "not found". Pinning the resolved absolute path
-# makes engine launch independent of shell PATH sourcing entirely.
-[engines.codex]
-command = ["/home/alexey/.nvm/versions/node/v24.13.1/bin/codex", "-c", "check_for_update_on_startup=false"]
-skip_permissions_argv = ["--dangerously-bypass-approvals-and-sandbox"]
-
-[engines.claude]
-command = ["/home/alexey/.nvm/versions/node/v24.13.1/bin/claude"]
-skip_permissions_argv = ["--dangerously-skip-permissions"]
-
-[engines.gemini]
-command = ["/home/alexey/.nvm/versions/node/v24.13.1/bin/gemini"]
-
-[engines.opencode]
-command = ["/home/alexey/.nvm/versions/node/v24.13.1/bin/opencode"]
-
-# A fork of codex is just another engine: same family (see engine_family
-# above), its own binary. Not a built-in -- this table is what makes it
-# exist on this machine.
-[engines.zcodex]
-command = ["/home/alexey/.local/bin/zcodex", "-c", "check_for_update_on_startup=false"]
-skip_permissions_argv = ["--dangerously-bypass-approvals-and-sandbox"]
-
-# The fork as a profile too: the plain codex engine with the fork's binary
-# and the fork's own CODEX_HOME, so `a start --profile zcodex` gets both.
-# (~/.zodex and ~/.godex need no entries -- auto-discovery derives their
-# profiles from the sibling dirs' marker files.)
-[profiles.zcodex]
-engine = "codex"
-executable = "/home/alexey/.local/bin/zcodex"
-
-[profiles.zcodex.env]
-CODEX_HOME = "/home/alexey/.zcodex"
-```
-
-With this file in place, detection needs no further configuration — `a list --json` reports what is actually running:
-
-```console
-$ a list --json | jq -r '.[] | [.tag, .agent, .agent_profile] | @tsv'
-refactoring   codex      zcodex     # fork binary, no env needed: the config's zcodex token matches
-ops2          codex      default    # plain codex
-db            codex      godex      # hand-launched with CODEX_HOME=~/.godex: named by the dir stem
-layout        claude     default    # plain claude
-wiki          opencode   default    # no profile env exists for opencode
-```
-
-A variation defined only in some *other* installation's config is detected there the same way — nothing variation-specific is hardcoded, so the same binary finds `zebra` on a machine whose config calls the fork `zebra`.
-
-Inspect effective discovery/resolution any time with `a engines`, `a profiles`, and `a doctor`.
-Configuration is strict: unknown keys, empty commands, dangling
-engine/profile references, contradictory profile command fields, and invalid
-numeric limits fail at load time with their config context. Existing documented
-keys retain their meaning; this intentionally turns previously ignored typos
-into actionable errors.
-
-## Resource isolation
-
-When any limit is requested, the worker creates a per-session cgroup-v2 leaf and moves the workload into it before releasing the child from a pre-exec launch gate. If the current cgroup is not delegated to the user, launch fails rather than silently running without the requested limit. `kill` serializes termination and uses the cgroup for descendant-wide signaling and escalation.
-
-Configured memory, PID, CPU quota, and CPU period values must be greater than
-zero. `cpu_period_us` is meaningful only with `cpu_quota_us`; a quota without an
-explicit period keeps the 100,000 µs default.
-
-## Worker placement and the per-user systemd manager
-
-`setsid()` gives each session worker terminal/session separation only. It does
-not move the worker out of its cgroup and does not change which service manager
-owns it. On a systemd host that leaves a real failure domain (issue #1): when
-the per-user manager enters `exit.target` — `systemctl --user exit`, for
-example during a graphical logout — everything beneath `user@UID.service` dies
-together, including any worker forked from a launch under a user unit/scope and
-every resource-limited workload aplexer places in its
-`systemd-run --user --scope`. Workers launched from a plain SSH/console session
-live in logind's `session-*.scope`, owned by the system manager, and survive.
-This is not hypothetical: the 2026-08-27 incident killed every session started
-from beneath `user@1000.service` in one stroke while the SSH-launched ones
-survived.
-
-What aplexer does about it:
-
-- **Records the evidence.** The worker reads its actual cgroup from
-  `/proc/<pid>/cgroup` at launch and persists it as `worker_cgroup` (and
-  `workload_cgroup` for the workload leader, cross-checked against the
-  containment scope for limited sessions). After a manager-wide kill, when
-  every `/proc` trace is gone, the record still names the failure domain that
-  did it.
-- **Classifies it.** `a status --json`, `a list --json`, and `a snapshot --json`
-  rows carry `worker_placement` / `workload_placement`:
-  `{ "cgroup": ..., "placement": "init_owned" | "login_session" |
-  "user_manager" | "system_slice" | "container" | "unknown",
-  "vulnerable_to_user_manager_exit": bool }`.
-- **Warns.** `a start` prints a one-line stderr warning when the fresh
-  session's worker landed in the user-manager subtree, and `a doctor` carries a
-  warning-severity `launch_placement` check with advice (it never fails the
-  checkup over a placement you can work around). Warn, not fail: a vulnerable
-  session works fine until the manager exits.
-- **Opt-in escape.** `APLEXER_LAUNCH_SYSTEM_SCOPE=system a start ...` places
-  the worker in a system-manager scope (`systemd-run --system --scope --collect
-  --unit=aplexer-worker-<id>`) — and resource-limited workloads at the system
-  level too — so neither shares the per-user manager's lifecycle. The backend
-  is probed first; on a stock host a regular user is not authorized to create
-  system scopes (`org.freedesktop.systemd1.manage-units`), the probe fails, and
-  the start proceeds exactly as before with the reason on stderr. The escape
-  never runs implicitly and never breaks a start.
-
-What this does **not** do: make sessions started from beneath `user@.service`
-survive a user-manager exit by default. That needs a launch backend outside the
-per-user manager entirely — a small system-level, per-user launcher service
-with delegated aplexer control — which is deliberate future work (spec.md
-section 7.5). If a session is lost this way, the record stays and `a doctor`
-names the recovery command (`a prune`, `a kill`, or `a forget --force`).
-
-## Durable lifecycle
-
-Session records use versioned JSON and atomic `fsync` + rename replacement. PTY history is kept in a bounded incremental store and remains available after workload exit, alongside a `screen.txt` post-mortem — the plain-text screen as it looked the moment the worker exited, which `a capture --screen --plain` falls back to for a session that is no longer running. The worker finalizes the durable record before removing its socket, so status and post-mortem capture remain available without a live worker when something failed. A session that **exits cleanly** — `exit`, Ctrl-D / shell EOF, a command that finished, or `a kill` — is removed entirely. The worker deletes the record itself once it proves the containment domain empty (any finalize failure, and OOM, keep the evidence), so a finished session disappears from `a list` — and from PocketShell's session list — instead of lingering as an exited row that every client keeps picking up. Failed and OOM records stay until you discard them with `a forget --force` or `a prune`.
-
-## Watching events
+On hosts with cgroup-v2 delegation (a normal systemd desktop or server),
+single flags turn into real caps:
 
 ```bash
-a watch --jsonl
-a watch --jsonl --workspace "$PWD"
-a watch --jsonl --all   # also include shell (non-agent) sessions
+a start --memory 512M --pids 100
+a start --engine codex --memory 2G
 ```
 
-`a watch` is a client-side poller, not a server-push mechanism — it scans the same durable session records `a list` reads, on a timer, and emits one JSON line per detected change: session creation/exit/deletion, OOM kills, and a coarse `agent.state` (`running`/`waiting`) signal derived from PTY-output recency. By default it only watches agent sessions (`engine != "shell"`), matching how it's meant to be used. The event envelope is heru's `UnifiedEvent` schema; see spec.md section 19 for the event stream's design intent and [docs/pocketshell-integration-plan.md](docs/pocketshell-integration-plan.md) Part 2 for the full field-by-field mapping rationale. `src/watch.rs` has the implementation and its own reasoning for the poll interval, activity threshold, and startup-replay behavior.
+Check that your environment supports this with `a doctor` — it verifies the
+cgroup controls end to end and tells you exactly what's missing if not.
 
-**`a watch` never looks at what an agent is actually saying or doing** — it only sees host-level lifecycle (created/exited/oom/a running-vs-waiting heuristic). `a transcript` (below) is the complementary capability: parsing an agent's real conversation — messages, tool calls, tool results, usage — into the same `UnifiedEvent` envelope. Use `a watch` to know a session changed state; use `a transcript` to know what the agent actually said or did.
+## Agent awareness
 
-## Agent-state hooks (`a init`)
-
-Without hooks, `working`/`waiting`/`idle` is a guess from PTY-output recency — an idle agent sitting in a `shell`-engine session reads `RUNNING` forever. `a init` fixes that by merging an `a state-report` hook into every agent engine aplexer knows how to launch, so the agent itself reports its turn boundaries:
+aplexer knows more than "the process is alive":
 
 ```bash
-a init                  # install hooks for claude, codex (+zcodex), grok, gemini, opencode
-a init --check          # check only: exit 0 when fully initialized, 1 otherwise
-a init --check --json   # machine contract: {"initialized": bool, "engines": [...]}
-a init --engine grok    # limit any mode to one engine
-a init --uninstall      # remove our hooks again
+a init        # one-time: install hooks so supported agents report working/waiting/idle
+a init --check
 ```
 
-Install is non-destructive and idempotent: existing hook groups, unrelated config keys, and other plugins are preserved (a second run changes nothing), and an existing Codex `notify` program pointing elsewhere is never clobbered. Every generated hook ends in `|| true`, so it can never hold the agent open — outside an aplexer session it just exits silently. Profile config dirs (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) are covered too, so a `codex/zodex` session reports state like a plain one. A fresh push stays authoritative for a few seconds (`REPORTED_STATE_STALE_MS` in `src/watch.rs`), then the display falls back to the honest `active`/`quiet` activity words; `shell` sessions with a fresh push show the reported state instead of `running`. See `src/hooks.rs` for the per-engine mechanisms and event mapping.
-
-The `--check --json` form is the automation seam: the PocketShell host CLI runs it on startup and runs `a init` when it reports `initialized: false`, so a fresh machine self-heals without user intervention.
-
-## Conversation events (`a transcript`)
-
-PocketShell's conversation pane needs structured events from a live `a start` session, not a second headless invocation of the agent. `a transcript` locates the native JSONL the engine CLI already writes (`~/.claude/projects/<encoded-cwd>/<session>.jsonl`, `~/.codex/sessions/<Y>/<M>/<D>/<session>.jsonl`, `$GROK_HOME/sessions/<urlencoded-cwd>/<id>/updates.jsonl`), parses it, and emits heru `UnifiedEvent` JSONL (or a compact human rendering without `--json`). Variant engines identified with a built-in family — currently `zcodex`, a codex variant — locate and parse through their family's machinery while keeping their own engine id on the emitted events.
-
-How the log is captured and kept: aplexer does **not** copy conversation bytes into its own state. The engine's append-only JSONL is the source of truth (PTY `history.bin` is a separate, raw terminal capture). The first successful locate writes a bind sidecar `<state>/sessions/<id>/transcript.json` so later pages and `--follow` hit the same file even if another session shares the cwd. If the bound file disappears, the next call re-runs the heuristic.
+With hooks installed, `a list` and the machine-readable event stream reflect
+what each agent is actually doing — grinding away, waiting on you, or idle.
 
 ```bash
-a transcript --tag review --last 5 --json            # last 5 parsed events
-a transcript --tag review --kind message --last 3    # last 3 turns only
-a transcript --tag review --before 12 --last 20 --json   # older page
-a transcript --tag review --after 31 --follow --json     # live tail
-a transcript --json --last 5                         # inside a session: uses $APLEXER_SESSION_ID (`a whoami`)
+a whoami                    # your session's identity (workspace/tag/engine/profile)
+a transcript review         # read a session's conversation transcript
+a transcript review --follow
+a watch --jsonl             # stream lifecycle events as they happen
 ```
 
-`--last` / `--before` / `--after` are the PocketShell pagination cursors (sequence is stable across calls as long as the native file is append-only). `--follow` is `tail -f` of parsed events. `--max-line-bytes N` replaces a huge native line with PocketShell's `@@PS_LINE_TRUNCATED@@` marker so one oversized tool result cannot balloon an SSH read.
+## Messaging between sessions
 
-Claude, Codex, and Grok native logs in this pass; `opencode`/`gemini`/`shell` are out of scope. Location is a cwd+mtime heuristic until the bind sidecar exists — see `src/agent_events.rs`.
-
-## Python client
+Sibling sessions in a workspace share a durable inbox — handy when one agent
+needs to hand off to another:
 
 ```bash
-python3 -m pip install aplexer
+a message send --to review "done, see api.md"   # note to one sibling, by tag
+a message send --all "standup in 5"             # every sibling in the workspace
+a message inbox                                 # what's unread for this session
+a message log                                   # the whole workspace conversation
 ```
 
-The `aplexer` distribution installs the CLI binaries and an exact-version
-`aplexer-client` dependency, which provides the `aplexer` import package.
-From a source checkout, `python3 -m pip install ./python` installs just the
-client bindings for development.
+## From Python
 
-Published `aplexer` and `aplexer-client` wheels require Python 3.11 or newer
-and currently target Linux x86_64 and aarch64. macOS and Windows wheels are not
-published.
+The `aplexer` package (installed alongside the CLI) talks to the same
+sessions:
 
 ```python
 from aplexer import Client
 
-client = Client()
-session = client.start(workspace=".", tag="demo", command=["/bin/bash", "-l"])
-print(session.id, session.phase)
-print(client.list())
-
-# Operational methods stay in-process through the native Rust bindings.
-print(client.status(session.id))
-client.send(session.id, b"printf 'hello\\n'\n")
-raw_output = client.capture(session.id, max_bytes=4096)
-# kill ends the workload and removes the session outright -- there is no
-# record left to clean up afterwards. A clean natural exit (exit, Ctrl-D)
-# does the same.
-client.kill(session.id, signal=15, grace_ms=2000)
-
-# Failed and OOM records stay; discard them explicitly.
-result = client.forget(session.id, force=True)
-print(result.workload_may_survive)
+a = Client()
+a.start(engine="claude", tag="review", workspace="/home/me/git/api")
+a.send("api:review", b"please review the diff")
+print(a.capture("api:review").decode(errors="replace"))
 ```
 
-`send()` and `capture()` use `bytes` end to end; they never decode PTY data as
-text. The Python package is intentionally thin: Rust remains authoritative for
-profile resolution, launch policy, PTY ownership, metadata durability, and
-cgroups.
+`Client` covers `start`, `send`, `capture`, `status`, `list`, `kill`, and
+`forget`, with the same selectors as the CLI.
 
-## Inter-agent messaging
+<details>
+<summary><strong>Full command reference</strong></summary>
 
-Sessions that share a workspace can hand off work, broadcast, or interrupt each other over `a message`, a durable per-workspace mailbox that needs no shared process (one JSON file per message under the state directory, atomic-write-and-rename, same discipline as session metadata):
+| Command | What it does |
+|---|---|
+| `a start` | start a session and its worker (full flag surface: engine, profile, limits, env, …) |
+| `a new` | always create a fresh session and attach |
+| `a here` / `a -` | create-or-attach in the current workspace |
+| `a list` / `ls` / `ps` | sessions grouped by workspace |
+| `a snapshot` | `list`, always machine-readable |
+| `a attach` / `open` | attach to a session's live PTY |
+| `a send` | type into a session without attaching |
+| `a capture` | print captured output or the rendered screen |
+| `a status` / `show` | phase, exit info, liveness |
+| `a kill` | signal a session's workload and clean up |
+| `a forget` | drop a dead session's records |
+| `a prune` | remove all dead, unreclaimable records and their history |
+| `a rename` | change a session's tag |
+| `a engines` / `a profiles` | list configured or discovered engines / profiles |
+| `a doctor` | check the environment and config for problems |
+| `a init` | install or remove agent-state hooks |
+| `a whoami` | print the current session's identity |
+| `a state-report` | push agent state (used by the hooks `a init` installs) |
+| `a message` | send / read messages between sibling sessions |
+| `a watch` | stream session lifecycle events (`--jsonl`) |
+| `a transcript` | read or follow a session's transcript |
+| `a completions` | print a shell completion script |
+| `a hotkeys` / `keys` | print the attach-mode key bindings |
+
+Every command accepts `--json`, and every subcommand's `--help` ends with
+examples.
+
+</details>
+
+<details>
+<summary><strong>Environment variables</strong></summary>
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `APLEXER_CONFIG` | config file location | `~/.config/aplexer/config.toml` |
+| `APLEXER_RUNTIME_DIR` | sockets and runtime state | `$XDG_RUNTIME_DIR/aplexer`, else `/tmp/aplexer-<uid>` |
+| `APLEXER_STATE_DIR` | durable records, history, transcripts | `~/.local/state/aplexer` |
+| `APLEXER_HISTORY_LIMIT` | scrollback lines in attach mode | `2000` |
+| `APLEXER_MOUSE` | `off` leaves mouse events to your terminal | mouse enabled |
+| `APLEXER_LAUNCH_SYSTEM_SCOPE` | `system` launches workloads in a system scope, immune to user-session teardown | per-user scope |
+
+Inside a session, `APLEXER_SESSION_ID`, `APLEXER_WORKSPACE`, `APLEXER_TAG`,
+and `APLEXER_WORKER` identify it to tools like `a whoami`.
+
+</details>
+
+## Troubleshooting
+
+Start with:
 
 ```bash
-a message send --to review "backend done, see api.md"
-a message send --all "rebasing main in 5 minutes, hold your pushes"
-a message send --pane --to review "stop: the API contract changed"   # injects into review's live PTY
-a message inbox --new --json   # unread messages for the calling session
-a message ack --all
-a message log --json           # the whole workspace conversation, in order
+a doctor
 ```
 
-See [docs/inter-agent-messaging-design.md](docs/inter-agent-messaging-design.md) for the full design (addressing, delivery semantics, retention, envelope schema) and [`.claude/skills/aplexer-messaging`](.claude/skills/aplexer-messaging/SKILL.md) for the agent-facing usage guide. V1 is pull-based only: there's no event-stream push or deferred `--when-waiting` pane delivery yet.
+It checks the runtime and state directories, socket paths, cgroup-v2
+delegation, config, and session records, and suggests the fix for anything
+it flags (most commonly `a prune` for stale records).
 
-## Daemonless vs. tmux
-
-"Daemonless" here has a specific, narrow meaning: there is no single server process that owns every session's PTY. tmux's architecture is one `tmux(1)` server holding every pane, window, and session for that server in its own memory; kill that process (OOM, a crash, `kill -9`, a bug tripped by one unrelated pane) and every session it hosts dies with it. That's the literal failure mode this project exists to remove (spec.md section 1). Aplexer instead gives each session its own worker process, with one Unix socket, one PTY, and one optional cgroup each (spec.md section 5.1 diagrams the prohibited shared-daemon shape against the actual per-worker one). A session's worker can die without touching any other session.
-
-This isn't just a design claim — it's covered by destructive integration tests that actually run the scenario rather than simulate it. `tests/oom_isolation.rs::three_sessions_oom_isolation` starts three memory-capped sessions, runs a real memory bomb inside one of them until the kernel OOM-kills it, and asserts the other two stayed responsive throughout. `tests/oom_isolation.rs::worker_kill_isolation` `SIGKILL`s one session's *worker process* directly and asserts the other two are unaffected (and that the killed session's own status correctly flips to "worker not alive" instead of silently reporting stale `running` state forever). Both isolation properties were also where the real bugs showed up while this was being built: `git log` has a commit fixing a cgroup-delegation bug that made every memory-limited session fail closed with `EACCES` (found by actually running the OOM scenario), and a separate commit fixing a worker that never exited after its workload finished — an immortal process, socket, and lock file per session ever started, which directly contradicted the "nothing lingers once a session is over" premise this design depends on. Both were caught by running the thing, not by reading the spec.
-
-The costs are real too, not just theoretical:
-
-- **No single process to attach to for "everything" observability.** With one tmux server you can strace it, profile it, or inspect its memory to see every session at once. With N independent workers there's no such vantage point — `a list` has to scan durable per-session state files (spec.md section 14, 32). Spec.md section 15 allows for an optional control/index process later for faster queries, but it's explicit that this process must stay a rebuildable cache, never a new shared failure domain — if it dies, workers and PTYs keep running. That control process doesn't exist yet.
-- **Per-session overhead.** N sessions means N worker processes, N sockets, N lock files, N runtime directories, instead of one server process multiplexing N panes. Spec.md section 30 sets a qualitative target ("dozens of sessions should be normal") but this hasn't been benchmarked at that scale in this repo yet — the overhead is real, whether it matters in practice is untested.
-- **No atomic global snapshot.** A tmux server can answer "what's the state of everything, right now" from one process's memory. Aplexer's `a list` is a scan of independently-updating files, so under churn it can observe a slightly stale or racy view rather than one consistent instant. Spec.md section 32 leans into this rather than hiding it: it asks the runtime to distinguish live/stale/exited/broken sessions explicitly instead of pretending a single scan is an authoritative snapshot.
-- **No tmux ecosystem.** Fifteen years of panes, splits, copy mode, plugins, and session-restore tooling don't carry over. V1 explicitly excludes all of that (spec.md section 27's non-goals list) — a deliberate scope cut for now, not a permanent ceiling, but a real gap today if that's what you rely on.
-- **No tmux compatibility.** The workspace/tag/engine/profile model (see Goals above) is not tmux's flat session-name model, and there's no tmux control-mode-compatible protocol. Muscle memory, scripts, and tooling built against tmux don't transfer.
-
-In short: aplexer trades a single, simple, inspectable server for a swarm of small, individually-boring, individually-replaceable processes, on the bet that one session's failure staying contained is worth more than the convenience of one process to rule them all. See spec.md sections 5, 7, 15, and 29 for the full architecture and test rationale.
-
-## Validation
-
-`./scripts/validate.sh` is the gate: repository hygiene, `cargo fmt --check`,
-`cargo clippy --all-targets -- -D warnings`, both Rust suites through
-`scripts/check-test-execution.sh` (executed-count floors, not ratchets), and the
-`python/` and `python-cli/` pytest suites.
+## Development
 
 ```bash
-./scripts/validate.sh
+cargo test                     # Rust unit + integration tests
+scripts/validate.sh            # the full CI gate (fmt, clippy, tests, Python)
+uv run --frozen --with pytest python -m pytest -q   # from python/ or python-cli/
 ```
 
-GitHub Actions runs that same script on every push to `main` and every pull
-request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), so a broken
-branch fails before anyone reaches for a release tag; running the script rather
-than re-listing its commands in YAML is what keeps a laptop and CI from
-drifting. That workflow lints and tests on a pinned recent stable
-toolchain rather than on the MSRV, because clippy's default lint set moves
-between releases and this tree is only clean under the newer one; a second,
-compile-only job holds the `rust-version` floor that
-[`.github/workflows/release.yml`](.github/workflows/release.yml) builds and
-ships with, so an MSRV break still cannot wait for a release tag to surface.
-Release tags keep their own workflow unchanged.
+The Rust core lives in `src/`, the thin Python CLI wrapper in
+`python-cli/`, and the PyO3 bindings in `python/`.
 
-Five tests stay `#[ignore]`d and so do not run in CI. That is a recorded
-coverage hole, not an accident: a GitHub-hosted runner has no cgroup-v2
-delegation to the running user and this repo has no emulator/Docker cgroup lane,
-and the remaining two want real agent binaries or are a manual measurement. The
-executed-count guard counts only passed and failed tests, never ignored ones, so
-quarantining them cannot help a collapsed suite clear its floor. Run them by
-hand instead — the first two on a machine with systemd `--user` cgroup-v2
-delegation:
+## License
 
-```bash
-# cgroup-v2 delegation; also spawns and SIGKILLs real worker processes
-cargo test --test oom_isolation -- --ignored --nocapture
-# cgroup-v2 delegation
-cargo test --lib recorded_cgroup_observed_empty -- --ignored --nocapture
-# needs real agent binaries on PATH; takes a minute or two
-cargo test --test transcript_live -- --ignored --nocapture
-# manual attach round-trip latency measurement
-cargo test --test screen_snapshot attach_round_trip_latency -- --ignored --nocapture
-```
-
-## Full design doc
-
-See [spec.md](spec.md) for the complete architecture: identity model, session types, control protocol, machine API, event stream, and the PocketShell integration plan.
-
-For using aplexer on a remote host over a slow or flaky link (PocketShell on cellular), see [docs/low-bandwidth-remote-access-design.md](docs/low-bandwidth-remote-access-design.md) — what SSH compression already solves for free, status-bar/replay frugality, and reconnect/resume semantics (planning doc, not yet implemented).
-
-For switching between sessions without detaching (`Ctrl-b Right`/`Left` between the sessions of a workspace, `Ctrl-b Down`/`Up` between workspaces, `Ctrl-b 1-9`/`l`/`N`/`P` inside `a attach`, reusing the same numbering `a list` prints — and `Ctrl-b n` to create another session here and land in it), see [docs/fast-session-switching-design.md](docs/fast-session-switching-design.md) — the in-process switch architecture, keybinding scheme, and failure handling. `a keys` prints the current keymap, which is generated from one table in the source. `Ctrl-b s` opens a picker box listing this workspace's sessions under that same numbering — a digit attaches, Esc cancels. `Ctrl-b w` is the same one level up: a box listing every workspace under the `[N]` numbering `a list` prints — a digit enters that workspace at its most recently used session, Esc cancels. `Ctrl-b R` renames the session you are attached to — an inline `rename:` prompt on the status bar row, Enter confirms, Esc cancels — and from a shell inside the session, `a rename --tag newname` does the same thing without attaching.
-
-For scrolling through a session's recent output without blocking input (tmux copy-mode's job, minus the input freeze), see [docs/scrollback-design.md](docs/scrollback-design.md) — why the host terminal's native scrollback is the mechanism, the status-bar hygiene invariants that keep it clean, and why a custom in-band scrollback view is rejected for v1 (design doc; mostly verification work).
-
-For correct, instant reattach — the worker maintaining a live tmux-style terminal-state model (via the `vt100` crate) and repainting the current screen instead of replaying raw byte history — see [docs/terminal-state-design.md](docs/terminal-state-design.md), which supersedes spec.md §17/§27's "no terminal emulator state" non-goal and fixes the reproduced reattach corruption of full-screen agent TUIs (implemented; see [Reattach repaints the live screen](#first-session) above).
+Apache-2.0 — see [LICENSE](LICENSE).
