@@ -26,7 +26,7 @@ The important user concepts are:
 - **tag**: the human name for that task;
 - **engine/profile**: how the task is launched;
 - **lifecycle state**: starting, running, exiting, exited, failed, or broken;
-- **agent state**: working, waiting for input, or idle;
+- **agent state**: running (working), waiting for input, or idle;
 - **activity**: recent PTY output, which is useful but is not the same as agent state.
 
 The CLI should lead with those concepts. Worker PIDs, sockets, cgroups, and protocol details remain available for diagnosis but should not be the first thing a healthy user sees.
@@ -69,19 +69,31 @@ The existing `a -` shortcut already has the right semantics, but `-` is an exper
 
 ### 3. Know what needs attention
 
-**When several agents are running, I want to distinguish working, waiting, idle, quiet, failed, and broken sessions, so I spend attention where it is useful.**
+**When several agents are running, I want to distinguish working, waiting, idle, and dead sessions, so I spend attention where it is useful.**
 
-This job requires honest language:
+Every state a CLI command prints comes from one unified eight-word vocabulary, each word with one definition:
 
-- `working` and `waiting` are shown only while a fresh `state-report` value is authoritative;
-- `idle` is shown while a `state-report` rest is authoritative: an `idle` push has no follow-up hook to refresh it, so it stays authoritative until PTY output appears after it (beyond a small grace for the turn's tail racing the hook), not for a fixed clock window;
-- recent PTY output may be shown as `active`;
-- old PTY output may be shown as `quiet`;
+| state | means |
+|---|---|
+| `starting` | the worker is coming up |
+| `running` | doing work: the agent said so (fresh `a state-report` push), the PTY is producing output, or it is a plain shell that never reported anything |
+| `idle` | alive and resting: the agent said so, or the PTY went quiet -- a silent compute step can look like this, so `idle` never means "blocked on you" |
+| `waiting` | the agent said it is blocked and needs the user; never inferred from silence |
+| `exiting` | a kill was accepted and teardown is running |
+| `exited` | the workload ended; `a status` shows the exit code/signal |
+| `failed` | the worker failed, or the workload died abnormally (OOM kill included; `a status` says which) |
+| `broken` | the record claims alive but the worker process is gone; `a prune` reaps it |
+
+One word per idea; where the word came from is a separate fact (`source`: `reported`, `activity`, or `lifecycle`), which `a status` qualifies ("inferred from output activity") and the status bar's spinner keys off. Honest language rules:
+
+- `running`/`waiting`/`idle` are shown from a `state-report` push only while that push is authoritative;
+- `idle` from a rest push stays authoritative until PTY output appears after it (beyond a small grace for the turn's tail racing the hook), not for a fixed clock window;
+- recent PTY output and terminal silence alike map onto the shared `running`/`idle` words, marked as inferred;
 - terminal silence alone must not be called `waiting` because a compute-heavy agent may be silent while still working;
-- a plain shell that never reported agent state is `running` no matter how quiet; a shell an agent has lived in falls back to the same `active`/`quiet` activity words as a first-class engine once nothing is fresh;
+- a plain shell that never reported agent state is `running` no matter how quiet; a shell an agent has lived in falls back to the same activity-derived `running`/`idle` words as a first-class engine once nothing is fresh;
 - dead workers with an active persisted phase are `broken`, not `running`.
 
-The distinction between **semantic state** and **activity heuristic** is part of the UI contract, not an implementation detail.
+The distinction between **semantic state** and **activity heuristic** is part of the UI contract, not an implementation detail -- it lives in the `source` qualifier now, not in separate words. (`a watch`'s machine-readable `agent.state` events keep the raw heuristic words -- a silent terminal reads `waiting` there, with `metadata.state_source` telling reported from inferred -- for consumers that want the fine grain; the human UI maps that onto `idle` so silence never claims a wait.)
 
 ### 4. Stay oriented inside an attached session
 
@@ -231,7 +243,7 @@ The terminal UX should be tested with tasks, not preferences:
 1. From an empty registry, start a shell in the current directory without reading documentation.
 2. With sessions in three repositories, attach the waiting review agent in under ten seconds.
 3. From inside a session, discover detach and switch keys without leaving it.
-4. Tell whether a silent agent is definitely waiting or merely quiet.
+4. Tell whether a silent agent is definitely waiting or merely idle.
 5. After a workload exits, identify what happened and inspect its final screen.
 6. Pipe list/status output into a script and verify byte-for-byte compatibility.
 7. Run PocketShell contract tests against the same build.

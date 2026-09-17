@@ -1145,7 +1145,8 @@ One more rule keeps a dying session from reading as a healthy one (issue
 teardown starts, so the whole window between the accepted kill and
 finalization's record removal -- bounded by the kill client's five-second
 record-removal wait, indefinite if finalization wedges -- reads `exiting`
-in `state` (rendered "stopping" in the terminal UI) instead of replaying
+in `state` (the terminal UI shows the same word; the state vocabulary is
+unified) instead of replaying
 the pre-kill phase. A kill-then-snapshot consumer therefore sees either
 `exiting` or no record at all, never a row byte-for-byte identical to a
 healthy session, and a finalization stuck `exiting` is diagnosable from
@@ -1834,7 +1835,8 @@ willing to claim:
   in every listing client instead of lingering as an `exited` row. Before
   signalling, the accepted kill persists `phase: exiting` (issue #18), so
   the finalization window itself reads as a dying session (`state:
-  exiting`, "stopping" in the UI) rather than as healthy; see section 18.
+  exiting`, the same word the UI shows) rather than as healthy; see
+  section 18.
   The removal keeps the same proof bar as every other remover: the worker
   deletes the record only when finalization ran clean and proved the
   containment domain empty. For a broken unlimited session it refuses

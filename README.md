@@ -282,6 +282,19 @@ a init --check
 With hooks installed, `a list` and the machine-readable event stream reflect
 what each agent is actually doing - grinding away, waiting on you, or idle.
 
+Every state aplexer prints is one of eight words, each with one meaning:
+
+| state | means |
+|---|---|
+| `starting` | the worker is coming up |
+| `running` | doing work - the agent said so, the terminal is producing output, or it is a plain shell that never reported anything |
+| `idle` | alive and resting - the agent said so, or the terminal went quiet; a silent compute step can look like this |
+| `waiting` | the agent said it is blocked and needs you; never guessed from silence |
+| `exiting` | a kill was accepted and teardown is running |
+| `exited` | the workload ended; `a status` shows the exit code |
+| `failed` | the worker failed, or the workload died abnormally (OOM included; `a status` says which) |
+| `broken` | the record says alive but the worker process is gone; `a prune` reaps it |
+
 ```bash
 a whoami                    # your session's identity (workspace/tag/engine/profile)
 a transcript review         # read a session's conversation transcript
