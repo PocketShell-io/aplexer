@@ -203,11 +203,16 @@ fn print_workspace_header(
 }
 
 /// Column widths adapt to the widest tag/engine actually present, so a
-/// registry of long agent tags doesn't force every row to wrap.
-fn column_widths(
-    sessions: &[SessionRecord],
+/// registry of long agent tags doesn't force every row to wrap. Computed
+/// over the whole listing, not per workspace: the columns only read as a
+/// table if a tag column starts at the same offset under every `[N]`
+/// header, and the clamps keep one long tag anywhere from widening every
+/// row beyond that.
+fn column_widths<'a>(
+    sessions: impl IntoIterator<Item = &'a SessionRecord>,
     agents: &BTreeMap<Uuid, Option<aplexer::agent_kind::DetectedAgent>>,
 ) -> (usize, usize) {
+    let sessions: Vec<&SessionRecord> = sessions.into_iter().collect();
     let tag_width = sessions
         .iter()
         .map(|record| terminal_display_width(&record.tag))
@@ -322,6 +327,13 @@ pub(crate) fn cmd_list_tty(paths: &Paths, args: ListArgs) -> Result<()> {
     let sort = load_list_sort(paths);
     let groups = group_by_workspace(records, sort);
     let agents = detect_row_agents(paths, &groups);
+    // One width pair for the whole listing, so the tag/engine/state/age
+    // columns line up across workspace blocks instead of re-fitting under
+    // every [N] header.
+    let (tag_width, engine_width) = column_widths(
+        groups.iter().flat_map(|(_, sessions)| sessions.iter()),
+        &agents,
+    );
     let current_workspace = resolve_message_workspace(None).ok();
     let color = color_enabled();
     let now = now_ms();
@@ -345,7 +357,6 @@ pub(crate) fn cmd_list_tty(paths: &Paths, args: ListArgs) -> Result<()> {
             color,
         );
 
-        let (tag_width, engine_width) = column_widths(sessions, &agents);
         let last = sessions.len().saturating_sub(1);
         for (index, record) in sessions.iter().enumerate() {
             let engine = engine_label(record, agents.get(&record.id).and_then(|d| d.as_ref()));
