@@ -134,9 +134,14 @@ a new --engine codex --tag refactor
 
 `a list` looks like this:
 
-<p align="center">
-  <img src="assets/a-list.png" alt="Output of a list: each workspace with its numbered sessions, engine, state, and last activity" width="720">
-</p>
+```text
+[3] ~/git/dtc-website (◐ running 3/5)
+├──  1  main           claude           ● running
+├──  2  illustrations  codex            ● running
+├──  3  make-run       shell            ● running
+├──  4  layout         shell            ✗ broken
+└──  5  clean-code     shell            ○ exited
+```
 
 Those bracketed numbers on the left are what `a 3` and `a 3 review` refer to.
 
