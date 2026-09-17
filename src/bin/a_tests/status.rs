@@ -329,30 +329,44 @@ fn bar_renders_from_the_cache_without_a_worker_round_trip() {
 }
 
 #[test]
-fn spinner_frame_animates_only_the_reported_working_state() {
-    // `working` is the one state that means "the agent said it is
-    // running right now" (a fresh state-report push) -- the only one the
-    // spinner may run for. `active` is deliberately absent: it is a
-    // PTY-recency guess that also fires while the user types at a
-    // prompt, and for records with no activity sample at all.
+fn spinner_frame_animates_only_a_reported_running_state() {
+    // `running` sourced from `reported` is the one combination that means
+    // "the agent said it is working right now" (a fresh state-report push)
+    // -- the only one the spinner may run for. `running` sourced from
+    // `activity` is deliberately absent: it is a PTY-recency guess that
+    // also fires while the user types at a prompt, and for records with no
+    // activity sample at all.
     for t in [0, 123_456_789] {
         assert!(
-            spinner_frame("working", t).is_some(),
-            "working should animate"
+            spinner_frame("running", "reported", t).is_some(),
+            "a reported running state should animate"
         );
     }
     // Everything else stays on `state_glyph`'s static glyph -- the bar
     // must be motionless for an idle, waiting, or dead session, which is
-    // the "only when it's running" half of the feature.
-    for state in [
-        "active", "running", "waiting", "idle", "quiet", "starting", "stopping", "broken",
-        "exited", "oom", "failed",
+    // the "only when it's running" half of the feature. The same word
+    // from the activity heuristic must not animate either.
+    for (state, source) in [
+        ("running", "activity"),
+        ("running", "lifecycle"),
+        ("waiting", "reported"),
+        ("idle", "reported"),
+        ("idle", "activity"),
+        ("starting", "lifecycle"),
+        ("exiting", "lifecycle"),
+        ("broken", "lifecycle"),
+        ("exited", "lifecycle"),
+        ("failed", "lifecycle"),
     ] {
-        assert_eq!(spinner_frame(state, 0), None, "{state} must not animate");
         assert_eq!(
-            spinner_frame(state, 123_456_789),
+            spinner_frame(state, source, 0),
             None,
-            "{state} must not animate"
+            "{state}/{source} must not animate"
+        );
+        assert_eq!(
+            spinner_frame(state, source, 123_456_789),
+            None,
+            "{state}/{source} must not animate"
         );
     }
 }
@@ -366,19 +380,24 @@ fn spinner_frame_is_a_pure_function_of_the_wall_clock() {
     let base = 1_000_100; // not a multiple of SPINNER_FRAME_MS
     let window = base / SPINNER_FRAME_MS;
     assert_eq!(
-        spinner_frame("working", base),
+        spinner_frame("running", "reported", base),
         Some(SPINNER_FRAMES[(window as usize) % SPINNER_FRAMES.len()])
     );
     // Both ends of the same window land on the same frame...
     assert_eq!(
-        spinner_frame("working", window * SPINNER_FRAME_MS),
-        spinner_frame("working", window * SPINNER_FRAME_MS + SPINNER_FRAME_MS - 1)
+        spinner_frame("running", "reported", window * SPINNER_FRAME_MS),
+        spinner_frame(
+            "running",
+            "reported",
+            window * SPINNER_FRAME_MS + SPINNER_FRAME_MS - 1
+        )
     );
     // ...and one full revolution later the frame wraps back around.
     assert_eq!(
-        spinner_frame("working", base),
+        spinner_frame("running", "reported", base),
         spinner_frame(
-            "working",
+            "running",
+            "reported",
             base + SPINNER_FRAME_MS * SPINNER_FRAMES.len() as u64
         )
     );
@@ -399,17 +418,17 @@ fn state_derivation_sees_the_worker_s_fresh_push_not_the_attach_snapshot() {
     // No Status answer (worker briefly unreachable): snapshot stands.
     // The push is stale, so the word is only ever an activity guess --
     // for this occupied shell (no PTY sample at all) the heuristic's
-    // just-started arm says `active`, never a semantic `working`.
+    // just-started arm says `running` (activity), never a reported fact.
     assert_eq!(
         session_ui_state(&overlay_reported_state(&record, None), now).0,
-        "active"
+        "running"
     );
     // The worker's live copy says the agent started working *after*
     // attach -- the case the spinner exists for.
     let raw = serde_json::json!({"reported_state": "working", "reported_state_at_ms": now});
     assert_eq!(
         session_ui_state(&overlay_reported_state(&record, Some(&raw)), now).0,
-        "working"
+        "running"
     );
     // An older worker that omits the fields leaves the snapshot alone.
     let overlay = overlay_reported_state(&record, Some(&serde_json::json!({"cgroup": {}})));
@@ -430,7 +449,7 @@ fn status_bar_spins_only_while_the_agent_is_working() {
         record.reported_state_at_ms = Some(now);
     }
     let full = status_bar_text(&ctx, 256);
-    assert!(full.contains(" WORKING"), "{full:?}");
+    assert!(full.contains(" RUNNING"), "{full:?}");
     assert!(
         full.chars().any(|c| SPINNER_FRAMES.contains(&c)),
         "a working session's bar should carry a spinner frame: {full:?}"
@@ -441,16 +460,17 @@ fn status_bar_spins_only_while_the_agent_is_working() {
     );
 
     // Once the push goes stale the occupied shell falls back to the
-    // honest activity word (`active`: no PTY sample at all, so the
-    // heuristic's just-started arm) -- the bar freezes back to the
-    // static dot, no motion. Only a *reported* working push may spin.
+    // activity-derived word (`running` again, but sourced from
+    // `activity`: no PTY sample at all, so the heuristic's just-started
+    // arm) -- the bar freezes back to the static dot, no motion. Only a
+    // *reported* running state may spin.
     {
         let mut record = ctx.record.lock().unwrap();
         record.reported_state_at_ms = Some(now.saturating_sub(8_001));
     }
     let full = status_bar_text(&ctx, 256);
     assert!(
-        full.contains("\u{25cf} ACTIVE"),
+        full.contains("\u{25cf} RUNNING"),
         "a stale push falls back to the static glyph: {full:?}"
     );
     assert!(

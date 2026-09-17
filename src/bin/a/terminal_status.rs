@@ -259,10 +259,10 @@ pub(crate) fn numbered_session_label(r: &SessionRecord, index: usize, current: U
     if r.id == current {
         label.push('*');
     }
-    // Running-ish states are the expected background; anything else (a
-    // reported wait, a death, a broken worker) is worth seeing while
-    // attached.
-    if !matches!(state, "running" | "working" | "active" | "quiet") {
+    // Running-ish states are the expected background (`running` while
+    // working, `idle` while resting); anything else (a reported wait, a
+    // death, a broken worker) is worth seeing while attached.
+    if !matches!(state, "running" | "idle") {
         label.push_str(&format!("({state})"));
     }
     label

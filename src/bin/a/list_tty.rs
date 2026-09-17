@@ -4,15 +4,17 @@ use super::*;
 /// summary and the row loop.
 struct RowState {
     state: &'static str,
+    source: &'static str,
     active: bool,
     attention: bool,
 }
 
 impl RowState {
     fn of(record: &SessionRecord, now: u64) -> Self {
-        let (state, _) = session_ui_state(record, now);
+        let (state, source) = session_ui_state(record, now);
         Self {
             state,
+            source,
             active: ui_state_is_active(state),
             attention: ui_state_needs_attention(state),
         }
@@ -252,7 +254,7 @@ fn print_session_row(
     let (sdot, scolor) = state_glyph(state.state);
     let state_text = fit_column(&format!("{sdot} {}", state.state), 11);
     let state_text = paint(color, scolor, &state_text);
-    let timestamp = state_timestamp(record, state.state, now);
+    let timestamp = state_timestamp(record, state.source, now);
     let age = paint(
         color,
         ANSI_DIM,
@@ -451,17 +453,20 @@ mod tests {
     fn workspace_summary_counts_states() {
         let states = vec![
             RowState {
-                state: "working",
+                state: "running",
+                source: "reported",
                 active: true,
                 attention: false,
             },
             RowState {
                 state: "needs you",
+                source: "reported",
                 active: false,
                 attention: true,
             },
             RowState {
                 state: "stopped",
+                source: "lifecycle",
                 active: false,
                 attention: false,
             },
@@ -471,7 +476,8 @@ mod tests {
             "1 active · 1 needs you · 2 stopped"
         );
         let all_active = vec![RowState {
-            state: "working",
+            state: "running",
+            source: "reported",
             active: true,
             attention: false,
         }];

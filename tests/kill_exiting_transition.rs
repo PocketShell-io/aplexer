@@ -9,7 +9,8 @@
 //! phase (`running`) with `worker_alive: true`, so a snapshot consumer could
 //! not tell a dying session from a healthy one. This file pins the honest
 //! dying signal: from kill acceptance until the record disappears, the row
-//! reads `exiting` (state `exiting`, "stopping" in the terminal UI), and
+//! reads `exiting` (the same word in the terminal UI -- the state
+//! vocabulary is unified), and
 //! nothing about kill's exit codes or clean-removal outcome changes.
 
 use std::path::PathBuf;

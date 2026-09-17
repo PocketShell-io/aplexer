@@ -187,5 +187,6 @@ fn status_is_animating(status: &StatusBarCtx) -> bool {
         .clone();
     let live = cached_live_status(status, record.id);
     let state = overlay_reported_state(&record, live.raw.as_ref());
-    spinner_frame(session_ui_state(&state, now_ms()).0, now_ms()).is_some()
+    let (state_word, state_source) = session_ui_state(&state, now_ms());
+    spinner_frame(state_word, state_source, now_ms()).is_some()
 }

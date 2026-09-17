@@ -350,20 +350,22 @@ fn ui_state_is_semantic_when_reported_and_honest_when_inferred() {
     assert!(ui_state_is_active("waiting"));
 
     record.reported_state = Some("working".to_string());
-    assert_eq!(session_ui_state(&record, now), ("working", "reported"));
+    assert_eq!(session_ui_state(&record, now), ("running", "reported"));
     record.reported_state = Some("idle".to_string());
     assert_eq!(session_ui_state(&record, now), ("idle", "reported"));
     assert!(!ui_state_needs_attention("idle"));
 
-    // Stale push: only PTY-recency evidence, so only activity words.
+    // Stale push: only PTY-recency evidence, so only activity-derived
+    // words.
     record.reported_state = Some("waiting".to_string());
     record.reported_state_at_ms = Some(now.saturating_sub(60_000));
     record.last_activity_ms = Some(now - 500);
-    assert_eq!(session_ui_state(&record, now), ("active", "activity"));
+    assert_eq!(session_ui_state(&record, now), ("running", "activity"));
     record.last_activity_ms = Some(now - 5_000);
-    assert_eq!(session_ui_state(&record, now), ("quiet", "activity"));
-    // Quiet is deliberately not attention: silence is not a reported wait.
-    assert!(!ui_state_needs_attention("quiet"));
+    assert_eq!(session_ui_state(&record, now), ("idle", "activity"));
+    // Inferred idle is deliberately not attention: silence is not a
+    // reported wait.
+    assert!(!ui_state_needs_attention("idle"));
 }
 
 #[test]
@@ -385,14 +387,14 @@ fn ui_state_does_not_guess_agent_semantics_for_shells_or_corpses() {
     record.reported_state = Some("waiting".to_string());
     assert_eq!(session_ui_state(&record, now), ("waiting", "reported"));
     record.reported_state = Some("working".to_string());
-    assert_eq!(session_ui_state(&record, now), ("working", "reported"));
+    assert_eq!(session_ui_state(&record, now), ("running", "reported"));
 
-    // A stale push no longer falls back to plain `running`: a shell an
-    // agent has lived in gets the same activity words as a first-class
-    // engine once nothing is fresh. Its long-quiet PTY is an agent
-    // resting at a prompt (or thinking), not a shell doing work.
+    // A stale push no longer falls back to plain lifecycle `running`: a
+    // shell an agent has lived in gets the same activity-derived words as
+    // a first-class engine once nothing is fresh. Its long-quiet PTY is
+    // an agent resting at a prompt (or thinking), not a shell doing work.
     record.reported_state_at_ms = Some(now.saturating_sub(60_000));
-    assert_eq!(session_ui_state(&record, now), ("quiet", "activity"));
+    assert_eq!(session_ui_state(&record, now), ("idle", "activity"));
 
     // And an idle push with no PTY output since it landed stays
     // authoritative however old it gets -- a rest has no follow-up
@@ -506,7 +508,7 @@ fn overlay_reported_state_takes_the_live_activity_stamp_too() {
     let overlaid = overlay_reported_state(&record, Some(&raw));
     assert_eq!(
         session_ui_state(&overlaid, now),
-        ("active", "activity"),
+        ("running", "activity"),
         "newer live output retracts the rest even though the snapshot predates it"
     );
 
@@ -528,12 +530,12 @@ fn overlay_reported_state_takes_the_live_activity_stamp_too() {
 /// it must fall through to `broken`, the shape prune reaps, never back
 /// to a live-looking word.
 #[test]
-fn ui_state_shows_a_killed_session_as_stopping_while_it_dies() {
+fn ui_state_shows_a_killed_session_as_exiting_while_it_dies() {
     let now: u64 = 20_000;
     // Worker still alive mid-finalization (the kill window, however long
-    // finalization takes): "stopping", not "running".
+    // finalization takes): "exiting", not "running".
     let dying = mk_record("/ws/state", "dying", Phase::Exiting);
-    assert_eq!(session_ui_state(&dying, now), ("stopping", "lifecycle"));
+    assert_eq!(session_ui_state(&dying, now), ("exiting", "lifecycle"));
 
     // Worker gone before finalization wrote a terminal phase: the
     // contradicted-phase rule owns the row now.

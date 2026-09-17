@@ -301,13 +301,13 @@ pub(crate) fn status_bar_text(ctx: &StatusBarCtx, cols: usize) -> String {
     let branch_segment = git_branch_segment(live.branch.as_deref());
     let state_record = overlay_reported_state(&record, raw.as_ref());
     let now = now_ms();
-    let (state_word, _) = session_ui_state(&state_record, now);
+    let (state_word, state_source) = session_ui_state(&state_record, now);
     let (glyph, _) = state_glyph(state_word);
     // Agent-busy states animate: the static dot is replaced by the current
     // braille frame, and the bar starts moving (see the status thread's
     // animation tick, which is what makes redraws actually happen at the
     // frame rate even when the PTY itself is quiet).
-    let glyph = match spinner_frame(state_word, now) {
+    let glyph = match spinner_frame(state_word, state_source, now) {
         Some(frame) => frame.to_string(),
         None => glyph.to_string(),
     };

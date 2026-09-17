@@ -30,26 +30,27 @@ pub(crate) fn paint(enabled: bool, code: &str, text: &str) -> String {
 
 pub(crate) fn state_glyph(state: &str) -> (&'static str, &'static str) {
     match state {
-        "running" | "working" | "active" => ("\u{25CF}", ANSI_GREEN),
+        "running" => ("\u{25CF}", ANSI_GREEN),
         "waiting" => ("!", ANSI_YELLOW),
-        "starting" | "exiting" | "stopping" => ("\u{25D0}", ANSI_YELLOW),
-        "failed" | "broken" | "oom" => ("\u{2717}", ANSI_RED),
-        _ => ("\u{25CB}", ANSI_GRAY), // "exited", "idle", "quiet"
+        "starting" | "exiting" => ("\u{25D0}", ANSI_YELLOW),
+        "failed" | "broken" => ("\u{2717}", ANSI_RED),
+        _ => ("\u{25CB}", ANSI_GRAY), // "exited", "idle"
     }
 }
 
 /// The status bar's animated state glyph: a braille spinner frame while the
-/// attached session's state is `working` -- a fresh `a state-report` push,
-/// i.e. the agent *said* it is running -- and `None` for every other state,
-/// meaning "keep `state_glyph`'s static glyph". Deliberately not `active`:
-/// that state is a PTY-recency guess (it fires while the user merely types
-/// at an agent TUI's prompt, and for any record with no activity sample at
-/// all), so spinning on it would promise work that is not happening. The
-/// reported state is the only signal that means "the agent is working" and
-/// not just "the terminal is warm"; without hooks installed the bar simply
-/// stays on its static glyph. So the bar only ever moves while there is
-/// work to point at: an idle, waiting, or dead session renders byte-stable
-/// text, and the dirty check in `draw_status_bar` keeps it write-free.
+/// attached session's state is `running` *and* that word came from a fresh
+/// `a state-report` push (`source == "reported"`, i.e. the agent *said* it
+/// is working), and `None` for everything else, meaning "keep `state_glyph`'s
+/// static glyph". Deliberately not activity-inferred `running`: that state
+/// is a PTY-recency guess (it fires while the user merely types at an agent
+/// TUI's prompt, and for any record with no activity sample at all), so
+/// spinning on it would promise work that is not happening. The reported
+/// state is the only signal that means "the agent is working" and not just
+/// "the terminal is warm"; without hooks installed the bar simply stays on
+/// its static glyph. So the bar only ever moves while there is work to
+/// point at: an idle, waiting, or dead session renders byte-stable text,
+/// and the dirty check in `draw_status_bar` keeps it write-free.
 ///
 /// The frame index is a pure function of the wall clock, deliberately not
 /// thread-local counter state: the status thread, the frame loop's pending
@@ -58,36 +59,51 @@ pub(crate) fn state_glyph(state: &str) -> (&'static str, &'static str) {
 /// `SPINNER_FRAME_MS` window agree on the frame without sharing anything.
 /// (Sanitized-then-padded like all bar text, and the same width-1 as the
 /// `●` it replaces, so truncation math is unchanged.)
-pub(crate) fn spinner_frame(state: &str, now_ms: u64) -> Option<char> {
-    if state != "working" {
+pub(crate) fn spinner_frame(state: &str, source: &str, now_ms: u64) -> Option<char> {
+    if state != "running" || source != "reported" {
         return None;
     }
     let idx = (now_ms / SPINNER_FRAME_MS) as usize % SPINNER_FRAMES.len();
     Some(SPINNER_FRAMES[idx])
 }
 
-/// The single human-facing state derivation: lifecycle facts first (a dead
-/// worker behind a non-terminal phase is `broken` regardless of anything the
-/// record claims), then the authoritative agent-state derivation shared with
-/// `a watch` (`aplexer::watch::derive_agent_state_with_source` -- one set of
-/// freshness thresholds, never a copy), mapped onto the honest human
-/// vocabulary from docs/cli-ux.md section 4:
+/// The single human-facing state derivation. Every state a CLI command
+/// prints comes from one unified eight-word vocabulary, each word with one
+/// definition:
 ///
-/// - a fresh `a state-report` push is semantic fact: `working`/`waiting`/`idle`
+/// | word        | means                                                               |
+/// |-------------|---------------------------------------------------------------------|
+/// | `starting`  | the worker is coming up                                              |
+/// | `running`   | doing work: the agent said so (fresh `a state-report` push), the PTY is producing output, or it is a plain shell that never reported anything |
+/// | `idle`      | alive and resting: the agent said so, or the PTY went quiet -- a silent compute step can look like this, so `idle` never means "blocked on you" |
+/// | `waiting`   | the agent said it is blocked and needs the user; never inferred from silence |
+/// | `exiting`   | a kill was accepted and teardown is running                          |
+/// | `exited`    | the workload ended; `a status` shows the exit code/signal            |
+/// | `failed`    | the worker failed, or the workload died abnormally (OOM kill included; `a status` says which) |
+/// | `broken`    | the record claims alive but the worker process is gone; `a prune` reaps it |
+///
+/// Lifecycle facts first (a dead worker behind a non-terminal phase is
+/// `broken` regardless of anything the record claims), then the
+/// authoritative agent-state derivation shared with `a watch`
+/// (`aplexer::watch::derive_agent_state_with_source` -- one set of
+/// freshness thresholds, never a copy):
+///
+/// - a fresh `a state-report` push is semantic fact: `running`/`waiting`/`idle`
 ///   -- including for `shell`-engine sessions, where the agent was started
 ///   by hand inside the shell and the push is the only semantic signal
-/// - PTY-recency inference never claims semantics: recent output is
-///   `active`, silence is `quiet` -- deliberately NOT `waiting`, because
-///   "the terminal went quiet" cannot tell a blocked agent from a long
-///   compute step
+/// - PTY-recency inference never claims semantics: recent output and
+///   silence both map onto the shared words (`running`/`idle`), never onto
+///   `waiting`, because "the terminal went quiet" cannot tell a blocked
+///   agent from a long compute step
 /// - a plain shell that never reported any agent state is just `running`
 ///   no matter how quiet its PTY is; a shell an agent has lived in (any
-///   state-report push in its history) gets the same activity words as a
-///   first-class engine once nothing is fresh
+///   state-report push in its history) gets the same activity-derived
+///   words as a first-class engine once nothing is fresh
 ///
 /// Returns `(state, source)` where source is `reported`, `activity`, or
-/// `lifecycle`, so callers can qualify inferred states instead of faking
-/// certainty.
+/// `lifecycle`, so callers can tell a semantic fact from a PTY-recency
+/// guess (the spinner only spins on reported work; `a status` qualifies
+/// inferred words) now that the words themselves no longer encode it.
 /// `observed_state` against the wall clock, for the query-time commands that
 /// have no injected clock of their own. Every derived `state` a CLI command
 /// prints goes through here or through `observed_state` directly, so none of
@@ -115,15 +131,20 @@ pub(crate) fn session_ui_state(record: &SessionRecord, now: u64) -> (&'static st
     }
     match record.phase {
         Phase::Starting => ("starting", "lifecycle"),
-        Phase::Exiting => ("stopping", "lifecycle"),
-        Phase::Exited => {
-            let oom = record
+        Phase::Exiting => ("exiting", "lifecycle"),
+        // An OOM kill is a workload that died abnormally, not a normal
+        // exit -- same word as Phase::Failed, and `a status`'s exit line
+        // still says `oom=true`.
+        Phase::Exited
+            if record
                 .exit
                 .as_ref()
                 .map(|exit| exit.oom_killed)
-                .unwrap_or(false);
-            (if oom { "oom" } else { "exited" }, "lifecycle")
+                .unwrap_or(false) =>
+        {
+            ("failed", "lifecycle")
         }
+        Phase::Exited => ("exited", "lifecycle"),
         Phase::Failed => ("failed", "lifecycle"),
         Phase::Running => {
             // A fresh state-report push is what the agent says it is --
@@ -134,63 +155,50 @@ pub(crate) fn session_ui_state(record: &SessionRecord, now: u64) -> (&'static st
             // shell session would show `running` forever.
             let (state, source) = aplexer::watch::derive_agent_state_with_source(record, now);
             if source == "reported" {
-                return match state {
-                    "running" => ("working", "reported"),
-                    "waiting" => ("waiting", "reported"),
-                    "idle" => ("idle", "reported"),
-                    // Defensive only: fresh_reported_state only ever
-                    // produces the three values above.
-                    _ => (state, source),
-                };
+                return (state, "reported");
             }
             // A shell an agent has lived in (any state-report push in the
             // record's history) is not a "plain shell": when nothing is
             // fresh, its quiet is an agent sitting at a prompt or thinking,
-            // not a shell doing work, so it gets the same honest activity
+            // not a shell doing work, so it gets the same activity-derived
             // words as a first-class engine. Only a shell that never
             // reported anything keeps the lifecycle `running` -- for a bare
             // prompt (or `tail -f`) that really is all that is known.
             if record.engine == "shell" && record.reported_state.is_none() {
                 return ("running", "lifecycle");
             }
-            match (state, source) {
-                // The heuristic's "running/waiting" words imply agent
-                // semantics the PTY cannot actually know; translate to
-                // activity words that don't.
-                ("running", _) => ("active", "activity"),
-                ("waiting", _) => ("quiet", "activity"),
-                (state, source) => (state, source),
-            }
+            // The heuristic's words map onto the shared vocabulary:
+            // recent output is `running`; silence is `idle` -- never
+            // `waiting`, which the PTY cannot know.
+            let state = if state == "waiting" { "idle" } else { state };
+            (state, "activity")
         }
     }
 }
 
 /// Whether a state word counts as "alive/working" in workspace summaries --
-/// everything a live worker can be in, including the merely-quiet.
+/// everything a live worker can be in, including the merely-`idle`.
 pub(crate) fn ui_state_is_active(state: &str) -> bool {
-    matches!(
-        state,
-        "working" | "waiting" | "idle" | "active" | "quiet" | "running" | "starting" | "stopping"
-    )
+    matches!(state, "running" | "idle" | "waiting" | "starting" | "exiting")
 }
 
-/// Whether a state word means "the human should look at this": reported
-/// waits and every failure/health condition. Inferred quiet is deliberately
+/// Whether a state word means "the human should look at this": a reported
+/// wait and every failure/health condition. Inferred `idle` is deliberately
 /// not attention -- it is usually just a long-running command.
 pub(crate) fn ui_state_needs_attention(state: &str) -> bool {
-    matches!(state, "waiting" | "broken" | "failed" | "oom")
+    matches!(state, "waiting" | "failed" | "broken")
 }
 
 /// How long a state word's evidence is stale-able, for the list's age
-/// column: the state-report push for semantic states, last PTY output for
-/// activity states, the exit for terminal ones. Falls back to the record's
-/// own update time so the column always has something honest to show.
-pub(crate) fn state_timestamp(record: &SessionRecord, state: &str, now: u64) -> u64 {
-    let candidate = match state {
-        "working" | "waiting" | "idle" => record.reported_state_at_ms,
-        "active" | "quiet" => record.last_activity_ms,
-        "exited" | "oom" => record.exit.as_ref().map(|exit| exit.exited_at_ms),
-        _ => None,
+/// column: the state-report push for reported words, last PTY output for
+/// activity-derived ones, the exit for terminal ones. Falls back to the
+/// record's own update time so the column always has something honest to
+/// show.
+pub(crate) fn state_timestamp(record: &SessionRecord, source: &str, now: u64) -> u64 {
+    let candidate = match source {
+        "reported" => record.reported_state_at_ms,
+        "activity" => record.last_activity_ms,
+        _ => record.exit.as_ref().map(|exit| exit.exited_at_ms),
     };
     candidate
         .filter(|at| *at <= now)
