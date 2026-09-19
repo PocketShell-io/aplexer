@@ -3,10 +3,10 @@ revision = 3
 requires-python = ">=3.11"
 
 [options]
-exclude-newer = "2026-09-09T22:21:20.210987684Z"
+exclude-newer = "2026-09-12T21:56:49.437295563Z"
 exclude-newer-span = "P7D"
 
 [[package]]
 name = "aplexer-client"
-version = "0.1.7"
+version = "0.1.8"
 source = { editable = "." }
