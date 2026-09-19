@@ -9,6 +9,9 @@ pub(crate) struct StatusData {
     pub(crate) history_persistence_error: Option<String>,
     pub(crate) record_persistence_error: Option<String>,
     pub(crate) foreground_command: Option<String>,
+    /// The ack-gated crash warning for this session (`crate::warnings`),
+    /// materialized by the caller's sweep; `None` renders as JSON `null`.
+    pub(crate) warning: Option<aplexer::warnings::SessionWarning>,
 }
 
 impl StatusData {
@@ -48,6 +51,7 @@ impl StatusData {
             foreground_command,
             current,
             raw,
+            warning: None,
         }
     }
 
@@ -83,6 +87,10 @@ impl StatusData {
         value["workload_placement"] =
             aplexer::placement::placement_summary(self.current.workload_cgroup.as_deref());
         value["worker_reachable"] = json!(self.worker_reachable);
+        value["warning"] = match &self.warning {
+            Some(warning) => warning.to_json(),
+            None => Value::Null,
+        };
         if let Some(error) = &self.rpc_error {
             value["rpc_error"] = json!(error);
         }
@@ -160,7 +168,11 @@ impl StatusData {
 }
 
 pub(crate) fn cmd_status(paths: &Paths, target: TargetArgs, json_output: bool) -> Result<()> {
-    let status = StatusData::load(resolve(paths, &target)?);
+    // Same query-time warning materialization every listing surface runs,
+    // so the first status after a crash already carries `warning`.
+    aplexer::warnings::sweep_warnings(paths);
+    let mut status = StatusData::load(resolve(paths, &target)?);
+    status.warning = aplexer::warnings::load_warning_for(paths, status.current.id);
     if json_output {
         status.print_json()?;
     } else if io::stdout().is_terminal() {

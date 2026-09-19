@@ -57,6 +57,8 @@ pub(crate) fn run() -> Result<()> {
         Commands::Kill(args) => cmd_kill(&paths, args, cli.json),
         Commands::Forget(args) => cmd_forget(&paths, args, cli.json),
         Commands::Prune => cmd_prune(&paths, cli.json),
+        Commands::Ack(args) => cmd_ack(&paths, args, cli.json),
+        Commands::Warnings(_) => cmd_warnings(&paths, cli.json),
         Commands::Rename(args) => cmd_rename(&paths, args, cli.json),
         Commands::Engines => cmd_engines(&paths, cli.json),
         Commands::Profiles => cmd_profiles(&paths, cli.json),
@@ -263,6 +265,89 @@ pub(crate) fn resolve(paths: &Paths, target: &TargetArgs) -> Result<SessionRecor
     )
 }
 
+/// `a ack` -- the only verb that removes a crash warning. Bare, it
+/// acknowledges everything (the "clear the banner" flow); with a target it
+/// acknowledges just that session's. Matching runs over the warning files
+/// themselves, not the registry: the crashed session's record is usually
+/// long gone by the time anyone acknowledges. A targeted ack that matches
+/// nothing fails loudly (a mistyped selector must not be a silent no-op);
+/// a bare ack with nothing pending is already the goal state.
+pub(crate) fn cmd_ack(paths: &Paths, args: AckArgs, json_output: bool) -> Result<()> {
+    let cwd = resolve_message_workspace(None).ok();
+    let selected = aplexer::warnings::select_warnings(
+        paths,
+        args.selector.as_deref(),
+        args.workspace.as_deref(),
+        args.tag.as_deref(),
+        cwd.as_deref(),
+    );
+    let targeted = args.selector.is_some() || args.workspace.is_some() || args.tag.is_some();
+    if selected.is_empty() {
+        if targeted {
+            bail!("no matching unacknowledged warning; `a warnings` lists them");
+        }
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({ "acknowledged": [] }))?
+            );
+        } else {
+            println!("no warnings to acknowledge");
+        }
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = selected.iter().map(|warning| warning.session).collect();
+    aplexer::warnings::acknowledge_warnings(paths, &ids)?;
+    if json_output {
+        let acknowledged: Vec<Value> = selected.iter().map(|warning| warning.to_json()).collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "acknowledged": acknowledged }))?
+        );
+    } else {
+        for warning in &selected {
+            println!(
+                "acknowledged {} ({}) — {}",
+                warning.selector(),
+                warning.kind.as_str(),
+                warning.detail
+            );
+        }
+        println!("acknowledged {} warning(s)", selected.len());
+    }
+    Ok(())
+}
+
+/// `a warnings` -- the complete list of unacknowledged crash/OOM warnings,
+/// including those whose session record was already pruned (which is the
+/// point of the store). `a snapshot` rows carry only their own session's
+/// warning, so machine consumers that must not miss any use this.
+pub(crate) fn cmd_warnings(paths: &Paths, json_output: bool) -> Result<()> {
+    aplexer::warnings::sweep_warnings(paths);
+    let warnings = aplexer::warnings::load_warnings(paths);
+    if json_output {
+        let values: Vec<Value> = warnings.iter().map(|warning| warning.to_json()).collect();
+        println!("{}", serde_json::to_string_pretty(&values)?);
+        return Ok(());
+    }
+    if warnings.is_empty() {
+        println!("no unacknowledged warnings");
+        return Ok(());
+    }
+    let color = color_enabled();
+    print_warning_banner(&warnings, color);
+    println!();
+    println!(
+        "{}",
+        paint(
+            color,
+            ANSI_DIM,
+            "Acknowledge: a ack (everything) · a ack SESSION (one)"
+        )
+    );
+    Ok(())
+}
+
 pub(crate) fn cmd_start(paths: &Paths, args: StartArgs, json_output: bool) -> Result<()> {
     if json_output && args.attach {
         bail!(
@@ -323,6 +408,10 @@ pub(crate) fn cmd_start(paths: &Paths, args: StartArgs, json_output: bool) -> Re
 }
 
 pub(crate) fn cmd_list(paths: &Paths, args: ListArgs, json_output: bool) -> Result<()> {
+    // Materialize ack-gated crash warnings BEFORE anything reaps corpses:
+    // the crashed record is the evidence, and the default list's sweep (and
+    // `a prune`) remove it while the warning must survive it.
+    aplexer::warnings::sweep_warnings(paths);
     // `--sort` remembers even on the JSON path, so a later human `a list` /
     // `a N` uses the same workspace order. JSON row order itself stays
     // newest-created-first (spec.md §18).

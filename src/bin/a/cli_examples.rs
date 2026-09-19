@@ -98,6 +98,12 @@ pub(crate) const PRUNE_EXAMPLES: &str = r#"Examples:
   a prune --json                machine-readable report of what went away
 "#;
 
+pub(crate) const ACK_EXAMPLES: &str = r#"Examples:
+  a ack                         acknowledge every crash/OOM warning
+  a ack myrepo:review           acknowledge one session's warning
+  a ack 7f3c                    UUID prefixes work even after the record is pruned
+"#;
+
 pub(crate) const RENAME_EXAMPLES: &str = r#"Examples:
   a rename --tag docs              rename the session you are inside (APLEXER_SESSION_ID)
   a rename main --tag docs         retag "main" as "docs" in the current workspace

@@ -216,6 +216,20 @@ The next work should remain job-shaped rather than become a collection of flags.
 - recovery advice in `doctor` and `status` that chooses one of those verbs;
 - a durability warning when the worker/workload is placed under a user-manager failure domain.
 
+Shipped in this slice: the ack-gated crash warning. A session that dies
+OOM-killed, fatally, or without any exit recorded leaves a warning sidecar
+under the state root that every listing surface shows — as a banner under
+the TTY `a list`, a per-row `warning` object in `a snapshot`/`a status
+--json`, and a complete standalone `a warnings` list (`--json` for
+machines). The warning outlives the session's record: `a prune` may reap
+the record, the warning stays until an explicit `a ack` (bare, or targeted
+by `workspace:tag` / UUID prefix / tag-in-workspace). Acknowledging moves
+the sidecar under `acked/`, which both hides it and stops the query-time
+sweep from re-materializing it while the broken record itself lingers.
+Detection runs at query time from the same predicate the worker applies at
+finalization, so a worker that died without being able to say so is still
+caught by the next `a list`.
+
 ### Launch confidence
 
 - `a plan ...` as a human rendering of the existing launch resolution path;

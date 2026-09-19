@@ -323,6 +323,7 @@ pub(crate) fn cmd_list_tty(paths: &Paths, args: ListArgs) -> Result<()> {
     let hidden_exited = filter_records_for_view(&mut records, args.running, args.all);
     if records.is_empty() {
         print_empty_list(args.running, hidden_exited);
+        print_warnings_coda(paths, color_enabled());
         return Ok(());
     }
 
@@ -378,7 +379,21 @@ pub(crate) fn cmd_list_tty(paths: &Paths, args: ListArgs) -> Result<()> {
     }
 
     print_list_footer(sort, hidden_exited, color);
+    print_warnings_coda(paths, color);
     Ok(())
+}
+
+/// The crash-warning coda under the TTY listing (and under the empty
+/// list): `cmd_list` swept before rendering, so loading suffices. Silent
+/// when nothing is unacknowledged, and never printed on the redirected
+/// plain path -- `a list | ...` stays byte-compatible.
+fn print_warnings_coda(paths: &Paths, color: bool) {
+    let warnings = aplexer::warnings::load_warnings(paths);
+    if warnings.is_empty() {
+        return;
+    }
+    println!();
+    print_warning_banner(&warnings, color);
 }
 
 #[cfg(test)]

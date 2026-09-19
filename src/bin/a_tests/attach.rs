@@ -240,6 +240,8 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Hotkeys => "hotkeys",
         Commands::QuickAttach(_) => "quick-attach",
         Commands::QuickLaunch(_) => "quick-launch",
+        Commands::Ack(_) => "ack",
+        Commands::Warnings(_) => "warnings",
     }
 }
 

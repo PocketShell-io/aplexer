@@ -232,6 +232,18 @@ happens next depends on how you ask. `a -` attaches to the existing session,
 `a new` claims the next free `<tag>-2` suffix, and plain `a start` demands
 the exact tag and fails when it's taken.
 
+### Crash warnings
+
+A session that is OOM-killed or crashes leaves a **warning** that shows in
+`a list` (and `a snapshot`/`a status` JSON) and stays there until you
+acknowledge it — even if `a prune` has since removed the session's record:
+
+```bash
+a warnings           # list unacknowledged crash/OOM warnings
+a ack                # clear them all
+a ack myrepo:review  # clear one (works after the record is pruned)
+```
+
 ## Engines, profiles & configuration
 
 An **engine** is a command template: a coding agent like `claude`, `codex`,
@@ -351,6 +363,8 @@ print(a.capture("api:review").decode(errors="replace"))
 | `a kill` | signal a session's workload and clean up |
 | `a forget` | drop a dead session's records |
 | `a prune` | remove all dead, unreclaimable records and their history |
+| `a warnings` | list unacknowledged crash/OOM warnings |
+| `a ack` | acknowledge crash/OOM warnings so they stop showing |
 | `a rename` | change a session's tag |
 | `a engines` / `a profiles` | list configured or discovered engines / profiles |
 | `a doctor` | check the environment and config for problems |

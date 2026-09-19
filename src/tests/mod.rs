@@ -11,6 +11,7 @@ mod protocol;
 mod record;
 mod registry;
 mod util;
+mod warnings;
 
 use super::*;
 use crate::paths::{absolute_override_path, absolute_xdg_path};

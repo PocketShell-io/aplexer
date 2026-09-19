@@ -1192,6 +1192,26 @@ program, so an agent running behind a foreground `vim` reads
 per render -- the same query-time price the JSON field already pays -- and
 is never persisted.
 
+`warning` is the ack-gated crash record: every `a snapshot`/`a status --json`
+row carries either `null` or an object `{session, workspace, tag, engine,
+kind: "oom"|"crash", detail, created_at_ms}` saying that this session was
+killed by the kernel OOM killer, died without recording an exit
+(`state: "broken"`), or finalized with a fatal error. Unlike the derived
+fields above it is persisted -- as a sidecar under
+`<state_root>/warnings/<session-id>.json`, written once by the worker at
+finalization (OOM, fatal) or by the query-time sweep every listing command
+runs before it reads (the dead-worker crash no worker can report), so the
+fact survives the `a prune` that reaps the record that evidenced it. The
+warning shows in every surface -- a banner under the TTY `a list`, the
+per-row JSON field, and a complete standalone `a warnings` (`--json` for
+machines) -- and only `a ack` removes it, by moving the sidecar under
+`acked/`: bare `a ack` clears everything; `a ack SESSION` takes the same
+selectors as every other session verb and works after the record is gone.
+The tombstone also keeps the sweep from re-materializing the warning while
+an unpruned broken record lingers, so an acknowledgement always sticks. A
+session that merely exited -- including `a kill`'s own signal -- warns
+nothing: a session ending is not a session crashing.
+
 
 The schema must support deterministic reverse lookups by:
 

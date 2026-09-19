@@ -261,6 +261,25 @@ pub(crate) struct ForgetArgs {
     pub(crate) force: bool,
 }
 #[derive(Args)]
+pub(crate) struct AckArgs {
+    /// Acknowledge only the warning for this session: UUID/prefix,
+    /// workspace:tag selector, or tag in the current workspace. The
+    /// session's record may already be gone -- warnings outlive it.
+    /// Omitted: acknowledge every warning.
+    #[arg(value_name = "SESSION", add = session_selector_completions())]
+    pub(crate) selector: Option<String>,
+    /// Workspace directory to resolve the tag in
+    #[arg(long, value_name = "PATH")]
+    pub(crate) workspace: Option<PathBuf>,
+    /// Tag to resolve in --workspace (or the current workspace)
+    #[arg(long, value_name = "TAG")]
+    pub(crate) tag: Option<String>,
+}
+
+#[derive(Args, Default)]
+pub(crate) struct WarningsArgs {}
+
+#[derive(Args)]
 pub(crate) struct WatchArgs {
     /// Currently the only supported output mode -- required explicitly
     /// rather than defaulted so a bare `a watch` fails loudly instead of

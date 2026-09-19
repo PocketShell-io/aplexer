@@ -179,7 +179,10 @@ pub(crate) fn session_ui_state(record: &SessionRecord, now: u64) -> (&'static st
 /// Whether a state word counts as "alive/working" in workspace summaries --
 /// everything a live worker can be in, including the merely-`idle`.
 pub(crate) fn ui_state_is_active(state: &str) -> bool {
-    matches!(state, "running" | "idle" | "waiting" | "starting" | "exiting")
+    matches!(
+        state,
+        "running" | "idle" | "waiting" | "starting" | "exiting"
+    )
 }
 
 /// Whether a state word means "the human should look at this": a reported
@@ -289,6 +292,50 @@ pub(crate) fn workspace_glyph(running: usize, total: usize) -> (&'static str, &'
         ("\u{25CB}", ANSI_GRAY)
     } else {
         ("\u{25D0}", ANSI_YELLOW)
+    }
+}
+
+/// The ack-gated crash-warning banner, shared by `a warnings` and the TTY
+/// list's coda: one line per unacknowledged warning, newest first, each
+/// naming the exact selector `a ack` understands -- including warnings
+/// whose session record was already pruned, which is the point of the
+/// store (`src/warnings.rs`): the warning shows until acknowledged, not
+/// until the record goes away.
+pub(crate) fn print_warning_banner(warnings: &[aplexer::warnings::SessionWarning], color: bool) {
+    let plural = if warnings.len() == 1 {
+        "warning"
+    } else {
+        "warnings"
+    };
+    println!(
+        "{}",
+        paint(
+            color,
+            &format!("{ANSI_BOLD}{ANSI_YELLOW}"),
+            &format!(
+                "\u{26a0} {} unacknowledged crash {plural} (cleared by `a ack`):",
+                warnings.len()
+            )
+        )
+    );
+    let now = now_ms();
+    for warning in warnings {
+        let (kind_color, kind_label) = match warning.kind {
+            aplexer::warnings::WarningKind::Oom => (ANSI_YELLOW, "oom"),
+            aplexer::warnings::WarningKind::Crash => (ANSI_RED, "crashed"),
+        };
+        println!(
+            "  {} {} {} — {} · {}",
+            paint(color, kind_color, "\u{26a0}"),
+            paint(color, kind_color, kind_label),
+            paint(color, ANSI_BOLD, &warning.selector()),
+            warning.detail,
+            paint(
+                color,
+                ANSI_DIM,
+                &human_age_phrase(now.saturating_sub(warning.created_at_ms))
+            )
+        );
     }
 }
 

@@ -8,6 +8,7 @@ pub mod messaging;
 pub mod placement;
 pub mod retired;
 pub mod screen;
+pub mod warnings;
 pub mod watch;
 pub mod worker;
 

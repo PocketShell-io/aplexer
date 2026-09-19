@@ -422,6 +422,23 @@ fn finalize_session(runtime: &WorkerRuntime, state: &mut LoopState) {
         return;
     }
     record_final_state(runtime, &exit, state);
+    // The terminal record carries the crash, but only until the `a prune`
+    // (or the list sweep) that reaps finished sessions takes it away, and a
+    // human may not be looking by then. Record it as an ack-gated warning
+    // too (crate::warnings) -- exactly what `warning_for_record` would
+    // derive from this same final record, so the worker's write and the
+    // clients' query-time sweep can never disagree about what a crash is.
+    // Best-effort: a failed warning write must not stop finalization.
+    if oom || state.fatal.is_some() {
+        match runtime.record() {
+            Ok(record) => {
+                if let Err(error) = crate::warnings::record_warning(&runtime.paths, &record) {
+                    eprintln!("aplexer worker: record crash warning: {error:#}");
+                }
+            }
+            Err(error) => eprintln!("aplexer worker: record crash warning: {error:#}"),
+        }
+    }
     if !state.containment_empty {
         cg = await_late_containment_proof(runtime, state);
     }

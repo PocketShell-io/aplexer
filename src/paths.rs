@@ -113,6 +113,13 @@ impl Paths {
     pub fn retired_session(&self, id: Uuid) -> PathBuf {
         self.retired_sessions_dir().join(id.to_string())
     }
+    /// Ack-gated crash/OOM warnings (`crate::warnings`), one JSON sidecar
+    /// per session id. Deliberately outside each session's state dir: the
+    /// session's own removal (`a prune`, the list sweep, worker teardown)
+    /// is exactly the event the warning must survive.
+    pub fn warnings_dir(&self) -> PathBuf {
+        self.state_root.join("warnings")
+    }
 }
 
 pub(crate) fn absolute_override_path(path: PathBuf, variable: &str) -> Result<PathBuf> {

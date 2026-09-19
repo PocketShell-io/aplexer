@@ -100,6 +100,7 @@ fn status_json_value_preserves_runtime_diagnostics() {
         history_persistence_error: Some("history warning".into()),
         record_persistence_error: Some("record warning".into()),
         foreground_command: Some("vim".into()),
+        warning: None,
     };
 
     let value = status.json_value().unwrap();
@@ -111,6 +112,9 @@ fn status_json_value_preserves_runtime_diagnostics() {
     assert_eq!(value["cgroup"]["memory"], "64M");
     assert_eq!(value["history_persistence_error"], "history warning");
     assert_eq!(value["record_persistence_error"], "record warning");
+    // No crash on record: the field is present and null, never absent, so
+    // consumers can index it unconditionally.
+    assert_eq!(value["warning"], serde_json::Value::Null);
 }
 
 #[test]

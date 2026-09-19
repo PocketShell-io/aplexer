@@ -74,6 +74,13 @@ pub(crate) enum Commands {
     /// Remove dead, unreclaimable session records and their durable history.
     #[command(after_help = PRUNE_EXAMPLES)]
     Prune,
+    /// Acknowledge crash/OOM warnings so they stop showing in `a` output
+    /// (`a warnings` lists them; a bare `a ack` clears them all).
+    #[command(after_help = ACK_EXAMPLES)]
+    Ack(AckArgs),
+    /// List unacknowledged crash/OOM warnings (also visible in `a list`
+    /// until acknowledged with `a ack`).
+    Warnings(WarningsArgs),
     /// Change a session's tag.
     #[command(after_help = RENAME_EXAMPLES)]
     Rename(RenameArgs),

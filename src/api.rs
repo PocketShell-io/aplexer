@@ -180,6 +180,10 @@ fn default_profile_variants() -> ProfileVariants {
 }
 
 pub fn snapshot_json(paths: &Paths, running: bool) -> Result<Value> {
+    // Materialize ack-gated crash warnings first, so a row whose session
+    // just crashed carries its `warning` on this very query instead of
+    // waiting for a later one.
+    crate::warnings::sweep_warnings(paths);
     let records = list_records(paths)?;
     let mut enriched = Vec::with_capacity(records.len());
     // One clock for the whole snapshot, so two rows created in the same
@@ -226,6 +230,14 @@ pub fn snapshot_json(paths: &Paths, running: bool) -> Result<Value> {
             crate::placement::placement_summary(record.worker_cgroup.as_deref());
         value["workload_placement"] =
             crate::placement::placement_summary(record.workload_cgroup.as_deref());
+        // The ack-gated crash/OOM warning for this session, `null` when it
+        // has none (`crate::warnings`). `a ack` is what clears it; the
+        // field survives `a prune` via the sidecar file, though a pruned
+        // session has no row left to carry it here -- `a warnings --json`
+        // is the complete list.
+        value["warning"] = crate::warnings::load_warning_for(paths, record.id)
+            .map(|warning| warning.to_json())
+            .unwrap_or(Value::Null);
         enriched.push(value);
     }
     Ok(Value::Array(enriched))
@@ -298,6 +310,9 @@ fn rpc_simple_within(
 /// Return the live session record when reachable, or the persisted record plus
 /// explicit reachability evidence when the worker cannot answer.
 pub fn status_json(paths: &Paths, selector: &str) -> Result<Value> {
+    // Same query-time warning materialization `a snapshot` runs, so a
+    // binding caller sees `warning` on the first status after a crash.
+    crate::warnings::sweep_warnings(paths);
     let persisted = selected_record(paths, selector)?;
     let (mut value, current, worker_reachable, rpc_error) =
         match rpc_simple(&persisted, Operation::Status, None) {
@@ -325,6 +340,11 @@ pub fn status_json(paths: &Paths, selector: &str) -> Result<Value> {
         crate::placement::placement_summary(current.worker_cgroup.as_deref());
     value["workload_placement"] =
         crate::placement::placement_summary(current.workload_cgroup.as_deref());
+    // Same ack-gated crash warning every `a snapshot` row carries, so the
+    // two commands cannot disagree about whether a session crashed.
+    value["warning"] = crate::warnings::load_warning_for(paths, current.id)
+        .map(|warning| warning.to_json())
+        .unwrap_or(Value::Null);
     if let Some(error) = rpc_error {
         value["rpc_error"] = json!(error);
     }
