@@ -162,7 +162,10 @@ actually use:
 | `Ctrl-b` `?` | show the full key reference on screen |
 
 The mouse wheel scrolls back too (unless the running program wants the mouse),
-and holding `Ctrl-b` briefly puts the whole cheat sheet on screen.
+and holding `Ctrl-b` briefly puts the whole cheat sheet on screen. Pressing
+`Ctrl-b` twice sends one `Ctrl-b` straight through to the session and raises
+nothing - which is how Claude Code's `Ctrl-b Ctrl-b` run-in-background chord
+works here.
 
 <details>
 <summary><strong>Full key reference</strong></summary>

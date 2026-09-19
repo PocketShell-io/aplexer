@@ -32,7 +32,9 @@ fn run_input_loop(config: InputThreadConfig) {
     // session picker, Ctrl-b w opens the workspace picker, Ctrl-b c
     // creates another session here, Ctrl-b
     // n/p/N/P/l/1-9
-    // switch sessions, anything else pending is not a real prefix (both
+    // switch sessions, a second Ctrl-b is tmux's send-prefix (the pair
+    // delivers one Ctrl-b and nothing stays pending), anything else
+    // pending is not a real prefix (both
     // bytes forward to the workload). See `InputScanner` for the byte-level
     // rules and why this needs to survive across separate read() calls, not
     // just within one buffer.
@@ -42,7 +44,9 @@ fn run_input_loop(config: InputThreadConfig) {
     // unrecognized), never forwarding Ctrl-b itself to the pane. aplexer has
     // no such command-prefix system and isn't growing one just for this, so
     // the simplest reasonable behavior is used instead: a *bound* Ctrl-b
-    // sequence (d/?/r/R/s/w/c/n/p/N/P/l/1-9) is consumed; anything else is
+    // sequence (d/?/r/R/s/w/c/n/p/N/P/l/1-9) is consumed; a Ctrl-b Ctrl-b
+    // pair is send-prefix, so the hint Claude Code prints for its
+    // run-in-background chord leaves nothing behind; anything else is
     // not a prefix at all -- both bytes are forwarded through as ordinary
     // input, so a program that wants a literal Ctrl-b (some editors and
     // REPLs use it) isn't broken by this feature.

@@ -288,6 +288,12 @@ Scan rules (existing semantics preserved exactly, new keys added):
   PrevGlobal/Last)`, clear pending, **continue scanning** the remainder.
 - pending + `1`..`9`: flush, emit `Switch(Index(digit))`, clear pending,
   continue.
+- pending + `0x02`: tmux's send-prefix -- emit the withheld `0x02` into the
+  forward buffer and consume the second press, leaving nothing pending.
+  The pair is the chord Claude Code prints for its run-in-background hint
+  (aplexer sets `TMUX` so the hint appears), so it has to leave the scanner
+  settled: a stranded prefix would pop the key overlay 350ms after the user
+  walked away and turn the next keystroke into a chord (`d` would detach).
 - pending + anything else (including `0`): emit the withheld `0x02` into the
   forward buffer and reprocess the byte normally -- the existing "Ctrl-b is
   not a real prefix" contract: unbound sequences pass through to the
@@ -603,8 +609,9 @@ Work top to bottom; everything is in `src/bin/a.rs` unless noted.
      `[Forward([0x02, b'x'])]`; `[b'a', 0x02, b'3', b'z']` ->
      `[Forward([b'a']), Switch(Index(3)), Forward([b'z'])]`;
      `[0x02, b'd']` -> `[Detach]`; `[0x1d]` mid-buffer discards the rest;
-     `[0x02, 0x02, b'd']` -> `[Forward([0x02]), Detach]` (matches the
-     existing reprocess rule); `[0x02, b'0']` forwards both bytes.
+     `[0x02, 0x02, b'd']` -> `[Forward([0x02, b'd'])]` (send-prefix: the
+     second Ctrl-b is consumed, so `d` rides behind it as ordinary input);
+     `[0x02, b'0']` forwards both bytes.
    - `pick_switch_target`: build synthetic groups (two workspaces, three
      sessions each, one `Exited`); assert Next/Prev wrap and skip the dead
      one, Index(2) returns the dead one (no skip), Index(9) errors,

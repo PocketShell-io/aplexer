@@ -150,7 +150,10 @@ impl InputScanner {
     /// `n` creates another session in
     /// this workspace and switches to it; `Right`/`Left` move between the
     /// sessions of this workspace and `Down`/`Up` between workspaces;
-    /// `N P l 1-9` switch. Anything else pending is "not a real prefix" --
+    /// `N P l 1-9` switch. A second `Ctrl-b` while one is pending is
+    /// tmux's send-prefix: the withheld byte forwards and the second is
+    /// consumed, so nothing stays pending. Anything else pending is "not
+    /// a real prefix" --
     /// the withheld `Ctrl-b` byte is forwarded and the current byte is
     /// reprocessed normally, so unbound `Ctrl-b` sequences still pass
     /// through to the workload untouched.
@@ -251,9 +254,24 @@ impl InputScanner {
                     i += 1;
                     continue;
                 }
+                if byte == 0x02 {
+                    // tmux's send-prefix: a Ctrl-b arriving while one is
+                    // withheld forwards the withheld byte and is itself
+                    // consumed -- the pair is complete, nothing stays
+                    // pending. Reprocessing it as a fresh prefix would
+                    // strand one exactly when a workload has finished
+                    // consuming the key: Claude Code's `Ctrl-b Ctrl-b`
+                    // background hint leaves the user hands-off, and the
+                    // 350ms-old leftover would then pop the key overlay
+                    // over a screen they did not ask to cover -- or turn
+                    // the first keystroke after the pair into a chord
+                    // (`d` would detach).
+                    out.push(0x02);
+                    i += 1;
+                    continue;
+                }
                 // Not a bound chord: forward the withheld Ctrl-b and
-                // reprocess this byte normally (it might itself be a fresh
-                // Ctrl-b) -- do not advance `i`.
+                // reprocess this byte normally -- do not advance `i`.
                 out.push(0x02);
                 continue;
             }

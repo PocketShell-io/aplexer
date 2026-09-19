@@ -578,16 +578,37 @@ fn scan_ctrl_bracket_forwards_rest() {
     }
 }
 
+/// `Ctrl-b Ctrl-b` is tmux's send-prefix: exactly one Ctrl-b reaches the
+/// workload and nothing stays pending. This is the chord Claude Code prints
+/// for its run-in-background hint (aplexer sets `TMUX` so the hint shows),
+/// so the pair must leave the scanner settled -- a stranded prefix would
+/// pop the which-key overlay 350ms later and turn the next keystroke into
+/// a chord (`d` would detach).
 #[test]
-fn scan_double_ctrl_b_then_d() {
+fn scan_double_ctrl_b_is_send_prefix() {
     let mut s = InputScanner::default();
     let actions = s.scan(&[0x02, 0x02, b'd']);
-    assert_eq!(actions.len(), 2);
+    // The second press consumed the prefix, so `d` is ordinary input
+    // riding behind the forwarded Ctrl-b -- not a detach.
+    assert_eq!(actions.len(), 1);
     match &actions[0] {
-        InputAction::Forward(b) => assert_eq!(b, &[0x02]),
+        InputAction::Forward(b) => assert_eq!(b, &[0x02, b'd']),
         _ => panic!("expected Forward"),
     }
-    assert!(matches!(&actions[1], InputAction::Detach));
+    assert!(s.settled(), "the pair must leave nothing pending");
+
+    // The presses can straddle a read() boundary like any other chord.
+    let mut split = InputScanner::default();
+    assert!(split.scan(&[0x02]).is_empty());
+    assert_eq!(bytes(&split.scan(&[0x02])), vec![0x02]);
+    assert!(split.settled());
+
+    // A third press is a fresh prefix again, exactly like retyping one.
+    let mut triple = InputScanner::default();
+    assert_eq!(bytes(&triple.scan(&[0x02, 0x02, 0x02])), vec![0x02]);
+    assert!(!triple.settled());
+    assert!(triple.awaiting_key());
+    assert!(matches!(triple.scan(b"d").as_slice(), [InputAction::Detach]));
 }
 
 #[test]
