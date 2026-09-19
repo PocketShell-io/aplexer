@@ -503,7 +503,18 @@ fn optional_cgroup_capability_is_explicit_and_never_makes_clean_doctor_fatal() {
     if check["available"] == true {
         assert_eq!(check["ok"], true);
         assert_eq!(check["severity"], "ok");
-        assert_eq!(report["warnings"], 0);
+        // A clean host has no warnings -- except the engine_resolution ones
+        // this box's own PATH legitimately produces (nvm-resolved engines,
+        // issue #19), which are warning-severity and never fatal.
+        let engine_check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "engine_resolution")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let expected_warnings = if engine_check["ok"] == true { 0 } else { 1 };
+        assert_eq!(report["warnings"], expected_warnings);
         assert_eq!(check["prerequisites"]["cgroup_v2"], true);
         assert_eq!(check["prerequisites"]["controllers"]["ok"], true);
         assert_eq!(
@@ -519,4 +530,249 @@ fn optional_cgroup_capability_is_explicit_and_never_makes_clean_doctor_fatal() {
             .unwrap()
             .contains("unlimited sessions still work"));
     }
+}
+
+// ---- engine_resolution: PATH-independent launch (issue #19) ----
+
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+
+/// A fake engine executable the minimal non-interactive PATH cannot see.
+fn fake_engine_bin(name: &str) -> (TempDir, PathBuf) {
+    let dir = TempDir::new().unwrap();
+    let script = dir.path().join(name);
+    fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+    let mut perms = fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&script, perms).unwrap();
+    (dir, script)
+}
+
+/// The invoking-shell PATH the tests hand the binary: the fake bin dir in
+/// front of the system directories, but deliberately WITHOUT `~/.local/bin`
+/// and any version-manager dirs — the minimal probe PATH inside aplexer is
+/// exactly the system dirs plus `~/.local/bin`, so anything resolvable only
+/// from the fake dir is a guaranteed `needs_pin`.
+fn shell_path(bin_dir: &TempDir) -> String {
+    format!(
+        "{}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        bin_dir.path().display()
+    )
+}
+
+fn doctor_command(paths: &Paths, path_value: &str) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_a"));
+    command
+        .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
+        .env("APLEXER_STATE_DIR", &paths.state_root)
+        .env("APLEXER_CONFIG", &paths.config_file)
+        .env("PATH", path_value);
+    command
+}
+
+fn engine_resolution_check(report: &Value) -> Value {
+    report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "engine_resolution")
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// A user-configured engine whose command resolves only via the invoking
+/// shell's PATH is flagged `needs_pin`, and `--fix` pins the resolved
+/// absolute path — plus the rest of the command and the file's comments —
+/// into `config.toml`, after which the check reports resolved. Running
+/// `--fix` again is a no-op.
+#[test]
+fn doctor_flags_and_fixes_an_engine_unresolvable_under_a_minimal_path() {
+    let temp = TempDir::new().unwrap();
+    let paths = test_paths(&temp);
+    let (bin_dir, script) = fake_engine_bin("apponly");
+    std::fs::write(
+        &paths.config_file,
+        "version = 1\n# app-only engine, do not delete\n[engines.apponly]\ncommand = [\"apponly\", \"--serve\"]\n",
+    )
+    .unwrap();
+    let path_value = shell_path(&bin_dir);
+
+    let output = doctor_command(&paths, &path_value)
+        .args(["--json", "doctor"])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let check = engine_resolution_check(&report);
+    assert_eq!(check["ok"], false, "{check}");
+    assert_eq!(check["severity"], "warning");
+    assert!(check["minimal_path"]
+        .as_str()
+        .unwrap()
+        .split(':')
+        .any(|dir| dir == "/usr/bin"));
+    let row = check["executables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "apponly")
+        .unwrap()
+        .clone();
+    assert_eq!(row["kind"], "engine");
+    assert_eq!(row["verdict"], "needs_pin");
+    assert_eq!(row["fixable"], true);
+    assert_eq!(row["current"], script.display().to_string());
+    assert!(row["minimal"].is_null(), "{row}");
+
+    let fixed = doctor_command(&paths, &path_value)
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    assert!(fixed.status.success(), "{fixed:?}");
+    let fixed_report: Value = serde_json::from_slice(&fixed.stdout).unwrap();
+    let applied = fixed_report["fix"]["applied"].as_array().unwrap();
+    let apponly = applied
+        .iter()
+        .find(|pin| pin["target"] == "engines.apponly")
+        .unwrap();
+    assert_eq!(apponly["from"], "apponly");
+    assert_eq!(apponly["to"], script.display().to_string());
+    let post = engine_resolution_check(&fixed_report);
+    assert_eq!(post["ok"], true, "{post}");
+    let post_row = post["executables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "apponly")
+        .unwrap();
+    assert_eq!(post_row["verdict"], "resolved");
+
+    let written = std::fs::read_to_string(&paths.config_file).unwrap();
+    assert!(
+        written.contains("# app-only engine, do not delete"),
+        "comment lost: {written}"
+    );
+    let reparsed = aplexer::Config::load(&paths).unwrap();
+    assert_eq!(
+        reparsed.engines["apponly"].command,
+        vec![script.display().to_string(), "--serve".into()]
+    );
+
+    // And it sticks: a second --fix has nothing left to do.
+    let again = doctor_command(&paths, &path_value)
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    let again_report: Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert!(
+        again_report["fix"]["applied"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{}",
+        again_report["fix"]
+    );
+}
+
+/// A builtin engine the user never configured — here `opencode`, materialized
+/// as a fake executable only the shell PATH sees — is pinned into a config
+/// file that did not exist before, with the builtin command carried over.
+#[test]
+fn doctor_fix_pins_a_builtin_engine_into_a_fresh_config_file() {
+    let temp = TempDir::new().unwrap();
+    let paths = test_paths(&temp);
+    let (bin_dir, script) = fake_engine_bin("opencode");
+    let path_value = shell_path(&bin_dir);
+
+    let output = doctor_command(&paths, &path_value)
+        .args(["--json", "doctor"])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let check = engine_resolution_check(&report);
+    let row = check["executables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "opencode")
+        .unwrap()
+        .clone();
+    assert_eq!(row["verdict"], "needs_pin", "{row}");
+    // An engine found under neither PATH is a legitimate state, not a flag:
+    // `gemini` has no fake and the controlled PATH has no real one.
+    let gemini = check["executables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "gemini")
+        .unwrap()
+        .clone();
+    assert_eq!(gemini["verdict"], "not_installed", "{gemini}");
+    assert_eq!(gemini["fixable"], false);
+
+    let fixed = doctor_command(&paths, &path_value)
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    let fixed_report: Value = serde_json::from_slice(&fixed.stdout).unwrap();
+    let applied = fixed_report["fix"]["applied"].as_array().unwrap();
+    let pin = applied
+        .iter()
+        .find(|pin| pin["target"] == "engines.opencode")
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(pin["to"], script.display().to_string(), "{applied:?}");
+    assert!(
+        !std::fs::read_to_string(&paths.config_file)
+            .unwrap()
+            .is_empty(),
+        "the fix must have created the config file"
+    );
+    let reparsed = aplexer::Config::load(&paths).unwrap();
+    assert_eq!(
+        reparsed.engines["opencode"].command[0],
+        script.display().to_string()
+    );
+}
+
+/// A pinned absolute path whose file vanished (version-manager drift) is
+/// `stale_pin`; `--fix` re-resolves the basename from the current PATH and
+/// rewrites the pin in place.
+#[test]
+fn doctor_flags_a_stale_pin_and_fix_re_resolves_it() {
+    let temp = TempDir::new().unwrap();
+    let paths = test_paths(&temp);
+    let (bin_dir, script) = fake_engine_bin("apponly");
+    let stale = format!("{}/old-nvm/apponly", bin_dir.path().display());
+    std::fs::write(
+        &paths.config_file,
+        format!("version = 1\n[engines.apponly]\ncommand = [\"{stale}\", \"--serve\"]\n"),
+    )
+    .unwrap();
+    let path_value = shell_path(&bin_dir);
+
+    let output = doctor_command(&paths, &path_value)
+        .args(["--json", "doctor"])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let row = engine_resolution_check(&report)["executables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "apponly")
+        .unwrap()
+        .clone();
+    assert_eq!(row["verdict"], "stale_pin", "{row}");
+    assert_eq!(row["fixable"], true);
+
+    let fixed = doctor_command(&paths, &path_value)
+        .args(["--json", "doctor", "--fix"])
+        .output()
+        .unwrap();
+    assert!(fixed.status.success(), "{fixed:?}");
+    let reparsed = aplexer::Config::load(&paths).unwrap();
+    assert_eq!(
+        reparsed.engines["apponly"].command,
+        vec![script.display().to_string(), "--serve".into()]
+    );
 }

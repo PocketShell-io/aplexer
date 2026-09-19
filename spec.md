@@ -544,6 +544,36 @@ The exact config format may be TOML, YAML, or another simple format. Prefer one 
 
 TOML is preferred unless migration from existing PocketShell config makes YAML materially simpler.
 
+### 8.4 PATH-independent engine resolution
+
+Launch must not depend on the invoking shell's PATH (issue #19). A session
+started by the app over non-interactive SSH never sources the version
+managers an interactive `~/.bashrc` loads, so a bare `codex`/`claude`/
+`gemini`/`opencode` in an engine command resolves in the user's terminal
+and fails from the app. The contract, in three parts:
+
+1. **Probe.** `a doctor`'s `engine_resolution` check resolves every
+   configured engine `command[0]` and profile `executable`/`command[0]`
+   under two PATHs: the invoking shell's, and a minimal non-interactive
+   session PATH (the sshd-default system directories plus `~/.local/bin`,
+   the one user-writable dir that needs no version manager). Verdicts:
+   `resolved`, `not_installed` (found under neither — a legitimate state,
+   never a failure), `needs_pin` (shell-PATH-only or divergent between the
+   two), and `stale_pin` (a configured absolute path whose file is gone,
+   e.g. after a version-manager update).
+2. **Fix.** `a doctor --fix` resolves every `needs_pin`/`stale_pin`
+   executable through the invoking shell's PATH and writes the absolute
+   path into the user's `config.toml` — engines as a full `command` array
+   (argv[0] absolutized, builtin arguments pinned as of the writing
+   aplexer), profiles as `executable` or `command[0]` — preserving all
+   untouched file content. `a doctor` afterwards reports the post-fix
+   state. A row that cannot be resolved from the current PATH either is
+   reported and leaves the file alone.
+3. **Persistence.** A pin is PATH-independent forever but bound to the
+   machine; `stale_pin` is the drift detector that keeps it honest. `a
+   doctor` is the only verb that writes engine pins; launch itself never
+   rewrites config.
+
 ---
 
 ## 9. Profiles

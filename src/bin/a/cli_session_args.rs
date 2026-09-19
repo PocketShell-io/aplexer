@@ -280,6 +280,16 @@ pub(crate) struct AckArgs {
 pub(crate) struct WarningsArgs {}
 
 #[derive(Args)]
+pub(crate) struct DoctorArgs {
+    /// Resolve every flagged engine/profile executable via the current
+    /// PATH and pin the absolute path into the config file, so `a start`
+    /// works from non-interactive sessions (the app's SSH) where version
+    /// managers are not loaded. Stale absolute pins are re-resolved.
+    #[arg(long)]
+    pub(crate) fix: bool,
+}
+
+#[derive(Args)]
 pub(crate) struct WatchArgs {
     /// Currently the only supported output mode -- required explicitly
     /// rather than defaulted so a bare `a watch` fails loudly instead of

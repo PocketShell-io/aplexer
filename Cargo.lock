@@ -72,6 +72,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "toml",
+ "toml_edit",
  "unicode-segmentation",
  "unicode-width",
  "uuid",

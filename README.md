@@ -368,6 +368,7 @@ print(a.capture("api:review").decode(errors="replace"))
 | `a rename` | change a session's tag |
 | `a engines` / `a profiles` | list configured or discovered engines / profiles |
 | `a doctor` | check the environment and config for problems |
+| `a doctor --fix` | pin engine executables that only your shell's PATH can resolve to absolute config paths |
 | `a init` | install or remove agent-state hooks |
 | `a whoami` | print the current session's identity |
 | `a state-report` | push agent state (used by the hooks `a init` installs) |
@@ -404,6 +405,16 @@ and `APLEXER_WORKER` identify it to tools like `a whoami`.
 Start with `a doctor`, which checks the runtime and state directories, socket
 paths, cgroup-v2 delegation, config, and session records. When something
 fails, it suggests the fix (most commonly `a prune` for stale records).
+
+**"command is not executable or was not found in PATH" from the app, but it
+works in your terminal?** Your agent CLI (codex, claude, gemini, opencode)
+resolves through a version manager (nvm and friends) that only interactive
+shells load - the app drives `a start` over non-interactive SSH, which does
+not. `a doctor` flags every engine that only your shell's PATH can resolve,
+and `a doctor --fix` pins the resolved absolute paths into your
+`config.toml`, so launches stop depending on the invoking shell's PATH. It
+also re-resolves pins whose file has since moved (a version-manager update,
+say).
 
 ## Development
 

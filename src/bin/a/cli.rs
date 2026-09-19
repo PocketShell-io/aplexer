@@ -102,7 +102,7 @@ pub(crate) enum Commands {
     LaunchExec(LaunchArgs),
     /// Check aplexer's environment/config for problems.
     #[command(visible_alias = "check", after_help = DOCTOR_EXAMPLES)]
-    Doctor,
+    Doctor(DoctorArgs),
     /// Install agent-state hooks so sessions report working/waiting/idle
     /// instead of guessing from PTY output (see `a init --help`).
     #[command(

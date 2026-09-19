@@ -229,7 +229,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Profiles => "profiles",
         Commands::LaunchSpec(_) => "launch-spec",
         Commands::LaunchExec(_) => "launch-exec",
-        Commands::Doctor => "doctor",
+        Commands::Doctor(_) => "doctor",
         Commands::Init(_) => "init",
         Commands::Whoami => "whoami",
         Commands::StateReport(_) => "state-report",

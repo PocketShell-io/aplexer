@@ -66,7 +66,7 @@ pub(crate) fn run() -> Result<()> {
         Commands::LaunchExec(args) => cmd_launch_exec(&paths, args),
         Commands::Whoami => cmd_whoami(&paths, cli.json),
         Commands::StateReport(args) => cmd_state_report(&paths, args.state),
-        Commands::Doctor => cmd_doctor(&paths, cli.json),
+        Commands::Doctor(args) => cmd_doctor(&paths, args.fix, cli.json),
         Commands::Init(args) => cmd_init(&paths, args, cli.json),
         Commands::Message(args) => cmd_message(&paths, args, cli.json),
         Commands::Watch(args) => cmd_watch(&paths, args),

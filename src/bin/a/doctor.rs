@@ -258,9 +258,90 @@ fn config_check(paths: &Paths) -> Value {
     }
 }
 
+/// One row of the `engine_resolution` check's `executables` array.
+fn engine_resolution_row_json(row: &ResolutionRow) -> Value {
+    json!({
+        "kind": row.kind,
+        "name": row.name,
+        "executable": row.executable,
+        "verdict": row.verdict.as_str(),
+        "current": row.current.as_ref().map(|path| path.display().to_string()),
+        "minimal": row.minimal.as_ref().map(|path| path.display().to_string()),
+        "fixable": row.wants_fix(),
+        "detail": row.detail,
+    })
+}
+
+/// The `engine_resolution` doctor check (issue #19). Every configured
+/// engine `command[0]` and profile `executable`/`command[0]` is probed
+/// under (a) the invoking shell's PATH and (b) a minimal non-interactive
+/// session PATH (system dirs + `~/.local/bin`). A bare name only (a) can
+/// resolve is exactly what the app's non-interactive SSH hits as "not
+/// found in PATH" — `~/.bashrc` never sources nvm there — and the durable
+/// fix is `a doctor --fix` pinning the resolved absolute path into the
+/// config file. A pinned absolute path whose file has since vanished is
+/// flagged as stale (version-manager drift). Warning-severity by design:
+/// an engine that is merely not installed is a legitimate state, and a
+/// flagged one still launches fine from the shell it resolves in.
+fn engine_resolution_check(paths: &Paths) -> Value {
+    let minimal = minimal_path();
+    let config = match Config::load(paths) {
+        Ok(config) => config,
+        Err(error) => {
+            return json!({
+                "name": "engine_resolution",
+                "ok": false,
+                "severity": "warning",
+                "required": false,
+                "detail": format!(
+                    "config did not load ({error:#}); engine PATH resolution not probed"
+                ),
+                "minimal_path": minimal,
+                "executables": [],
+            });
+        }
+    };
+    let current_path = env::var("PATH").unwrap_or_default();
+    let rows = resolution_rows(&config, &current_path, &minimal);
+    let flagged: Vec<String> = rows
+        .iter()
+        .filter(|row| row.wants_fix())
+        .map(|row| format!("{} {}", row.kind, row.name))
+        .collect();
+    let not_installed: Vec<String> = rows
+        .iter()
+        .filter(|row| row.verdict == ResolutionVerdict::NotInstalled)
+        .map(|row| format!("{} {}", row.kind, row.name))
+        .collect();
+    let mut detail = if flagged.is_empty() {
+        format!(
+            "{} engine(s), {} profile(s): every command resolves under a non-interactive session's PATH (or is pinned to an existing path)",
+            config.engines.len(),
+            config.profiles.len()
+        )
+    } else {
+        format!(
+            "a non-interactive session (the app's SSH) cannot resolve {} — run `a doctor --fix` to pin absolute paths into the config file",
+            flagged.join(", ")
+        )
+    };
+    if !not_installed.is_empty() {
+        detail.push_str(&format!("; not installed: {}", not_installed.join(", ")));
+    }
+    json!({
+        "name": "engine_resolution",
+        "ok": flagged.is_empty(),
+        "severity": if flagged.is_empty() { "ok" } else { "warning" },
+        "required": false,
+        "detail": detail,
+        "minimal_path": minimal,
+        "executables": rows.iter().map(engine_resolution_row_json).collect::<Vec<_>>(),
+    })
+}
+
 /// The host-level checks that do not touch session records: platform,
 /// durable roots, socket path length, cgroup capability, launch placement,
-/// config load.
+/// config load, engine PATH resolution.
 fn environment_checks(paths: &Paths) -> Vec<Value> {
     vec![
         json!({"name":"linux","ok":true,"detail":std::env::consts::OS}),
@@ -270,6 +351,7 @@ fn environment_checks(paths: &Paths) -> Vec<Value> {
         cgroup_limits_check(probe_cgroup_limits()),
         launch_placement_check(paths),
         config_check(paths),
+        engine_resolution_check(paths),
     ]
 }
 
@@ -397,19 +479,63 @@ fn print_doctor_checks(checks: &[Value]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn cmd_doctor(paths: &Paths, json_output: bool) -> Result<()> {
+/// Load the merged config, probe both PATHs, and persist a fix candidate
+/// for every pin-worthy row (`aplexer::config::apply_pins`).
+fn apply_engine_pins(paths: &Paths) -> Result<(Vec<AppliedPin>, Vec<String>)> {
+    let config = Config::load(paths)?;
+    let current_path = env::var("PATH").unwrap_or_default();
+    let rows = resolution_rows(&config, &current_path, &minimal_path());
+    apply_pins(paths, &config, &rows)
+}
+
+pub(crate) fn cmd_doctor(paths: &Paths, fix: bool, json_output: bool) -> Result<()> {
     let mut checks = environment_checks(paths);
     checks.push(sessions_health_check(paths));
+    let mut fix_report = json!(null);
+    if fix {
+        let (applied, failures) = apply_engine_pins(paths)?;
+        // The engine_resolution check above probed the pre-fix state; make
+        // this run's output reflect what `--fix` actually left behind.
+        if let Some(slot) = checks
+            .iter_mut()
+            .find(|check| check["name"] == "engine_resolution")
+        {
+            *slot = engine_resolution_check(paths);
+        }
+        fix_report = json!({
+            "applied": applied
+                .iter()
+                .map(|pin| json!({
+                    "target": pin.target,
+                    "from": pin.from,
+                    "to": pin.to.display().to_string(),
+                }))
+                .collect::<Vec<_>>(),
+            "failed": failures,
+        });
+        if !json_output {
+            for pin in &applied {
+                println!("pinned {}: {} → {}", pin.target, pin.from, pin.to.display());
+            }
+            for failure in &failures {
+                println!("{failure}");
+            }
+            if applied.is_empty() && failures.is_empty() {
+                println!("nothing to fix");
+            }
+        }
+    }
     let warnings = checks
         .iter()
         .filter(|check| check["severity"] == "warning")
         .count();
     let ok = doctor_checks_ok(&checks);
     if json_output {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({"ok":ok,"warnings":warnings,"checks":checks}))?
-        );
+        let mut report = json!({"ok":ok,"warnings":warnings,"checks":checks});
+        if !fix_report.is_null() {
+            report["fix"] = fix_report;
+        }
+        println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print_doctor_checks(&checks)?;
     }

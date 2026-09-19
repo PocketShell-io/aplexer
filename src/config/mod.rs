@@ -4,11 +4,13 @@
 
 mod builtins;
 mod discovery;
+mod pathfix;
 mod provider_env;
 mod schema;
 
 pub use builtins::*;
 pub(crate) use discovery::*;
+pub use pathfix::*;
 pub(crate) use provider_env::*;
 pub use schema::*;
 

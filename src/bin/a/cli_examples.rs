@@ -122,6 +122,10 @@ pub(crate) const PROFILES_EXAMPLES: &str = r#"Examples:
 
 pub(crate) const DOCTOR_EXAMPLES: &str = r#"Examples:
   a doctor                      check config, engines, cgroups, state dir
+  a doctor                      ...including whether each engine resolves
+                                under a non-interactive session's PATH
+  a doctor --fix                pin flagged engine executables to their
+                                current absolute paths in the config file
   a doctor --json
 "#;
 

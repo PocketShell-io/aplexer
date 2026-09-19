@@ -230,6 +230,19 @@ Detection runs at query time from the same predicate the worker applies at
 finalization, so a worker that died without being able to say so is still
 caught by the next `a list`.
 
+Shipped alongside it: PATH-independent engine resolution (issue #19). The
+`engine_resolution` check probes every configured engine `command[0]` and
+profile `executable` under both the invoking shell's PATH and a minimal
+non-interactive session PATH (system dirs + `~/.local/bin`) — the
+approximation of the app's SSH session where nvm and friends never load. A
+bare name only the shell PATH resolves is warning-severity with
+`a doctor --fix` as the fix: resolve via the current PATH, write the
+absolute path into `config.toml` (comment-preserving, via toml_edit), and
+re-check. Stale pins — absolute paths whose file moved on a version-manager
+update — are flagged the same way and re-resolved from their basename. An
+engine found under neither PATH is reported as not installed, which is a
+legitimate state, not a defect.
+
 ### Launch confidence
 
 - `a plan ...` as a human rendering of the existing launch resolution path;
