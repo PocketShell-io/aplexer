@@ -337,7 +337,9 @@ impl WorkerRuntime {
         // SIGTERM teardown shares this method, which is the same dying
         // fact about that session and gets the same honest record.
         if let Err(error) = self.update_record(|record| record.phase = Phase::Exiting) {
-            eprintln!("aplexer worker: mark accepted-kill session exiting: {error:#}");
+            log_best_effort(&format!(
+                "aplexer worker: mark accepted-kill session exiting: {error:#}"
+            ));
         }
         let grace_deadline = Instant::now()
             .checked_add(grace)
@@ -516,9 +518,9 @@ pub(super) fn resize_screen_and_pty(
     output.set_size(new_size.0, new_size.1)?;
     if let Err(error) = resize_pty() {
         if let Err(rollback_error) = output.set_size(previous_size.0, previous_size.1) {
-            eprintln!(
+            log_best_effort(&format!(
                 "aplexer worker: roll back screen after PTY resize failure: {rollback_error:#}"
-            );
+            ));
         }
         return Err(error);
     }
@@ -636,6 +638,72 @@ mod tests {
         assert_eq!(persisted_activity_ms, 123);
         assert_eq!(runtime.record().unwrap().last_activity_ms, Some(123));
         assert!(runtime.record_persistence_error.lock().unwrap().is_none());
+    }
+
+    /// The flush-loop tick must survive persistence failures: return, log
+    /// best-effort, leave the checkpoint unadvanced so the next tick retries.
+    /// The loop around it died once for good when its `eprintln!` reporting a
+    /// full disk panicked because worker.log sat on the same full disk --
+    /// with the thread gone, neither history nor `last_activity_ms` ever
+    /// reached disk again, and the attach bar read IDLE through live turns.
+    #[test]
+    pub(super) fn flush_tick_survives_and_defers_failed_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let record_path = dir.path().join("session.json");
+        // Atomic rename onto a directory deterministically fails after the
+        // candidate was serialized (same trick as the test above).
+        fs::create_dir(&record_path).unwrap();
+        let runtime = test_runtime(&dir, record_path);
+        runtime.output.append(b"history").unwrap();
+        runtime.last_activity_ms.store(7, Ordering::Relaxed);
+
+        let mut persisted_activity_ms = 0u64;
+        flush_tick(&runtime, &mut persisted_activity_ms);
+
+        assert_eq!(persisted_activity_ms, 0, "failed checkpoint advanced");
+        assert!(runtime.record_persistence_error.lock().unwrap().is_some());
+    }
+
+    /// The seam behind `log_best_effort` never unwinds on a failed write:
+    /// a dropped diagnostic line is fine, a dead worker thread is not.
+    #[test]
+    pub(super) fn log_line_to_a_failing_writer_is_dropped_not_panicked() {
+        struct AlwaysFull;
+        impl std::io::Write for AlwaysFull {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from_raw_os_error(libc::ENOSPC))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = AlwaysFull;
+        assert!(write_log_line(&mut writer, "flush history: No space left").is_err());
+    }
+
+    /// The Status payload serves the PTY reader's live activity atomic over
+    /// the record's field whenever the atomic is ahead. The record's field
+    /// only advances when a disk write lands, so during a persistence
+    /// failure window the served value would otherwise freeze -- and with it
+    /// the recency heuristic and the `idle`-push retraction rule that the
+    /// attach bar's state derivation consumes.
+    #[test]
+    pub(super) fn status_serves_the_live_activity_atomic_over_a_frozen_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime(&dir, dir.path().join("session.json"));
+        runtime
+            .update_record(|record| record.last_activity_ms = Some(1_000))
+            .unwrap();
+        runtime.last_activity_ms.store(2_000, Ordering::Relaxed);
+
+        let served = connection::status_value(&runtime).unwrap();
+        assert_eq!(served["last_activity_ms"].as_u64(), Some(2_000));
+
+        // A record the atomic has not caught up with (no output seen yet,
+        // or the reader behind the last durable write) is left standing.
+        runtime.last_activity_ms.store(0, Ordering::Relaxed);
+        let served = connection::status_value(&runtime).unwrap();
+        assert_eq!(served["last_activity_ms"].as_u64(), Some(1_000));
     }
 
     /// The clean-exit resurrection: `run_lifecycle` removes the state dir,

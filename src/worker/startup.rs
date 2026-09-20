@@ -165,7 +165,9 @@ impl StartupGuard {
                 let _ = fs::remove_dir_all(&self.runtime_session_dir);
             }
             Ok(()) => {}
-            Err(error) => eprintln!("aplexer worker: persist startup rollback: {error:#}"),
+            Err(error) => log_best_effort(&format!(
+                "aplexer worker: persist startup rollback: {error:#}"
+            )),
         }
     }
 }
@@ -359,11 +361,11 @@ pub(super) fn bring_up(
         if let (Some(cgroup), Some(actual)) = (cgroup.as_ref(), record.workload_cgroup.as_deref()) {
             let expected = cgroup.proc_path();
             if actual != expected {
-                eprintln!(
+                log_best_effort(&format!(
                     "warning: workload pid {workload_pid} is in cgroup {actual}, not the recorded \
                      containment scope {expected}; resource limits may not apply to the \
                      workload's real location"
-                );
+                ));
             }
         }
         startup.failure_record = record.clone();

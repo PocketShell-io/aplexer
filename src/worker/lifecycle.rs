@@ -117,7 +117,9 @@ pub(super) fn wait_for_lifecycle_wake(
 /// operator should be able to see why a session they ended is still listed.
 fn remove_finished_state(runtime: &WorkerRuntime) {
     if let Err(error) = runtime.mark_finalized() {
-        eprintln!("aplexer worker: fence writes before removing finished session: {error:#}");
+        log_best_effort(&format!(
+            "aplexer worker: fence writes before removing finished session: {error:#}"
+        ));
         return;
     }
     // Leave the finished-tombstone before the state dir goes: a `a kill`
@@ -135,10 +137,10 @@ fn remove_finished_state(runtime: &WorkerRuntime) {
         );
     }
     if let Err(error) = fs::remove_dir_all(runtime.paths.state_session(runtime.id)) {
-        eprintln!(
+        log_best_effort(&format!(
             "aplexer worker: remove finished session {} state: {error:#}",
             runtime.id
-        );
+        ));
     }
 }
 
@@ -309,10 +311,10 @@ fn record_final_state(runtime: &WorkerRuntime, exit: &ExitInfo, state: &mut Loop
                 // worker/workload is running. Keep the control socket alive
                 // so Status can expose `record_persistence_error` while the
                 // lifecycle retries.
-                eprintln!(
+                log_best_effort(&format!(
                     "aplexer worker: persist final session state: {persist_error:#}; retrying in {}ms",
                     record_retry.as_millis()
-                );
+                ));
                 thread::sleep(record_retry);
                 record_retry = record_retry.saturating_mul(2).min(HISTORY_RETRY_MAX);
             }
@@ -339,14 +341,18 @@ fn await_late_containment_proof(runtime: &WorkerRuntime, state: &LoopState) -> O
         );
     loop {
         if let Err(error) = reap_adopted_children() {
-            eprintln!("aplexer worker: reap after lifecycle failure: {error:#}");
+            log_best_effort(&format!(
+                "aplexer worker: reap after lifecycle failure: {error:#}"
+            ));
         }
         match runtime.workload_populated() {
             Ok(false) => {
                 if let Err(error) =
                     runtime.update_record(|record| record.containment_empty = Some(true))
                 {
-                    eprintln!("aplexer worker: persist delayed containment proof: {error:#}");
+                    log_best_effort(&format!(
+                        "aplexer worker: persist delayed containment proof: {error:#}"
+                    ));
                 } else {
                     return runtime
                         .cgroup
@@ -356,9 +362,9 @@ fn await_late_containment_proof(runtime: &WorkerRuntime, state: &LoopState) -> O
                 }
             }
             Ok(true) => {}
-            Err(error) => {
-                eprintln!("aplexer worker: inspect failed lifecycle containment: {error:#}")
-            }
+            Err(error) => log_best_effort(&format!(
+                "aplexer worker: inspect failed lifecycle containment: {error:#}"
+            )),
         }
         thread::sleep(DESCENDANT_POLL_INTERVAL);
     }
@@ -433,10 +439,12 @@ fn finalize_session(runtime: &WorkerRuntime, state: &mut LoopState) {
         match runtime.record() {
             Ok(record) => {
                 if let Err(error) = crate::warnings::record_warning(&runtime.paths, &record) {
-                    eprintln!("aplexer worker: record crash warning: {error:#}");
+                    log_best_effort(&format!("aplexer worker: record crash warning: {error:#}"));
                 }
             }
-            Err(error) => eprintln!("aplexer worker: record crash warning: {error:#}"),
+            Err(error) => {
+                log_best_effort(&format!("aplexer worker: record crash warning: {error:#}"))
+            }
         }
     }
     if !state.containment_empty {

@@ -336,10 +336,14 @@ pub(super) fn reap_adopted_descendants() -> Result<usize> {
 pub(super) fn run_child_reaper(event_fd: RawFd) {
     loop {
         if let Err(error) = reap_adopted_descendants() {
-            eprintln!("aplexer worker: reap adopted descendants: {error:#}");
+            log_best_effort(&format!(
+                "aplexer worker: reap adopted descendants: {error:#}"
+            ));
         }
         if let Err(error) = wait_for_event_fd(event_fd, "child exit") {
-            eprintln!("aplexer worker: wait for child exit event: {error:#}");
+            log_best_effort(&format!(
+                "aplexer worker: wait for child exit event: {error:#}"
+            ));
             return;
         }
     }

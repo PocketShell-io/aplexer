@@ -286,7 +286,7 @@ impl OutputHub {
     pub(super) fn finish(&self, exit: ExitInfo) {
         self.terminate_all(OutputEvent::Exit(exit), |inner| {
             if let Err(error) = inner.history.flush_final() {
-                eprintln!("aplexer worker: flush history at exit: {error:#}");
+                log_best_effort(&format!("aplexer worker: flush history at exit: {error:#}"));
                 inner.history_persistence_error = Some(format!("{error:#}"));
             }
             // Cheap post-mortem "what was on screen when it died" fallback
@@ -295,7 +295,9 @@ impl OutputHub {
             // this is the durable trace of it. Best-effort: a failure here
             // must not stop the exit event from reaching subscribers.
             if let Err(error) = fs::write(&self.screen_txt_path, inner.screen.contents()) {
-                eprintln!("aplexer worker: write screen.txt at exit: {error:#}");
+                log_best_effort(&format!(
+                    "aplexer worker: write screen.txt at exit: {error:#}"
+                ));
             }
         });
     }

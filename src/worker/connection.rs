@@ -170,13 +170,34 @@ fn dispatch_operation(
 /// The Status payload: the public record plus the live-only facts a
 /// persisted record cannot carry (persistence errors, cgroup stats, the
 /// foreground command).
-fn status_value(runtime: &WorkerRuntime) -> Result<Value> {
+pub(super) fn status_value(runtime: &WorkerRuntime) -> Result<Value> {
     // One clone (inside public_session_record), not a second one to
     // get the record out of its mutex first.
     let mut value = {
         let record = lock(&runtime.record)?;
         serde_json::to_value(public_session_record(&record))?
     };
+    // Live-only overlays follow: facts a persisted record cannot carry
+    // faithfully. First, activity. The PTY reader's `last_activity_ms`
+    // atomic advances on every read with no I/O, while the record's field
+    // only moves when a `persist_activity_checkpoint` disk write lands.
+    // While those writes fail (a full disk under the state dir), the served
+    // field freezes and every recency consumer reads the session wrong: the
+    // running/waiting heuristic sees eternal quiet, and worse, an `idle`
+    // push can never be retracted (`watch::fresh_reported_state` retracts
+    // it only on `last_activity_ms` newer than the push) -- the attach bar
+    // wore IDLE straight through live agent turns for exactly this reason.
+    // Never persisted: this writes into the Status payload only. The record
+    // value wins whenever the atomic is not ahead of it (no output seen
+    // yet, e.g. right after a worker restart).
+    let live_activity = runtime.last_activity_ms.load(Ordering::Relaxed);
+    let persisted_activity = value
+        .get("last_activity_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if live_activity > persisted_activity {
+        value["last_activity_ms"] = json!(live_activity);
+    }
     if let Some(error) = runtime.output.history_persistence_error() {
         value["history_persistence_error"] = json!(error);
     }

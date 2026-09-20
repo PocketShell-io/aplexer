@@ -163,11 +163,11 @@ pub(super) fn serve_control_socket(
                     .spawn(move || {
                         let _permit = permit;
                         if let Err(error) = handle_connection(stream, runtime) {
-                            eprintln!("aplexer connection: {error:#}");
+                            log_best_effort(&format!("aplexer connection: {error:#}"));
                         }
                     });
                 if let Err(error) = spawn {
-                    eprintln!("aplexer worker: spawn client thread: {error}");
+                    log_best_effort(&format!("aplexer worker: spawn client thread: {error}"));
                 }
             }
             Ok(None) => {
@@ -185,25 +185,25 @@ pub(super) fn serve_control_socket(
                                 _worker_lock = replacement_lock;
                             }
                             worker_lock_identity = replacement_lock_identity;
-                            eprintln!(
+                            log_best_effort(&format!(
                                 "aplexer worker: recovered control socket {}",
                                 runtime.socket_path.display()
-                            );
+                            ));
                         }
                         Err(error) => {
-                            eprintln!(
+                            log_best_effort(&format!(
                                 "aplexer worker: control socket recovery deferred: {error:#}"
-                            );
+                            ));
                         }
                     }
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if transient_accept_error(&error) => {
-                eprintln!(
+                log_best_effort(&format!(
                     "aplexer worker: transient control accept failure: {error}; retrying in {}ms",
                     accept_retry.as_millis()
-                );
+                ));
                 thread::sleep(accept_retry);
                 accept_retry = accept_retry.saturating_mul(2).min(ACCEPT_RETRY_MAX);
             }

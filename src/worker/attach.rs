@@ -235,10 +235,10 @@ fn pump_output(
         match outcome {
             Ok(PumpOutcome::Continue) => {}
             Ok(PumpOutcome::PeerGone) => {
-                eprintln!(
+                log_best_effort(&format!(
                     "aplexer attach: peer made no socket progress for {}s; closing the attach",
                     u64::from(ATTACH_STALL_TICKS).saturating_mul(ATTACH_STALL_TICK.as_secs())
-                );
+                ));
                 break;
             }
             Ok(PumpOutcome::Terminal) | Err(_) => break,
@@ -457,14 +457,16 @@ fn pump_input(
                 match control {
                     AttachControl::Resize { rows, cols } => {
                         if let Err(error) = runtime.resize_client(client_id, rows, cols) {
-                            eprintln!(
+                            log_best_effort(&format!(
                                 "aplexer attach: resize to {rows}x{cols} rejected: {error:#}"
-                            );
+                            ));
                         }
                     }
                     AttachControl::Signal { signal } => {
                         if let Err(error) = runtime.signal_from_client(client_id, signal) {
-                            eprintln!("aplexer attach: signal {signal} rejected: {error:#}");
+                            log_best_effort(&format!(
+                                "aplexer attach: signal {signal} rejected: {error:#}"
+                            ));
                         }
                     }
                     AttachControl::Detach => break,

@@ -127,6 +127,29 @@ const KILL_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// free. Bounded well under the deadline so the refusal reaches the client.
 const RENAME_REGISTRY_WAIT: Duration = Duration::from_secs(2);
 
+/// Write one diagnostic line to the worker's stderr, or drop it.
+///
+/// `eprintln!` panics when the write itself fails -- and worker.log lives on
+/// the same disk whose fullness these diagnostics report, so the
+/// flush-history error print at full-disk onset panicked and silently killed
+/// the periodic flush thread. With that thread gone, neither history nor
+/// `last_activity_ms` ever reached disk again for the rest of the session,
+/// and the served record froze on the morning's timestamps: the attach bar
+/// read IDLE straight through live agent turns (the recency heuristic and
+/// the `idle`-push retraction both consume `last_activity_ms`). Worker
+/// threads log best-effort or not at all; none may unwind over a failed log
+/// line.
+pub(in crate::worker) fn log_best_effort(message: &str) {
+    let mut stderr = io::stderr().lock();
+    let _ = write_log_line(&mut stderr, message);
+}
+
+/// The seam behind `log_best_effort`, split out so tests can prove the
+/// no-panic guarantee against a writer that always fails.
+fn write_log_line<W: io::Write>(writer: &mut W, message: &str) -> io::Result<()> {
+    writeln!(writer, "{message}")
+}
+
 /// Runs the worker for session `id`.
 ///
 /// `initial_size`, when given, is the (rows, cols) to open the workload's

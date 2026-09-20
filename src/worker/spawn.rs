@@ -360,12 +360,35 @@ pub(super) fn run_periodic_flush(runtime: Arc<WorkerRuntime>) {
     let mut persisted_activity_ms: u64 = 0;
     loop {
         thread::sleep(HISTORY_FLUSH_INTERVAL);
-        if let Err(error) = runtime.output.flush() {
-            eprintln!("aplexer worker: flush history: {error:#}");
+        // This thread is the session's only history and last_activity writer;
+        // its death is silent and permanent -- nothing else ever retries. It
+        // already died once for good: the tick's error paths used eprintln!,
+        // which panics when the write itself fails, and worker.log sat on the
+        // disk whose fullness those errors report, so the ENOSPC report at
+        // full-disk onset killed the thread and both persistences froze for
+        // the rest of the session. log_best_effort removes the known
+        // unwinder; catch_unwind is the seatbelt for any future one -- either
+        // way, the loop outlives the tick.
+        let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            flush_tick(&runtime, &mut persisted_activity_ms);
+        }));
+        if tick.is_err() {
+            log_best_effort("aplexer worker: history flush tick panicked; continuing");
         }
-        if let Err(error) = persist_activity_checkpoint(&runtime, &mut persisted_activity_ms) {
-            eprintln!("aplexer worker: persist activity: {error:#}");
-        }
+    }
+}
+
+/// One sweep of the flush loop: push debounced history bytes to disk, then
+/// checkpoint `last_activity_ms` behind the matching record write. Every
+/// failure is logged best-effort and retried by the next tick (the
+/// checkpoint rule in `persist_activity_checkpoint` keeps the retry honest
+/// even with no new PTY output); nothing here may unwind.
+pub(super) fn flush_tick(runtime: &WorkerRuntime, persisted_activity_ms: &mut u64) {
+    if let Err(error) = runtime.output.flush() {
+        log_best_effort(&format!("aplexer worker: flush history: {error:#}"));
+    }
+    if let Err(error) = persist_activity_checkpoint(runtime, persisted_activity_ms) {
+        log_best_effort(&format!("aplexer worker: persist activity: {error:#}"));
     }
 }
 
@@ -387,11 +410,15 @@ pub(super) fn persist_activity_checkpoint(
 
 pub(super) fn run_termination_monitor(runtime: Arc<WorkerRuntime>) {
     if let Err(error) = wait_for_termination_request() {
-        eprintln!("aplexer worker: wait for termination request: {error:#}");
+        log_best_effort(&format!(
+            "aplexer worker: wait for termination request: {error:#}"
+        ));
         return;
     }
     if let Err(error) = runtime.kill(libc::SIGTERM, 500) {
-        eprintln!("aplexer worker: terminate contained workload: {error:#}");
+        log_best_effort(&format!(
+            "aplexer worker: terminate contained workload: {error:#}"
+        ));
         let _ = runtime.kill(libc::SIGKILL, 0);
     }
 }
@@ -414,7 +441,7 @@ pub(super) fn run_pty_reader(
                     // Hub lock poison is the only remaining append error;
                     // history write failures stay on history_persistence_error.
                     // Never treat either as a PTY/workload failure.
-                    eprintln!("aplexer worker: append output: {error:#}");
+                    log_best_effort(&format!("aplexer worker: append output: {error:#}"));
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
