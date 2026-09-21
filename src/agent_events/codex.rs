@@ -48,6 +48,29 @@ fn codex_native_text_parts(content: &Value, allowed: &[&str]) -> Vec<String> {
     }
 }
 
+fn codex_native_tool_output(output: &Value) -> String {
+    match output {
+        // Tool output is often a plain string containing meaningful line
+        // breaks and indentation. Preserve it, including an empty result.
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        other => {
+            let parts = codex_native_text_parts(other, &["input_text", "output_text", "text"]);
+            if parts.is_empty() {
+                other.to_string()
+            } else {
+                parts.join("\n\n")
+            }
+        }
+    }
+}
+
+fn stamp_tool_call_id(event: &mut UnifiedEvent, item: &Value) {
+    if let Some(id) = str_field(item, "call_id") {
+        event.metadata.insert("tool_call_id".into(), json!(id));
+    }
+}
+
 pub(crate) fn codex_native_events(payload: &Value) -> Vec<UnifiedEvent> {
     if payload.get("type").and_then(|t| t.as_str()) != Some("response_item") {
         return Vec::new();
@@ -73,26 +96,23 @@ pub(crate) fn codex_native_events(payload: &Value) -> Vec<UnifiedEvent> {
                 }
             }
         }
-        Some("custom_tool_call") => {
+        Some("custom_tool_call" | "function_call") => {
             let mut e = ev("tool_call");
             e.role = Some("assistant".to_string());
             e.tool_name = str_field(item, "name");
-            e.tool_input = item
-                .get("input")
-                .and_then(|i| i.as_str())
-                .map(str::to_string)
-                .or_else(|| item.get("input").map(|i| i.to_string()));
+            let input = item.get("arguments").or_else(|| item.get("input"));
+            e.tool_input = input.map(|value| match value {
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            });
+            stamp_tool_call_id(&mut e, item);
             out.push(e);
         }
-        Some("custom_tool_call_output") => {
-            let parts = codex_native_text_parts(
-                item.get("output").unwrap_or(&Value::Null),
-                &["input_text", "output_text", "text"],
-            );
-            let text = parts.join("\n\n");
-            if !text.is_empty() {
+        Some("custom_tool_call_output" | "function_call_output") => {
+            if let Some(output) = item.get("output") {
                 let mut e = ev("tool_result");
-                e.tool_output = Some(text);
+                e.tool_output = Some(codex_native_tool_output(output));
+                stamp_tool_call_id(&mut e, item);
                 out.push(e);
             }
         }

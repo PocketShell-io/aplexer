@@ -45,6 +45,11 @@ pub(crate) fn wire_format_for(engine: &str) -> Result<WireFormat> {
     }
 }
 
+/// Check an explicit transcript engine before printing a result header.
+pub fn validate_transcript_engine(engine: &str) -> Result<()> {
+    wire_format_for(engine).map(|_| ())
+}
+
 /// Events and any continuation id in one payload. Events come back
 /// without an engine: the reader stamps the session's own engine id, which
 /// for a variant engine differs from the family that parsed it.

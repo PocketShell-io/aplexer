@@ -333,6 +333,14 @@ pub(crate) struct WatchArgs {
 pub(crate) struct TranscriptArgs {
     #[command(flatten)]
     pub(crate) target: TargetArgs,
+    /// Parse FILE as the native conversation log instead of locating one or
+    /// using the session's saved transcript binding. Repeat for later reads.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) path: Option<PathBuf>,
+    /// Native log format to use with --path (for example, zcodex inside a
+    /// shell session). Defaults to the session's declared engine.
+    #[arg(long, requires = "path", value_name = "ENGINE")]
+    pub(crate) engine: Option<String>,
     /// Only the last N events after `--kind` / `--after` / `--before`
     /// filtering. PocketShell's initial conversation pane is `--last 50`
     /// (or `--last 5` for a compact peek).

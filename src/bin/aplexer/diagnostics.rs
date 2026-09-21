@@ -64,9 +64,9 @@ pub(crate) fn cmd_watch(paths: &Paths, args: WatchArgs) -> Result<()> {
     aplexer::watch::run(paths, args.all, workspace.as_deref())
 }
 
-/// `a transcript [SESSION] [--last N] [--after SEQ] [--before SEQ]
-/// [--kind K] [--follow] [--json]` -- parse the native conversation log of
-/// an aplexer session (the JSONL the engine CLI already writes) into heru
+/// `a transcript [SESSION] [--engine ENGINE --path FILE] [--last N]
+/// [--after SEQ] [--before SEQ] [--kind K] [--follow] [--json]` -- parse
+/// the native conversation log of an aplexer session into heru
 /// UnifiedEvent JSONL. PocketShell's conversation pane is the consumer:
 /// last-N for the initial view, `--before` for older pages, `--after` plus
 /// `--follow` for live tail. See src/agent_events.rs for capture/bind.
@@ -75,10 +75,28 @@ pub(crate) fn cmd_watch(paths: &Paths, args: WatchArgs) -> Result<()> {
 /// `$APLEXER_SESSION_ID` (`a whoami`) so an agent or hook inside a session
 /// can dump its own log without addressing itself.
 pub(crate) fn cmd_transcript(paths: &Paths, args: TranscriptArgs, json_output: bool) -> Result<()> {
-    let record = resolve_transcript_target(paths, &args)?;
-    let bind_path = paths.state_session(record.id).join("transcript.json");
-    let located = aplexer::agent_events::resolve_transcript(&record, &bind_path)?;
-    let path = located.path;
+    let mut record = resolve_transcript_target(paths, &args)?;
+    let path = if let Some(explicit) = &args.path {
+        // The caller has identified the native log. Do not inspect or update
+        // transcript.json: an old binding can belong to a different agent
+        // in the same cwd, and a read should succeed even if state is read-only.
+        record.engine = args.engine.clone().unwrap_or_else(|| record.engine.clone());
+        aplexer::agent_events::validate_transcript_engine(&record.engine)?;
+        let path = fs::canonicalize(explicit)
+            .with_context(|| format!("transcript path {} is unavailable", explicit.display()))?;
+        if !path.is_file() {
+            bail!(
+                "transcript path {} is not a regular file",
+                explicit.display()
+            );
+        }
+        fs::File::open(&path)
+            .with_context(|| format!("cannot read transcript path {}", explicit.display()))?;
+        path
+    } else {
+        let bind_path = paths.state_session(record.id).join("transcript.json");
+        aplexer::agent_events::resolve_transcript(&record, &bind_path)?.path
+    };
     if !json_output && !args.follow {
         println!("transcript: {} (engine {})", path.display(), record.engine);
     }

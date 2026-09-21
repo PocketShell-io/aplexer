@@ -129,6 +129,22 @@ fn write_claude_log(h: &Harness, cwd: &Path, body: &str) -> PathBuf {
     path
 }
 
+fn write_codex_log(path: &Path, cwd: &Path, answer: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        path,
+        format!(
+            "{}\n{}\n",
+            json!({"type": "session_meta", "payload": {"id": "thread", "cwd": cwd}}),
+            json!({"type": "response_item", "payload": {
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": answer}]
+            }})
+        ),
+    )
+    .unwrap();
+}
+
 fn parse_jsonl(stdout: &str) -> Vec<Value> {
     stdout
         .lines()
@@ -239,6 +255,111 @@ fn transcript_last_and_whoami() {
         "expected bind sidecar at {}",
         bind.display()
     );
+}
+
+#[test]
+fn explicit_zcodex_path_reads_shell_session_without_changing_existing_bind() {
+    let h = Harness::new();
+    let cwd = h.home.path().join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+    let id = "00000000-0000-0000-0000-000000000002";
+    write_session(&h, id, &cwd, "shell");
+    let logs = h.home.path().join(".codex/sessions/2026/09/21");
+    let chosen = logs.join("chosen.jsonl");
+    let other = logs.join("other.jsonl");
+    write_codex_log(&chosen, &cwd, "chosen answer");
+    write_codex_log(&other, &cwd, "wrong answer");
+    let bind = h
+        .state_dir
+        .path()
+        .join("sessions")
+        .join(id)
+        .join("transcript.json");
+    let old_bind = json!({"path": other, "engine_session_id": "old"});
+    fs::write(&bind, serde_json::to_vec(&old_bind).unwrap()).unwrap();
+
+    let stdout = h.run_ok(&[
+        "--json",
+        "transcript",
+        id,
+        "--engine",
+        "zcodex",
+        "--path",
+        chosen.to_str().unwrap(),
+    ]);
+    let events = parse_jsonl(&stdout);
+    assert_eq!(events.len(), 1, "{stdout}");
+    assert_eq!(events[0]["content"], "chosen answer");
+    assert_eq!(events[0]["engine"], "zcodex");
+    assert_eq!(events[0]["metadata"]["session_id"], id);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(&bind).unwrap()).unwrap(),
+        old_bind
+    );
+
+    // Even a path which would prevent an atomic sidecar write cannot block
+    // an explicit read: it does not need the binding at all.
+    fs::remove_file(&bind).unwrap();
+    fs::create_dir(&bind).unwrap();
+    let stdout = h.run_ok(&[
+        "--json",
+        "transcript",
+        id,
+        "--engine",
+        "zcodex",
+        "--path",
+        chosen.to_str().unwrap(),
+    ]);
+    assert_eq!(parse_jsonl(&stdout)[0]["content"], "chosen answer");
+}
+
+#[test]
+fn explicit_transcript_path_errors_are_clear() {
+    let h = Harness::new();
+    let cwd = h.home.path().join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+    let id = "00000000-0000-0000-0000-000000000003";
+    write_session(&h, id, &cwd, "shell");
+
+    let absent = cwd.join("missing.jsonl");
+    let output = h.run(
+        &[
+            "transcript",
+            id,
+            "--engine",
+            "zcodex",
+            "--path",
+            absent.to_str().unwrap(),
+        ],
+        Duration::from_secs(5),
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("transcript path") && stderr.contains("missing.jsonl"),
+        "{stderr}"
+    );
+
+    let output = h.run(
+        &[
+            "transcript",
+            id,
+            "--engine",
+            "zcodex",
+            "--path",
+            cwd.to_str().unwrap(),
+        ],
+        Duration::from_secs(5),
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
+
+    let output = h.run(
+        &["transcript", id, "--engine", "zcodex"],
+        Duration::from_secs(5),
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--path"));
 }
 
 #[test]
