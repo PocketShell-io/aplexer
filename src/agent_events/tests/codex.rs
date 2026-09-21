@@ -33,6 +33,56 @@ fn codex_native_tool_call_and_result() {
 }
 
 #[test]
+fn codex_function_call_and_result_keep_their_call_id_and_content() {
+    let call = json!({
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": "exec_command",
+            "call_id": "call-42",
+            "arguments": "{\"cmd\":\"ls\"}"
+        }
+    });
+    let events = codex_native_events(&call);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "tool_call");
+    assert_eq!(events[0].role.as_deref(), Some("assistant"));
+    assert_eq!(events[0].tool_name.as_deref(), Some("exec_command"));
+    assert_eq!(events[0].tool_input.as_deref(), Some("{\"cmd\":\"ls\"}"));
+    assert_eq!(events[0].metadata["tool_call_id"], "call-42");
+
+    let result = json!({
+        "type": "response_item",
+        "payload": {
+            "type": "function_call_output",
+            "call_id": "call-42",
+            "output": " first line\n  second line\n"
+        }
+    });
+    let events = codex_native_events(&result);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "tool_result");
+    assert_eq!(
+        events[0].tool_output.as_deref(),
+        Some(" first line\n  second line\n")
+    );
+    assert_eq!(events[0].metadata["tool_call_id"], "call-42");
+}
+
+#[test]
+fn codex_function_call_empty_result_is_still_emitted() {
+    let result = json!({
+        "type": "response_item",
+        "payload": {"type": "function_call_output", "call_id": "call-empty", "output": ""}
+    });
+    let events = codex_native_events(&result);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "tool_result");
+    assert_eq!(events[0].tool_output.as_deref(), Some(""));
+    assert_eq!(events[0].metadata["tool_call_id"], "call-empty");
+}
+
+#[test]
 fn codex_native_continuation_from_session_meta() {
     let payload: Value = serde_json::from_str(
         r#"{"type":"session_meta","payload":{"id":"thread-abc","cwd":"/tmp/x"}}"#,
