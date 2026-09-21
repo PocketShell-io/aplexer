@@ -63,7 +63,7 @@ fn status_cli_bounds_connect_to_a_saturated_control_backlog() {
     atomic_write_json(&paths.record(id), &record).unwrap();
 
     let started = Instant::now();
-    let output = Command::new(env!("CARGO_BIN_EXE_a"))
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .env("APLEXER_RUNTIME_DIR", runtime.path())
         .env("APLEXER_STATE_DIR", state.path())
         .env("APLEXER_CONFIG", &paths.config_file)

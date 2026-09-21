@@ -39,7 +39,7 @@ impl Harness {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_a"))
+        Command::new(env!("CARGO_BIN_EXE_aplexer"))
             .env("APLEXER_RUNTIME_DIR", self.runtime.path())
             .env("APLEXER_STATE_DIR", self.state.path())
             .env("APLEXER_CONFIG", &self.config)
@@ -65,7 +65,7 @@ fn cli_rejects_cap_plus_one_before_worker_spawn() {
     let harness = Harness::new();
     let workspace = TempDir::new().expect("workspace");
     let paths = harness.paths();
-    let output = Command::new(env!("CARGO_BIN_EXE_a"))
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)
         .env("APLEXER_CONFIG", &paths.config_file)

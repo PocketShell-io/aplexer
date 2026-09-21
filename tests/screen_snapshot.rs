@@ -60,7 +60,7 @@ impl Harness {
     }
 
     fn command(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_a"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_aplexer"));
         cmd.env("APLEXER_RUNTIME_DIR", self.runtime_dir.path());
         cmd.env("APLEXER_STATE_DIR", self.state_dir.path());
         cmd.env("APLEXER_CONFIG", &self.config_file);
@@ -1773,7 +1773,7 @@ fn switching_from_alt_mouse_session_neutralizes_modes_before_plain_snapshot() {
     // snapshot is on the wire the attach client borrows mouse reporting for
     // itself -- that is the only way a wheel event can reach `a` at all, and
     // it is what makes the wheel open the scrollback pager (`sync_client_mouse`
-    // in src/bin/a.rs; the workload wins whenever it wants the mouse, which
+    // in src/bin/aplexer.rs; the workload wins whenever it wants the mouse, which
     // is exactly why A's modes had to be neutralized above). Wait for the
     // hand-over rather than racing it.
     let borrowed_at = client.wait_for_offset(

@@ -6,7 +6,7 @@
 //! detach for a worker-side drop sends them debugging the client.
 //!
 //! The worker-sent `ServerEvent::Error` classification (`Attach dropped: X.`)
-//! is pinned by `src/bin/a.rs`'s
+//! is pinned by `src/bin/aplexer.rs`'s
 //! `attach_goodbye_distinguishes_detach_error_and_socket_loss` unit test:
 //! since issue #16 a live-screen subscriber coalesces rather than being
 //! evicted, so forcing a real one through a live PTY needs a PTY/waiter
@@ -45,7 +45,7 @@ impl Harness {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_a"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_aplexer"));
         command.env("APLEXER_RUNTIME_DIR", self.runtime.path());
         command.env("APLEXER_STATE_DIR", self.state.path());
         command.env("APLEXER_CONFIG", &self.config);

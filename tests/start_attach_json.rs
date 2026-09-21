@@ -8,7 +8,7 @@ fn global_json_rejects_start_attach_before_creating_a_session() {
     let workspace = TempDir::new().unwrap();
     let config = state.path().join("config.toml");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_a"))
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .env("APLEXER_RUNTIME_DIR", runtime.path())
         .env("APLEXER_STATE_DIR", state.path())
         .env("APLEXER_CONFIG", &config)

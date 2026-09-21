@@ -50,7 +50,7 @@ fn record(paths: &Paths, workspace: &Path, id: Uuid, tag: &str) -> SessionRecord
 }
 
 fn command(runtime: &TempDir, state: &TempDir, config: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_a"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_aplexer"));
     command
         .env("APLEXER_RUNTIME_DIR", runtime.path())
         .env("APLEXER_STATE_DIR", state.path())

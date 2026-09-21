@@ -75,7 +75,7 @@ impl Harness {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_a"))
+        Command::new(env!("CARGO_BIN_EXE_aplexer"))
             .env("APLEXER_RUNTIME_DIR", self.runtime.path())
             .env("APLEXER_STATE_DIR", self.state.path())
             .env("APLEXER_CONFIG", &self.config)

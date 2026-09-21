@@ -28,7 +28,7 @@ impl Harness {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_a"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_aplexer"));
         command.env("APLEXER_RUNTIME_DIR", self.runtime.path());
         command.env("APLEXER_STATE_DIR", self.state.path());
         command.env("APLEXER_CONFIG", &self.config);
@@ -140,7 +140,7 @@ fn termination_signals_restore_real_pty_termios_and_terminal_ui() {
         // `TERMINAL_RESET_SEQUENCE` verbatim. `\x1b[?1007h` restores
         // xterm's alternate-screen scroll translation, which the attach
         // client turns off for the duration (see `ATTACH_ALT_SCREEN_ENTER`
-        // in src/bin/a.rs): with the host held on the alternate screen,
+        // in src/bin/aplexer.rs): with the host held on the alternate screen,
         // that translation answers a wheel event by typing cursor keys
         // into the workload. The mode is terminal-global, so detach has to
         // put it back.

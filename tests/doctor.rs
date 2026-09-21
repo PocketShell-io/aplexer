@@ -70,7 +70,7 @@ fn doctor_points_a_reapable_stale_record_at_prune() {
     std::fs::create_dir_all(paths.state_session(record.id)).unwrap();
     atomic_write_json(&paths.record(record.id), &record).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_a"))
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .args(["--json", "doctor"])
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)
@@ -118,7 +118,7 @@ fn doctor_points_a_reapable_stale_record_at_prune() {
     );
 
     // And the advice is honest: running it removes the record.
-    let pruned = Command::new(env!("CARGO_BIN_EXE_a"))
+    let pruned = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .args(["--json", "prune"])
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)
@@ -147,7 +147,7 @@ fn doctor_keeps_kill_and_forget_advice_for_a_record_prune_retains() {
     std::fs::create_dir_all(paths.state_session(record.id)).unwrap();
     atomic_write_json(&paths.record(record.id), &record).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_a"))
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .args(["--json", "doctor"])
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)
@@ -202,7 +202,7 @@ fn doctor_does_not_advise_prune_for_a_live_worker_whose_leader_is_gone() {
     std::fs::create_dir_all(paths.state_session(record.id)).unwrap();
     atomic_write_json(&paths.record(record.id), &record).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_a"))
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .args(["--json", "doctor"])
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)
@@ -249,7 +249,7 @@ fn doctor_does_not_advise_prune_for_a_live_worker_whose_leader_is_gone() {
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    let output = Command::new(env!("CARGO_BIN_EXE_a"))
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .args(["--json", "doctor"])
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)
@@ -271,7 +271,7 @@ fn doctor_does_not_advise_prune_for_a_live_worker_whose_leader_is_gone() {
 }
 
 fn doctor_sessions_check(paths: &Paths) -> (std::process::Output, Value) {
-    let output = Command::new(env!("CARGO_BIN_EXE_a"))
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .args(["--json", "doctor"])
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)
@@ -352,7 +352,7 @@ fn status_and_doctor_report_alive_but_unreachable_workers_separately() {
     atomic_write_json(&paths.record(record.id), &record).unwrap();
 
     let base_command = || {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_a"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_aplexer"));
         command
             .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
             .env("APLEXER_STATE_DIR", &paths.state_root)
@@ -410,7 +410,7 @@ fn doctor_reports_strict_config_errors_with_field_context() {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_a"))
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .args(["--json", "doctor"])
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)
@@ -440,7 +440,7 @@ fn doctor_reports_corrupt_registry_entry_with_its_path() {
     std::fs::create_dir_all(paths.state_session(id)).unwrap();
     std::fs::write(paths.record(id), b"{truncated").unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_a"))
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .args(["--json", "doctor"])
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)
@@ -470,7 +470,7 @@ fn doctor_reports_corrupt_registry_entry_with_its_path() {
 fn optional_cgroup_capability_is_explicit_and_never_makes_clean_doctor_fatal() {
     let temp = TempDir::new().unwrap();
     let paths = test_paths(&temp);
-    let output = Command::new(env!("CARGO_BIN_EXE_a"))
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
         .args(["--json", "doctor"])
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)
@@ -561,7 +561,7 @@ fn shell_path(bin_dir: &TempDir) -> String {
 }
 
 fn doctor_command(paths: &Paths, path_value: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_a"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_aplexer"));
     command
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)

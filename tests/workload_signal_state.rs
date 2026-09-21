@@ -36,7 +36,7 @@ fn run_with_timeout(mut command: Command, timeout: Duration) -> Output {
 }
 
 fn command(runtime: &TempDir, state: &TempDir) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_a"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_aplexer"));
     command
         .env("APLEXER_RUNTIME_DIR", runtime.path())
         .env("APLEXER_STATE_DIR", state.path())

@@ -46,7 +46,7 @@ impl Harness {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_a"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_aplexer"));
         command
             .env("APLEXER_RUNTIME_DIR", self.runtime_dir.path())
             .env("APLEXER_STATE_DIR", self.state_dir.path())
