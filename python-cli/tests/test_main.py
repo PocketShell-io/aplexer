@@ -47,10 +47,9 @@ class TestPlatformDetection(unittest.TestCase):
         with mock.patch("sys.platform", plat), mock.patch(
             "platform.machine", return_value=machine
         ):
-            for name in ("a", "aplexer"):
-                path = _main._get_binary_path(name)
-                self.assertIsNotNone(path)
-                self.assertTrue(path.endswith(os.path.join("bin", name + suffix)))
+            path = _main._get_binary_path()
+            self.assertIsNotNone(path)
+            self.assertTrue(path.endswith(os.path.join("bin", "aplexer" + suffix)))
 
     def test_linux_x86_64(self):
         self._assert_resolves("linux", "x86_64", "")
@@ -72,8 +71,7 @@ class TestPlatformDetection(unittest.TestCase):
             with self.subTest(platform=plat, machine=machine), mock.patch(
                 "sys.platform", plat
             ), mock.patch("platform.machine", return_value=machine):
-                self.assertIsNone(_main._get_binary_path("a"))
-                self.assertIsNone(_main._get_binary_path("aplexer"))
+                self.assertIsNone(_main._get_binary_path())
 
 
 class TestMissingOrUnsupportedExitsWithError(unittest.TestCase):

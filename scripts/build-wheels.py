@@ -8,14 +8,14 @@ Usage:
 
 The binaries-dir is expected to contain one subdirectory per platform,
 named "aplexer-bins-<platform>" (matching the artifact names uploaded by
-the build matrix in .github/workflows/release.yml), each holding the two
-release binaries for that platform:
+the build matrix in .github/workflows/release.yml), each holding the one
+release binary for that platform:
 
-    aplexer-bins-linux-amd64/a
     aplexer-bins-linux-amd64/aplexer
-Each platform's pair of binaries is packaged into a single wheel (PyPI
-project "aplexer", import package "aplexer_cli"), exposing both as console
-scripts ("a" and "aplexer"). The wheel depends on the exact same version of
+The binary is packaged into a single wheel (PyPI project "aplexer", import
+package "aplexer_cli"), which exposes two console scripts, "a" and
+"aplexer", that both execute this one binary -- `a` is just an alias for
+`aplexer`. The wheel depends on the exact same version of
 the ``aplexer-client`` distribution, which provides the public ``aplexer``
 import package. Linux wheels intentionally start with the conservative
 ``linux_<arch>`` tag. Release CI builds the binaries in a pinned PyPA manylinux
@@ -54,7 +54,9 @@ TARGETS = [
     ("linux-arm64", "linux_aarch64", ""),
 ]
 
-BINARY_NAMES = ["a", "aplexer"]
+# One binary serves both roles: the `a` console script is an alias that
+# executes the same file (see aplexer_cli/_main.py).
+BINARY_NAMES = ["aplexer"]
 
 
 def read_version():
@@ -79,9 +81,9 @@ def sha256_digest(data):
 
 
 def build_wheel(binary_paths, platform_tag, suffix, version, output_dir):
-    """Build a single platform-tagged wheel bundling both binaries.
+    """Build a single platform-tagged wheel bundling the one release binary.
 
-    binary_paths: dict mapping binary name ("a", "aplexer") to its file path.
+    binary_paths: dict mapping binary name ("aplexer") to its file path.
     """
     wheel_name = "{project}-{version}-py3-none-{platform}.whl".format(
         project=PROJECT_NAME, version=version, platform=platform_tag
@@ -93,7 +95,7 @@ def build_wheel(binary_paths, platform_tag, suffix, version, output_dir):
     records = []
 
     with zipfile.ZipFile(wheel_path, "w", zipfile.ZIP_DEFLATED) as whl:
-        # Write both binaries into <package>/bin/
+        # Write the binaries into <package>/bin/
         for name in BINARY_NAMES:
             binary_path = binary_paths[name]
             with open(binary_path, "rb") as f:
@@ -216,7 +218,8 @@ Tag: py3-none-{platform}
             )
         )
 
-        # Write entry_points.txt (console_scripts for both binaries)
+        # Write entry_points.txt (console_scripts for both names; both
+        # execute the same bundled binary)
         entry_points = (
             "[console_scripts]\n"
             "aplexer = aplexer_cli._main:main_aplexer\n"

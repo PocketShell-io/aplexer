@@ -194,13 +194,11 @@ jobs:
 
       - name: Verify native binaries
         run: |
-          "target/${{ matrix.target }}/release/a" --version
           "target/${{ matrix.target }}/release/aplexer" --version
 
       - name: Stage native binaries
         run: |
           mkdir -p staging
-          cp "target/${{ matrix.target }}/release/a" staging/a
           cp "target/${{ matrix.target }}/release/aplexer" staging/aplexer
 
       - name: Build and audit aplexer CLI wheel

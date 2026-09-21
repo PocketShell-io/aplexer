@@ -31,10 +31,7 @@ class TestReadVersion(unittest.TestCase):
 class TestBuildWheel(unittest.TestCase):
     def test_build_linux_amd64_wheel(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            a_path = os.path.join(tmpdir, "a")
             aplexer_path = os.path.join(tmpdir, "aplexer")
-            with open(a_path, "wb") as f:
-                f.write(b"#!/bin/sh\necho a\n")
             with open(aplexer_path, "wb") as f:
                 f.write(b"#!/bin/sh\necho aplexer\n")
 
@@ -42,7 +39,7 @@ class TestBuildWheel(unittest.TestCase):
             os.makedirs(output_dir)
 
             wheel_path = build_wheels.build_wheel(
-                binary_paths={"a": a_path, "aplexer": aplexer_path},
+                binary_paths={"aplexer": aplexer_path},
                 platform_tag="linux_x86_64",
                 suffix="",
                 version="0.1.0",
@@ -57,7 +54,6 @@ class TestBuildWheel(unittest.TestCase):
             with zipfile.ZipFile(wheel_path, "r") as whl:
                 names = whl.namelist()
 
-                self.assertIn("aplexer_cli/bin/a", names)
                 self.assertIn("aplexer_cli/bin/aplexer", names)
                 self.assertIn("aplexer_cli/__init__.py", names)
                 self.assertIn("aplexer_cli/__main__.py", names)

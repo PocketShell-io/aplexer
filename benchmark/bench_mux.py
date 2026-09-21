@@ -69,7 +69,7 @@ import tempfile
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-A_BIN = os.path.join(REPO, "target", "release", "a")
+A_BIN = os.path.join(REPO, "target", "release", "aplexer")
 TMUXCTL_BIN = shutil.which("tmuxctl") or os.path.expanduser("~/.local/bin/tmuxctl")
 TMUX_BIN = shutil.which("tmux") or "tmux"
 SHELL = "/bin/bash"
