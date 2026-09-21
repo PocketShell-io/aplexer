@@ -314,8 +314,15 @@ Every state aplexer prints is one of eight words, each with one meaning:
 a whoami                    # your session's identity (workspace/tag/engine/profile)
 a transcript review         # read a session's conversation transcript
 a transcript review --follow
+a transcript zoom --engine zcodex --path /path/to/rollout.jsonl
 a watch --jsonl             # stream lifecycle events as they happen
 ```
+
+For an agent started inside a plain shell session, pass its native JSONL file
+with `--path` and its engine with `--engine`. The explicit file takes priority
+over automatic discovery and any saved transcript binding. It applies only to
+that invocation; repeat `--path` for later pages or `--follow`. The saved
+binding is not changed.
 
 ## Messaging between sessions
 

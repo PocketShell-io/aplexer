@@ -27,6 +27,9 @@
 //!   is a sidecar, not a `SessionRecord` field, so the worker's periodic
 //!   `last_activity_ms` writes cannot race it away.
 //! - **Re-locate** if the bound path disappears (agent rotated the log).
+//! - **Explicit source**: `a transcript --path FILE` reads that file for one
+//!   invocation without consulting or changing the bind sidecar. Pair it
+//!   with `--engine` when the session's declared engine is `shell`.
 //!
 //! Supported engines: claude, codex, grok. Variant engines identified with a
 //! family by `engine_family` (e.g. `zcodex`, a codex-rs fork) parse and

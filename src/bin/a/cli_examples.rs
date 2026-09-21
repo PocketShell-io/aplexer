@@ -198,6 +198,8 @@ pub(crate) const WATCH_EXAMPLES: &str = r#"Examples:
 pub(crate) const TRANSCRIPT_EXAMPLES: &str = r#"Examples:
   a transcript review --last 50              last 50 conversation events
   a transcript review --follow               print new events as the agent writes them
+  a transcript zoom --engine zcodex --path /tmp/rollout.jsonl
+                                            parse a chosen Codex log from a shell session
   a transcript review --kind tool_call       only one event kind
   a transcript review --before 12 --last 20  page backward through history
 "#;
