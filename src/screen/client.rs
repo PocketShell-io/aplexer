@@ -570,7 +570,7 @@ impl ClientScreen {
     /// frame. A soft preference rather than a hard requirement: waiting for
     /// the frame to close keeps the redraw out of the middle of a repaint,
     /// but a workload that never closes one must not be able to starve the
-    /// bar forever (see `STATUS_BAR_SYNC_DEFER_LIMIT` in `src/bin/a.rs`).
+    /// bar forever (see `STATUS_BAR_SYNC_DEFER_LIMIT` in `src/bin/aplexer.rs`).
     pub fn in_synchronized_update(&self) -> bool {
         self.screen.in_synchronized_update()
     }

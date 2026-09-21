@@ -13,10 +13,6 @@ path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
 [[bin]]
-name = "a"
-path = "src/bin/a.rs"
-
-[[bin]]
 name = "aplexer"
 path = "src/bin/aplexer.rs"
 

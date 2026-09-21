@@ -166,7 +166,7 @@ fn write_log_line<W: io::Write>(writer: &mut W, message: &str) -> io::Result<()>
 /// interleaved, stale leftover text) even though the PTY's winsize ends up
 /// numerically correct moments later.
 ///
-/// The caller (`cmd_start` in src/bin/a.rs) supplies this only for the
+/// The caller (`cmd_start` in src/bin/aplexer.rs) supplies this only for the
 /// common immediate-attach case (`a start --attach`, `a -`), where it
 /// already knows the attaching client's terminal size before the worker is
 /// even spawned -- so the workload can be started at its true final size
@@ -174,7 +174,7 @@ fn write_log_line<W: io::Write>(writer: &mut W, message: &str) -> io::Result<()>
 /// detached, with no client attaching yet, has no size to offer and falls
 /// back to the 24x80 default here; that session still gets resized
 /// normally the first time someone does attach (see `attach()` in
-/// src/bin/a.rs), the same as before this fix -- this only eliminates the
+/// src/bin/aplexer.rs), the same as before this fix -- this only eliminates the
 /// race for the case where the size is already known at spawn time.
 pub fn run_worker(id: Uuid, initial_size: Option<(u16, u16)>) -> Result<()> {
     normalize_sigchld_for_child_management()?;

@@ -50,7 +50,7 @@ pub struct MarginTracker {
     /// may silently be missing rows, even after the workload resets its
     /// margins. The attach client reads this to decide whether the pager's
     /// history is worth rebuilding from the worker's raw tail before opening
-    /// (`refresh_pager_history` in `src/bin/a.rs`); a workload that never
+    /// (`refresh_pager_history` in `src/bin/aplexer.rs`); a workload that never
     /// sends a sub-range retains every row through the ordinary live path and
     /// pays for nothing.
     subregion_seen: bool,

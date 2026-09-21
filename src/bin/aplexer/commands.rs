@@ -75,6 +75,7 @@ pub(crate) fn run() -> Result<()> {
         Commands::Hotkeys => cmd_hotkeys(),
         Commands::QuickAttach(args) => cmd_quick_attach(&paths, args),
         Commands::QuickLaunch(args) => cmd_quick_launch(&paths, args),
+        Commands::Worker(args) => aplexer::worker::run_worker(args.id, args.rows.zip(args.cols)),
     }
 }
 

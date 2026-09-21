@@ -7,6 +7,7 @@ use clap::{Args, ValueEnum};
 use clap_complete::Shell;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 #[derive(Args)]
 pub(crate) struct QuickAttachArgs {
@@ -36,6 +37,26 @@ pub(crate) struct QuickLaunchArgs {
 pub(crate) struct CompletionsArgs {
     /// Shell to generate a completion script for.
     pub(crate) shell: Shell,
+}
+
+#[derive(Args)]
+pub(crate) struct WorkerArgs {
+    /// Session whose durable record and runtime dirs this worker owns.
+    #[arg(long)]
+    pub(crate) id: Uuid,
+    /// Initial PTY row/col count to open the workload's terminal at,
+    /// already reserved-row-adjusted by the spawning client (see
+    /// `reserved_rows` in src/bin/aplexer/terminal.rs). Passed only
+    /// when the client is about to attach immediately (`a start --attach` /
+    /// `a -`), so the workload sees its real, final terminal size from the
+    /// very first moment it runs instead of starting at a stale default and
+    /// being resized out from under it a moment later -- see the doc comment
+    /// on `run_worker`'s `initial_size` parameter for why that race
+    /// matters. Both flags must be given together or not at all.
+    #[arg(long, requires = "cols")]
+    pub(crate) rows: Option<u16>,
+    #[arg(long, requires = "rows")]
+    pub(crate) cols: Option<u16>,
 }
 
 #[derive(Args)]

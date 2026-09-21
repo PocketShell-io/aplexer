@@ -144,6 +144,13 @@ pub(crate) enum Commands {
     /// before argument parsing -- not a name a user types directly.
     #[command(hide = true)]
     QuickLaunch(QuickLaunchArgs),
+    /// The PTY-keeping worker behind every session, spawned by the client
+    /// as `<this binary> worker --id …` (see `worker_command`). One
+    /// executable serves as both the user-facing CLI and the worker, so
+    /// this subcommand lives in the same parser -- internal integration
+    /// surface, not a name a user types, hence hidden.
+    #[command(hide = true)]
+    Worker(WorkerArgs),
 }
 
 pub(crate) fn main() {

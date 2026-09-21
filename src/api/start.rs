@@ -41,7 +41,8 @@ pub struct StartRequest {
     pub worker_rows: Option<u16>,
     pub worker_cols: Option<u16>,
     /// When set, spawn the worker as `python -m aplexer worker --id …`
-    /// (Python bindings). Otherwise spawn the `aplexer` worker binary.
+    /// (Python bindings). Otherwise re-exec this same binary as
+    /// `<worker> worker --id …` -- one executable is both CLI and worker.
     pub python: Option<PathBuf>,
     /// Never fail because the requested `workspace+tag` is live: when that
     /// pair is held by a session `start_session` would refuse to supersede,

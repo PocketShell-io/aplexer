@@ -151,7 +151,7 @@ pub(crate) use terminal_status::*;
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod switching_tests {
-    include!("../a_tests/mod.rs");
+    include!("../aplexer_tests/mod.rs");
 }
 
 pub(crate) fn entrypoint() {

@@ -306,7 +306,17 @@ pub fn worker_executable() -> Result<PathBuf> {
     if let Some(path) = env::var_os("APLEXER_WORKER") {
         return Ok(PathBuf::from(path));
     }
+    // One executable is both the user-facing CLI and the worker: re-exec
+    // this same binary as `<self> worker --id …`. current_exe resolves
+    // symlinks, so reaching it through the `a` alias still lands on the
+    // real aplexer binary. When this code runs embedded in another program
+    // (the Python bindings), the host executable is not aplexer -- fall
+    // back to the sibling `aplexer` next to it, then to PATH.
     let current = env::current_exe()?;
+    match current.file_name().and_then(|name| name.to_str()) {
+        Some("aplexer") | Some("a") => return Ok(current),
+        _ => {}
+    }
     if let Some(parent) = current.parent() {
         let sibling = parent.join("aplexer");
         if sibling.is_file() {

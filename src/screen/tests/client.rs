@@ -695,7 +695,7 @@ fn cursor_restore_reproduces_position_and_pen_without_decsc() {
 /// *physical* geometry (one row taller) carrying the client's
 /// `1;{rows-1}` reservation and its status-bar text, and a second real
 /// `vt100` standing in for the workload's own screen. Bytes are fed
-/// exactly the way `relay_to_terminal` (src/bin/a.rs) feeds them: the
+/// exactly the way `relay_to_terminal` (src/bin/aplexer.rs) feeds them: the
 /// workload sees the raw chunk, the host sees whatever `relay` returns.
 struct RelayRig {
     client: ClientScreen,
@@ -707,7 +707,7 @@ struct RelayRig {
 
 impl RelayRig {
     /// `rows` is the *physical* terminal height; the workload gets
-    /// `rows - 1` (`reserved_rows` in src/bin/a.rs).
+    /// `rows - 1` (`reserved_rows` in src/bin/aplexer.rs).
     fn new(rows: u16, cols: u16) -> Self {
         let mut host = vt100::Parser::new(rows, cols, 0);
         // What `apply_terminal_layout` + the first `draw_status_bar`

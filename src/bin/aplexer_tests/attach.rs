@@ -203,6 +203,38 @@ fn human_commands_parse_as_real_clap_commands() {
     }
 }
 
+#[test]
+fn worker_subcommand_parses_the_client_spawn_shape() {
+    // One binary is both the CLI and the worker: the client spawns
+    // `<self> worker --id <uuid> [--rows R --cols C]` (see worker_command).
+    // The subcommand stays parseable exactly in that shape even though it
+    // is hidden from help and completions.
+    let id = uuid::Uuid::nil();
+    let args = args_of(&["worker", "--id", &id.to_string()]);
+    match Cli::try_parse_from(args).unwrap().command {
+        Some(Commands::Worker(worker)) => {
+            assert_eq!(worker.id, id);
+            assert_eq!(worker.rows, None);
+            assert_eq!(worker.cols, None);
+        }
+        _ => panic!("expected worker command"),
+    }
+
+    let args = args_of(&["worker", "--id", &id.to_string(), "--rows", "5", "--cols", "3"]);
+    match Cli::try_parse_from(args).unwrap().command {
+        Some(Commands::Worker(worker)) => {
+            assert_eq!(worker.rows, Some(5));
+            assert_eq!(worker.cols, Some(3));
+        }
+        _ => panic!("expected worker command with initial size"),
+    }
+
+    // The client only ever sends both flags together (see spawn_worker_process);
+    // a lone --rows is a caller bug and must not parse.
+    let args = args_of(&["worker", "--id", &id.to_string(), "--rows", "5"]);
+    assert!(Cli::try_parse_from(args).is_err());
+}
+
 fn args_of(argv: &[&str]) -> Vec<String> {
     std::iter::once("a")
         .chain(argv.iter().copied())
@@ -240,6 +272,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Hotkeys => "hotkeys",
         Commands::QuickAttach(_) => "quick-attach",
         Commands::QuickLaunch(_) => "quick-launch",
+        Commands::Worker(_) => "worker",
         Commands::Ack(_) => "ack",
         Commands::Warnings(_) => "warnings",
     }

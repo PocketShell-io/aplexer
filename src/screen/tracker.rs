@@ -313,7 +313,7 @@ impl ScreenTracker {
     /// hand the mouse *back*: the attach client turns SGR mouse reporting on
     /// for itself while the workload wants none (that is the only way a
     /// wheel event can reach `a` at all -- see `sync_client_mouse` in
-    /// `src/bin/a.rs`), and the moment the workload asks for the mouse the
+    /// `src/bin/aplexer.rs`), and the moment the workload asks for the mouse the
     /// client must undo exactly its own modes and leave the workload's in
     /// force, in one write that cannot half-apply.
     pub fn workload_mouse_sequence(&self) -> Vec<u8> {

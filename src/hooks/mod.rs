@@ -1,7 +1,7 @@
 //! `a init` — machine-wide agent-state hook installation.
 //!
 //! `a state-report <idle|waiting|working>` (see `cmd_state_report` in
-//! `src/bin/a.rs`) is the ingestion primitive: a hook running inside a
+//! `src/bin/aplexer.rs`) is the ingestion primitive: a hook running inside a
 //! session pushes semantic state, and `a watch` / `a list` / `a status` /
 //! the attach status bar treat a fresh push as authoritative over the
 //! PTY-recency heuristic. But nothing in this repo used to *call* it from

@@ -62,7 +62,7 @@ That gives you three things:
 | What | Where you'll see it |
 |---|---|
 | the `a` command | your everyday interface |
-| the `aplexer` worker binary | the background process behind each session - `a` launches it, you never invoke it yourself |
+| the `aplexer` binary | one executable serving both roles: `a` is an alias for it, and the same file is the background worker behind each session |
 | the `aplexer` Python package | `from aplexer import Client` |
 
 <details>
@@ -71,7 +71,8 @@ That gives you three things:
 ```bash
 git clone https://github.com/alexeygrigorev/aplexer
 cd aplexer
-cargo install --path .   # puts `a` and `aplexer` on your PATH
+cargo install --path .   # puts the `aplexer` binary on your PATH
+ln -s aplexer ~/.local/bin/a   # optional: the `a` alias
 ```
 
 </details>
