@@ -295,6 +295,13 @@ a init        # one-time: install hooks so supported agents report working/waiti
 a init --check
 ```
 
+`a init` also installs a `[tag]` indicator for your shell prompt
+(`__aplexer_indicator` in `~/.bashrc` / `~/.zshrc`, managed as a
+marker-bracketed block — only files that already exist are touched). It
+resolves the tag live, so `a rename` reflects on the next prompt. Add
+`$(__aplexer_indicator)` to your `PS1` (bash) or `PROMPT` with
+`prompt_subst` (zsh) to show it; `a init --uninstall` removes the block.
+
 With hooks installed, `a list` and the machine-readable event stream reflect
 what each agent is actually doing - grinding away, waiting on you, or idle.
 

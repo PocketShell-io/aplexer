@@ -107,6 +107,15 @@ pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()
 /// consumer to guess from PTY-output recency. See `aplexer::hooks` for the
 /// per-engine mechanisms and the merge-never-clobber rules.
 ///
+/// It also manages the shell-prompt indicator (`aplexer::shell_prompt`): a
+/// `[tag]` function for `PS1`/`PROMPT` that resolves the tag live, so `a
+/// rename` reflects on the next prompt instead of showing the stale
+/// `APLEXER_TAG` spawn value. Only `~/.bashrc` / `~/.zshrc` files that
+/// already exist are touched (marker-bracketed block, appended once); the
+/// prompt string itself is never rewritten — install prints the one-line
+/// wiring instead. With `--engine`, only that engine's hooks are touched
+/// and the prompt block is left alone entirely.
+///
 /// Modes (exactly one):
 ///
 /// - default: install (idempotent; only writes files that change).
@@ -114,7 +123,10 @@ pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()
 ///   fully initialized, 1 otherwise. With `--json` this prints
 ///   `{"initialized": bool, "engines": [...]}` — the machine contract the
 ///   PocketShell host CLI automates against (run `a init --check --json`;
-///   when it reports `initialized: false`, run `a init`).
+///   when it reports `initialized: false`, run `a init`). Both the JSON
+///   and the exit code additionally cover the prompt block (missing rc
+///   files count as satisfied: nothing to manage), with per-shell detail
+///   in an additive `"prompt"` array.
 /// - `--uninstall`: remove our hooks again.
 ///
 /// `--engine` limits any mode to one engine (`zcodex` maps onto `codex`).
@@ -139,16 +151,27 @@ pub(crate) fn cmd_init(paths: &Paths, args: InitArgs, json_output: bool) -> Resu
         .collect();
     let targets = aplexer::hooks::resolve_targets_from_env(&profile_envs)?;
     let a_bin = aplexer::hooks::resolve_a_bin();
+    // The prompt block is global, not per-engine: an `--engine` filter
+    // scopes the whole invocation to that engine's hooks and leaves the
+    // rc files alone. Without a filter the prompt rides every mode.
+    let prompt_targets = match filter {
+        None => Some(aplexer::shell_prompt::prompt_targets_from_env()?),
+        Some(_) => None,
+    };
+    let prompt_ref = prompt_targets.as_deref().unwrap_or(&[]);
 
     if args.check {
         let statuses = aplexer::hooks::check(&targets, filter);
-        let initialized = statuses.iter().all(|status| status.installed);
+        let prompt = aplexer::shell_prompt::check(prompt_ref);
+        let initialized = statuses.iter().all(|status| status.installed)
+            && prompt.iter().all(|status| status.installed);
         if json_output {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
                     "initialized": initialized,
                     "engines": statuses,
+                    "prompt": prompt,
                 }))?
             );
         } else {
@@ -157,6 +180,14 @@ pub(crate) fn cmd_init(paths: &Paths, args: InitArgs, json_output: bool) -> Resu
                     "{} {:<9} {}",
                     if status.installed { "OK  " } else { "MISS" },
                     status.engine,
+                    status.message
+                );
+            }
+            for status in &prompt {
+                println!(
+                    "{} {:<9} {}",
+                    if status.installed { "OK  " } else { "MISS" },
+                    format!("prompt/{}", status.shell),
                     status.message
                 );
             }
@@ -174,39 +205,73 @@ pub(crate) fn cmd_init(paths: &Paths, args: InitArgs, json_output: bool) -> Resu
 
     if args.uninstall {
         let statuses = aplexer::hooks::uninstall(&targets, filter);
+        let prompt = aplexer::shell_prompt::uninstall(prompt_ref);
         if json_output {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
                     "ok": true,
                     "engines": statuses,
+                    "prompt": prompt,
                 }))?
             );
         } else {
             for status in &statuses {
                 println!("{}: {} — {}", status.engine, status.action, status.message);
             }
+            for status in &prompt {
+                println!(
+                    "prompt/{}: {} — {}",
+                    status.shell, status.action, status.message
+                );
+            }
         }
         return Ok(());
     }
 
     let statuses = aplexer::hooks::install(&targets, &a_bin, filter);
-    let ok = statuses.iter().all(|status| status.action != "error");
+    let prompt = aplexer::shell_prompt::install(prompt_ref);
+    let ok = statuses.iter().all(|status| status.action != "error")
+        && prompt.iter().all(|status| status.action != "error");
     if json_output {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "ok": ok,
                 "engines": statuses,
+                "prompt": prompt,
             }))?
         );
     } else {
         for status in &statuses {
             println!("{}: {} — {}", status.engine, status.action, status.message);
         }
+        for status in &prompt {
+            println!(
+                "prompt/{}: {} — {}",
+                status.shell, status.action, status.message
+            );
+        }
+        print_prompt_wiring(&prompt);
     }
     if !ok {
         bail!("agent-state hook installation hit errors");
     }
     Ok(())
+}
+
+/// Remind how the managed indicator reaches the visible prompt. Install
+/// never rewrites `PS1`/`PROMPT` itself, so without this the block it just
+/// wrote sits inert. Printed only when at least one rc file actually holds
+/// the block (installed or already present — skipped files need no hint).
+fn print_prompt_wiring(prompt: &[aplexer::shell_prompt::PromptStatus]) {
+    if !prompt
+        .iter()
+        .any(|status| status.installed && status.action != "skipped")
+    {
+        return;
+    }
+    println!("Add $(__aplexer_indicator) to your prompt to show the session tag, e.g.:");
+    println!("  bash: PS1='...$(__aplexer_indicator)...'");
+    println!("  zsh:  setopt prompt_subst; PROMPT='...$(__aplexer_indicator)...'");
 }

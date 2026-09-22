@@ -420,15 +420,20 @@ pub(crate) struct InitArgs {
     /// and exit 0 when fully initialized, 1 otherwise. No files are
     /// touched. With `--json` this is the machine contract for automation:
     /// `a init --check --json` reports `{"initialized": bool, ...}`.
+    /// The check covers the shell-prompt block too (missing rc files
+    /// count as satisfied); per-shell detail rides an additive `"prompt"`
+    /// array in the JSON.
     #[arg(long)]
     pub(crate) check: bool,
     /// Remove aplexer's `state-report` hooks instead of installing them.
     /// Only hook entries containing `state-report` and our generated files
-    /// are removed; everything else is left alone.
+    /// are removed; everything else is left alone. Also removes the
+    /// shell-prompt block from managed rc files.
     #[arg(long)]
     pub(crate) uninstall: bool,
     /// Only act on one engine: claude, codex, zcodex (shares codex's
     /// CODEX_HOME config), grok, gemini, or opencode. Default: all engines.
+    /// With `--engine` the shell-prompt block is left alone entirely.
     #[arg(long, value_name = "ENGINE", add = engine_completions())]
     pub(crate) engine: Option<String>,
 }

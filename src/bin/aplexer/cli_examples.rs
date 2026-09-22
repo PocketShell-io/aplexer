@@ -131,8 +131,9 @@ pub(crate) const DOCTOR_EXAMPLES: &str = r#"Examples:
 
 pub(crate) const INIT_EXAMPLES: &str = r#"Examples:
   a init                        install agent-state hooks for every engine found
+                                plus the [tag] prompt block in ~/.bashrc/~/.zshrc
   a init --check                installed already? exit code 0 says yes
-  a init --engine codex         just codex
+  a init --engine codex         just codex (prompt block left alone)
   a init --uninstall            remove aplexer's hooks again
 "#;
 
