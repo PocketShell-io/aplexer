@@ -84,6 +84,9 @@ pub(crate) enum Commands {
     /// Change a session's tag.
     #[command(after_help = RENAME_EXAMPLES)]
     Rename(RenameArgs),
+    /// Pin which agent a session reports, or show the current one.
+    #[command(after_help = AGENT_EXAMPLES)]
+    Agent(AgentArgs),
     /// List configured/discovered engines.
     #[command(after_help = ENGINES_EXAMPLES)]
     Engines,

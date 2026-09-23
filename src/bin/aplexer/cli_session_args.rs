@@ -387,6 +387,26 @@ pub(crate) struct RenameArgs {
 }
 
 #[derive(Args)]
+pub(crate) struct AgentArgs {
+    /// Session to update: UUID/prefix, workspace:tag, or tag in the current
+    /// workspace. Omitted (with AGENT given, or for the read-only form)
+    /// means the session this command runs inside, via APLEXER_SESSION_ID.
+    #[arg(value_name = "SESSION", add = session_selector_completions())]
+    pub(crate) selector: Option<String>,
+    /// Agent to pin: an agent name (`claude`, `codex`, `opencode`, `grok`)
+    /// or a configured variation token (`zcodex`, a profile id, an engine
+    /// id, a command basename). While pinned, every surface reports this
+    /// agent instead of walking the workload process tree -- the walk
+    /// cannot tell a switched-to agent from the switched-away one it still
+    /// finds first.
+    #[arg(value_name = "AGENT")]
+    pub(crate) agent: Option<String>,
+    /// Unpin: report live detection again
+    #[arg(long, conflicts_with = "agent")]
+    pub(crate) clear: bool,
+}
+
+#[derive(Args)]
 pub(crate) struct StateReportArgs {
     /// idle: the agent finished its turn and is resting, nothing
     /// outstanding. waiting: blocked on a prompt/question and needs the

@@ -257,6 +257,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Forget(_) => "forget",
         Commands::Prune => "prune",
         Commands::Rename(_) => "rename",
+        Commands::Agent(_) => "agent",
         Commands::Engines => "engines",
         Commands::Profiles => "profiles",
         Commands::LaunchSpec(_) => "launch-spec",

@@ -487,6 +487,127 @@ fn a_fake_zcodex_inside_a_shell_session_reports_the_codex_kind() {
     );
 }
 
+/// The switch-agents acceptance scenario: after switching agents inside a
+/// session, the process tree can still hold the old agent (the new one was
+/// launched from inside it, or the old one merely suspended), so the walk's
+/// first-match rule keeps reporting the stale answer and the user needs a
+/// way to correct it: `a agent <token>` pins the reported agent. The pin
+/// must reach every surface immediately -- even while no agent is running
+/// at all, which is exactly when detection has nothing to say -- survive a
+/// refused bad token, and `--clear` must hand the answer back to live
+/// detection.
+#[test]
+fn a_pinned_agent_reports_on_every_surface_until_cleared() {
+    assert!(
+        Path::new("/bin/bash").exists(),
+        "/bin/bash is required by this test"
+    );
+    let harness = Harness::new();
+    let workspace = harness
+        .workspace
+        .path()
+        .to_str()
+        .expect("utf8 workspace")
+        .to_owned();
+    // The zcodex variation exists only through the config, so pinning
+    // `zcodex` exercises the config-derived half of the vocabulary.
+    fs::create_dir_all(harness.workspace.path().join("bin")).expect("fake bin dir");
+    fs::write(harness.workspace.path().join("bin/zcodex"), b"#!/bin/sh\n").expect("fake zcodex");
+    fs::write(
+        &harness.config,
+        format!(
+            "[profiles.zcodex]\nengine = \"codex\"\nexecutable = \"{}/bin/zcodex\"\n",
+            harness.workspace.path().display()
+        ),
+    )
+    .expect("write harness config with the zcodex profile");
+
+    let home = format!("HOME={workspace}");
+    let stdout = harness.run_ok(
+        &[
+            "start",
+            "--workspace",
+            &workspace,
+            "--tag",
+            "agent-pin",
+            "--env",
+            &home,
+            "--json",
+            "--",
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-l",
+        ],
+        Duration::from_secs(20),
+    );
+    let started: Value = serde_json::from_str(&stdout).expect("start JSON");
+    let id = started["id"].as_str().expect("session id").to_owned();
+
+    // A bare shell: live detection has nothing to say.
+    wait_until(
+        || harness.list_agent(&id) == Value::Null,
+        "a bare shell session to report agent: null",
+    );
+
+    // Pinning claude answers on every surface, no process required.
+    let stdout = harness.run_ok(&["agent", &id, "claude", "--json"], Duration::from_secs(10));
+    let pinned: Value = serde_json::from_str(&stdout).expect("agent pin JSON");
+    assert_eq!(pinned["override"], Value::String("claude".into()));
+    assert_eq!(pinned["agent"], Value::String("claude".into()));
+    assert_eq!(pinned["agent_profile"], Value::String("default".into()));
+    assert_eq!(harness.list_agent(&id), Value::String("claude".into()));
+    assert_eq!(harness.snapshot_agent(&id), Value::String("claude".into()));
+    assert_eq!(harness.status_agent(&id), Value::String("claude".into()));
+    assert!(
+        harness.list_plain_line("agent-pin").contains("claude"),
+        "the plain `a list` row reports the pin: {}",
+        harness.list_plain_line("agent-pin")
+    );
+
+    // The read-only form tells pin from detection apart.
+    let stdout = harness.run_ok(&["agent", &id, "--json"], Duration::from_secs(10));
+    let shown: Value = serde_json::from_str(&stdout).expect("agent show JSON");
+    assert_eq!(shown["source"], Value::String("override".into()));
+
+    // A token nothing classifies is refused -- by the worker, so a direct
+    // RPC cannot write a pin every surface would ignore -- and the
+    // previous pin survives the refusal.
+    let output = harness.run(&["agent", &id, "bogus"], Duration::from_secs(10));
+    assert!(
+        !output.status.success(),
+        "`a agent bogus` must fail: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("bogus") && stderr.contains("zcodex"),
+        "the refusal names the token and the vocabulary: {stderr}"
+    );
+    assert_eq!(harness.list_agent(&id), Value::String("claude".into()));
+
+    // A variation token pins kind and profile together.
+    let stdout = harness.run_ok(&["agent", &id, "zcodex", "--json"], Duration::from_secs(10));
+    let pinned: Value = serde_json::from_str(&stdout).expect("zcodex pin JSON");
+    assert_eq!(pinned["agent"], Value::String("codex".into()));
+    assert_eq!(pinned["agent_profile"], Value::String("zcodex".into()));
+
+    // Clearing hands the answer back to live detection: bare shell, null.
+    let stdout = harness.run_ok(
+        &["agent", &id, "--clear", "--json"],
+        Duration::from_secs(10),
+    );
+    let cleared: Value = serde_json::from_str(&stdout).expect("agent clear JSON");
+    assert_eq!(cleared["override"], Value::Null);
+    assert_eq!(cleared["agent"], Value::Null);
+    assert_eq!(harness.list_agent(&id), Value::Null);
+
+    harness.run_ok(
+        &["kill", &id, "--signal", "TERM", "--grace-ms", "200"],
+        Duration::from_secs(15),
+    );
+}
+
 /// Kill a spawned helper even if an assertion unwinds the test.
 struct ChildGuard(Child);
 
@@ -549,6 +670,7 @@ fn a_terminal_record_never_reports_an_agent_from_a_recycled_pid() {
             reported_state_at_ms: None,
             phase,
             worker_pid: None,
+            agent_override: None,
             workload_pid: Some(workload_pid),
             worker_cgroup: None,
             workload_cgroup: None,

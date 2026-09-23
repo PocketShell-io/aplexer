@@ -461,6 +461,109 @@ pub(crate) fn cmd_rename(paths: &Paths, args: RenameArgs, json_output: bool) -> 
     Ok(())
 }
 
+/// `a agent [SESSION [AGENT|--clear]]` -- pin which agent a session reports,
+/// unpin it, or show the current answer.
+///
+/// The why: detection walks the workload process tree and reports the first
+/// agent it meets, so after switching agents inside a session (the new one
+/// launched from inside the old, the old one merely suspended) every surface
+/// kept naming the stale one and nothing could correct it. A pin overrides
+/// the walk on every surface (`api::record_detected_with`) until `--clear`;
+/// the worker validates the token the same way detection classifies, so a
+/// pin always resolves to a real agent/profile pair.
+pub(crate) fn cmd_agent(paths: &Paths, args: AgentArgs, json_output: bool) -> Result<()> {
+    let selected = match args.selector.as_deref() {
+        Some(selector) => resolve_record(paths, Some(selector), None, None)?,
+        None => {
+            let id = discover_session_id().ok_or_else(|| {
+                anyhow!(
+                    "no SESSION or AGENT given and not inside an aplexer session \
+                     (APLEXER_SESSION_ID not set)"
+                )
+            })?;
+            read_record(&paths.record(id)).with_context(|| {
+                format!("session {id} (from APLEXER_SESSION_ID) has no persisted record")
+            })?
+        }
+    };
+    // `Some(request)` = mutate (pin to the inner value, `None` = clear);
+    // `None` = the read-only show form.
+    let request = match (args.agent.as_deref(), args.clear) {
+        (Some(agent), false) => Some(Some(agent.to_owned())),
+        (None, true) => Some(None),
+        (None, false) => None,
+        (Some(_), true) => unreachable!("clap: --clear conflicts_with AGENT"),
+    };
+    let Some(agent) = request else {
+        // Read-only: what does this session report right now, and from where?
+        let detected = aplexer::api::record_detected(&selected);
+        if json_output {
+            let source = match (&selected.agent_override, &detected) {
+                (Some(_), _) => "override",
+                (None, Some(_)) => "detection",
+                (None, None) => "none",
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "id": selected.id,
+                    "selector": selected.selector(),
+                    "override": selected.agent_override,
+                    "agent": detected.as_ref().map(|d| d.kind),
+                    "agent_profile": detected.as_ref().map(|d| d.profile_label()),
+                    "source": source,
+                }))?
+            );
+        } else {
+            println!(
+                "{}: {}",
+                selected.selector(),
+                agent_fact(&selected.agent_override, &detected)
+            );
+        }
+        return Ok(());
+    };
+    let result = rpc_simple(&selected, Operation::SetAgent { agent }, None)?;
+    let updated: SessionRecord = serde_json::from_value(result)?;
+    let now_reporting = aplexer::api::record_detected(&updated);
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "id": updated.id,
+                "selector": updated.selector(),
+                "override": updated.agent_override,
+                "agent": now_reporting.as_ref().map(|d| d.kind),
+                "agent_profile": now_reporting.as_ref().map(|d| d.profile_label()),
+            }))?
+        );
+    } else {
+        println!(
+            "{}: {}",
+            updated.selector(),
+            agent_fact(&updated.agent_override, &now_reporting)
+        );
+    }
+    Ok(())
+}
+
+/// The one human sentence about a session's reported agent, shared by the
+/// show form and both mutations: what is reported, and whether the pin or
+/// the live walk is speaking.
+fn agent_fact(
+    override_token: &Option<String>,
+    detected: &Option<aplexer::agent_kind::DetectedAgent>,
+) -> String {
+    let fact = match detected {
+        Some(detected) => format!("{}/{}", detected.kind, detected.profile_label()),
+        None => "no agent".to_owned(),
+    };
+    match override_token {
+        Some(pin) => format!("{fact} (pinned {pin})"),
+        None => format!("{fact} (live detection)"),
+    }
+}
+
 pub(crate) fn cmd_engines(paths: &Paths, json_output: bool) -> Result<()> {
     let values = aplexer::api::engines_json(paths)?;
     let values = values.as_array().cloned().unwrap_or_default();
