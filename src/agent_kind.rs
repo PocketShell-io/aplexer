@@ -29,6 +29,7 @@
 
 use std::fmt;
 
+use anyhow::{bail, Result};
 use serde::Serialize;
 
 mod detect;
@@ -40,6 +41,45 @@ mod tests;
 pub use detect::{detect_agent, detect_agent_detailed};
 pub use profile::{profile_variants, ProfileVariants};
 pub use rules::classify_token;
+
+/// The agent a bare token names, without any process to inspect: the same
+/// classifier the `/proc` walk applies to a comm/cmdline, applied to the
+/// token the user pinned with `a agent` (`SessionRecord::agent_override`).
+/// `claude`/`codex`/... resolve through the canonical rules; a configured
+/// variation's token (`zcodex`, a profile's executable basename) resolves
+/// to that variation's kind and profile id. `None` for a token nothing
+/// classifies -- callers degrade to live detection rather than report a
+/// pin the config no longer knows.
+pub fn resolve_agent_token(token: &str, variants: &ProfileVariants) -> Option<DetectedAgent> {
+    rules::classify_token_detailed(token, variants)
+        .map(|(kind, profile)| DetectedAgent { kind, profile })
+}
+
+/// Whether the token `a agent` is asked to pin (`SessionRecord::agent_override`)
+/// names an agent the way detection would spell it: a canonical agent name
+/// (`claude`), or one of the config's variation tokens (`zcodex`, a profile
+/// id, an engine id, a command basename -- [`profile_variants`]). The
+/// refusal names what would resolve, so the fix is in the error. `config`
+/// is `None` when the config cannot be loaded, and then only the canonical
+/// names validate -- the same degradation `default_profile_variants`
+/// applies to detection, so a broken config can never make pinning fail
+/// completely.
+pub fn validate_agent_token(token: &str, config: Option<&crate::config::Config>) -> Result<()> {
+    if resolve_agent_token(token, &config.map(profile_variants).unwrap_or_default()).is_some() {
+        return Ok(());
+    }
+    let mut known: Vec<String> = AgentKind::ALL
+        .iter()
+        .map(|kind| kind.name().to_owned())
+        .collect();
+    if let Some(config) = config {
+        known.extend(profile_variants(config).keys().cloned());
+    }
+    bail!(
+        "unknown agent token {token:?}; expected an agent name or a configured variation: {}",
+        known.join(", ")
+    )
+}
 
 /// The `/proc` root detection reads. Injectable so the unit tests classify a
 /// synthetic tree with zero live processes.
@@ -58,6 +98,15 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
+    /// Every kind there is a canonical token rule for, in the rules' own
+    /// order -- the vocabulary `a agent`'s refusal suggests.
+    pub const ALL: [AgentKind; 4] = [
+        AgentKind::Claude,
+        AgentKind::Codex,
+        AgentKind::Opencode,
+        AgentKind::Grok,
+    ];
+
     /// The wire/display name, identical to this enum's serde representation.
     pub fn name(self) -> &'static str {
         match self {
