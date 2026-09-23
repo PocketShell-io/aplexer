@@ -472,6 +472,7 @@ mod tests {
             last_accessed_ms: None,
             reported_state: None,
             reported_state_at_ms: None,
+            agent_override: None,
             phase,
             worker_pid: None,
             workload_pid: None,

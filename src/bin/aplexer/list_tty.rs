@@ -426,6 +426,7 @@ mod tests {
             reported_state_at_ms: None,
             phase: Phase::Running,
             worker_pid: None,
+            agent_override: None,
             workload_pid: None,
             worker_cgroup: None,
             workload_cgroup: None,

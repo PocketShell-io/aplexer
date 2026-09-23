@@ -20,6 +20,7 @@ fn mk_record(workspace: &str, tag: &str, phase: Phase) -> SessionRecord {
         last_accessed_ms: None,
         reported_state: None,
         reported_state_at_ms: None,
+        agent_override: None,
         phase,
         worker_pid: Some(std::process::id()), // our own pid: always "alive"
         workload_pid: None,

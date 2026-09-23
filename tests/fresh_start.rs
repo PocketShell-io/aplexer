@@ -296,6 +296,7 @@ fn fresh_start_reclaims_a_dead_holder_under_its_exact_name() {
         last_accessed_ms: None,
         reported_state: None,
         reported_state_at_ms: None,
+        agent_override: None,
         phase: Phase::Exited,
         worker_pid: None,
         workload_pid: None,

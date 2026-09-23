@@ -328,6 +328,7 @@ fn make_live_worker_dead_leader(
         reported_state_at_ms: None,
         phase: Phase::Running,
         worker_pid: Some(worker_pid as u32),
+        agent_override: None,
         workload_pid: Some(workload_pid as u32),
         containment_cgroup: None,
         containment_cgroup_identity: None,

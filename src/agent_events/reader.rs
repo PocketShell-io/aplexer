@@ -275,6 +275,7 @@ pub(crate) fn dummy_record(engine: &str) -> SessionRecord {
         last_accessed_ms: None,
         reported_state: None,
         reported_state_at_ms: None,
+        agent_override: None,
         phase: crate::Phase::Running,
         worker_pid: None,
         workload_pid: None,
