@@ -134,9 +134,14 @@ pub fn launch_spec_json(
 /// Which agent is running inside `record`'s workload process tree right now
 /// (see `crate::agent_kind`), or `None` when nothing recognisable is there.
 ///
-/// Detection is query-time only and never persisted: the record on disk has
-/// no `agent` field, so it can never be stale. Two guards keep the answer
-/// honest rather than merely present:
+/// Detection is query-time only: the record on disk carries no agent fact of
+/// its own, except the explicit pin the user set with `a agent`
+/// (`SessionRecord::agent_override`) -- the one case where a persisted answer
+/// is wanted, because the walk cannot tell a genuinely running agent from an
+/// old one that a switch left behind (suspended, or ancestor of the new
+/// agent). The pin wins over the walk until cleared; see
+/// [`record_detected_with`]. Two guards keep the unpinned answer honest
+/// rather than merely present:
 ///
 /// * A record whose phase is already terminal (`exited`/`failed`) is not
 ///   probed at all. Its `workload_pid` names a process that is gone, and a
@@ -157,12 +162,26 @@ pub fn record_detected(record: &SessionRecord) -> Option<DetectedAgent> {
 /// `record_detected` with the caller's [`profile_variants`] table -- for
 /// callers that already hold the config (`a list` detects one agent per
 /// row, so it builds the table once instead of per row).
+///
+/// The user's pin (`SessionRecord::agent_override`, set with `a agent`)
+/// resolves first and skips the `/proc` walk entirely: after switching
+/// agents inside a session, the tree can still hold the old agent (suspended
+/// in the background, or an ancestor of the new one), and the walk's
+/// first-match rule would keep reporting exactly that stale answer. A pin
+/// the config no longer classifies (a profile was renamed or removed since)
+/// degrades to the live walk -- an honest "whatever is running" beats
+/// repeating a pin that lost its meaning.
 pub fn record_detected_with(
     record: &SessionRecord,
     variants: &ProfileVariants,
 ) -> Option<DetectedAgent> {
     if !record.worker_phase_active() {
         return None;
+    }
+    if let Some(token) = record.agent_override.as_deref() {
+        if let Some(detected) = crate::agent_kind::resolve_agent_token(token, variants) {
+            return Some(detected);
+        }
     }
     detect_agent_detailed(Path::new(DEFAULT_PROC_ROOT), record.workload_pid?, variants)
 }
