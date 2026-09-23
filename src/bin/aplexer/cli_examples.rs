@@ -110,6 +110,14 @@ pub(crate) const RENAME_EXAMPLES: &str = r#"Examples:
   a rename myrepo:main --tag docs  any session selector works
 "#;
 
+pub(crate) const AGENT_EXAMPLES: &str = r#"Examples:
+  a agent                          what the session you are inside reports, and from where
+  a agent myrepo:main              any session selector works
+  a agent claude                   pin the current session's agent after switching to claude
+  a agent myrepo:main zcodex       pin a variation (reports codex/zcodex on every surface)
+  a agent --clear                  unpin; live detection answers again
+"#;
+
 pub(crate) const ENGINES_EXAMPLES: &str = r#"Examples:
   a engines                     ids `a start --engine` accepts
   a engines --json
