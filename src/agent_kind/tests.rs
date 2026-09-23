@@ -613,3 +613,63 @@ fn agent_kind_serialises_to_its_lowercase_name() {
         serde_json::Value::Null,
     );
 }
+
+/// A pin (`a agent <token>`) resolves through the same classifier the
+/// `/proc` walk uses, without any process to inspect: canonical names give
+/// the default profile, variation tokens give their profile id, and a
+/// token nothing classifies resolves to nothing (callers degrade to live
+/// detection).
+#[test]
+fn a_pinned_token_resolves_like_detection_would() {
+    assert_eq!(
+        resolve_agent_token("claude", &no_variants()),
+        Some(DetectedAgent {
+            kind: AgentKind::Claude,
+            profile: None,
+        })
+    );
+    let variants = variants_from(&[("zcodex", "codex")]);
+    assert_eq!(
+        resolve_agent_token("zcodex", &variants),
+        Some(DetectedAgent {
+            kind: AgentKind::Codex,
+            profile: Some("zcodex".to_owned()),
+        })
+    );
+    assert_eq!(resolve_agent_token("bogus", &variants), None);
+    assert_eq!(resolve_agent_token("", &variants), None);
+}
+
+/// `a agent`'s validation accepts exactly what resolution accepts, and the
+/// refusal names the vocabulary: the canonical agent names plus this
+/// config's variation tokens. A `None` config (unloadable) still validates
+/// canonical names -- the same degradation detection applies.
+#[test]
+fn pin_validation_accepts_resolvable_tokens_and_names_the_rest() {
+    let mut config = Config::default();
+    config.profiles.insert(
+        "zodex".to_owned(),
+        ProfileConfig {
+            engine: Some("codex".to_owned()),
+            ..ProfileConfig::default()
+        },
+    );
+
+    validate_agent_token("claude", Some(&config)).unwrap();
+    validate_agent_token("zodex", Some(&config)).unwrap();
+    validate_agent_token("grok", None).unwrap();
+
+    let error = validate_agent_token("bogus", Some(&config))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("bogus"), "error names the token: {error}");
+    assert!(
+        error.contains("claude") && error.contains("zodex"),
+        "error lists the vocabulary: {error}"
+    );
+    let error = validate_agent_token("zodex", None).unwrap_err().to_string();
+    assert!(
+        error.contains("zodex"),
+        "canonical-only validation rejects a config-only token: {error}"
+    );
+}
