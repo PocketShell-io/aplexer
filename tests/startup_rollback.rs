@@ -118,6 +118,7 @@ impl Harness {
             reported_state_at_ms: None,
             phase: Phase::Exited,
             worker_pid: None,
+            agent_override: None,
             workload_pid: None,
             worker_cgroup: None,
             workload_cgroup: None,

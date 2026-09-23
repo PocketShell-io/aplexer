@@ -190,6 +190,7 @@ fn start_warning_fires_only_for_the_user_manager_subtree() {
             last_accessed_ms: None,
             reported_state: None,
             reported_state_at_ms: None,
+            agent_override: None,
             phase: crate::Phase::Running,
             worker_pid: None,
             workload_pid: None,

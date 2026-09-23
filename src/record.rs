@@ -288,6 +288,19 @@ pub struct SessionRecord {
     /// ms since epoch. Always `Some` when `reported_state` is `Some`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_state_at_ms: Option<u64>,
+    /// The agent token the user pinned for this session (`a agent <token>`),
+    /// e.g. `claude` or a configured variation (`zcodex`). Detection reads
+    /// the workload process tree at query time and reports whichever agent
+    /// it meets first, so after switching agents inside a session -- the new
+    /// one launched from inside the old, or the old one merely suspended --
+    /// every surface kept naming the process that happened to sort first.
+    /// A pin overrides that walk everywhere (`api::record_detected_with`)
+    /// until `a agent --clear` removes it; an unclassifiable token (config
+    /// changed since) degrades back to detection rather than lying.
+    /// `None` means "report live detection", never persisted by detection
+    /// itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_override: Option<String>,
     pub phase: Phase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_pid: Option<u32>,
@@ -366,6 +379,7 @@ impl SessionRecord {
             last_accessed_ms: None,
             reported_state: None,
             reported_state_at_ms: None,
+            agent_override: None,
             phase: Phase::Running,
             worker_pid: None,
             workload_pid: None,
