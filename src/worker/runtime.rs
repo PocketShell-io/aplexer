@@ -480,6 +480,30 @@ impl WorkerRuntime {
             r.reported_state_at_ms = Some(now_ms());
         })
     }
+    /// `a agent <token>` / `a agent --clear` (`Operation::SetAgent`): pin
+    /// which agent this session reports, or `None` to unpin and return to
+    /// live detection. Detection reports the first agent the workload's
+    /// process tree happens to hold, so after switching agents inside a
+    /// session -- the new one launched from inside the old, or the old one
+    /// merely suspended -- every surface kept naming the stale one, and
+    /// nothing could correct it. The pin is the correction.
+    ///
+    /// The token is validated here (not just at the CLI layer), the same
+    /// defensive posture `report_state` takes: a direct/malformed RPC from
+    /// any caller must not write a pin every surface would silently ignore.
+    /// Classification goes through the same config-derived table detection
+    /// itself uses (`agent_kind::profile_variants`), so a pin spelled the
+    /// way detection would spell it (`zcodex` -> codex/zcodex) resolves on
+    /// every surface identically.
+    pub(super) fn set_agent(&self, agent: Option<String>) -> Result<SessionRecord> {
+        if let Some(token) = &agent {
+            let config = crate::config::Config::load(&self.paths).ok();
+            crate::agent_kind::validate_agent_token(token, config.as_ref())?;
+        }
+        self.update_record(move |r| {
+            r.agent_override = agent;
+        })
+    }
 }
 
 /// Take the registry lock without blocking past `wait` (see
