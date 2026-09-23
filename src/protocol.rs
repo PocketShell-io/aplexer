@@ -168,6 +168,15 @@ pub enum Operation {
     ReportState {
         state: String,
     },
+    /// `a agent <token>` / `a agent --clear`: pin which agent this session
+    /// reports (`SessionRecord::agent_override`), or unpin to return to
+    /// live detection. `Some(token)` pins -- the token must classify
+    /// against the config's agents and variation profiles, which the worker
+    /// validates (`WorkerRuntime::set_agent`) so a direct RPC cannot write
+    /// a pin every surface would then have to ignore; `None` clears.
+    SetAgent {
+        agent: Option<String>,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {

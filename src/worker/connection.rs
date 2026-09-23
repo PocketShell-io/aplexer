@@ -163,6 +163,13 @@ fn dispatch_operation(
             )?,
             Err(e) => write_json(&mut stream, &Response::error(id, format!("{e:#}")))?,
         },
+        Operation::SetAgent { agent } => match runtime.set_agent(agent) {
+            Ok(record) => write_json(
+                &mut stream,
+                &Response::ok(id, serde_json::to_value(record)?),
+            )?,
+            Err(e) => write_json(&mut stream, &Response::error(id, format!("{e:#}")))?,
+        },
     }
     Ok(())
 }
