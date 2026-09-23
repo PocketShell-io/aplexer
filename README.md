@@ -320,11 +320,34 @@ Every state aplexer prints is one of eight words, each with one meaning:
 
 ```bash
 a whoami                    # your session's identity (workspace/tag/engine/profile)
+a agent                     # which agent your session reports, and from where
 a transcript review         # read a session's conversation transcript
 a transcript review --follow
 a transcript zoom --engine zcodex --path /path/to/rollout.jsonl
 a watch --jsonl             # stream lifecycle events as they happen
 ```
+
+### Switching agents inside a session
+
+Start a shell session, run one agent, exit, run another — aplexer detects
+the agent from the live process tree and labels the session accordingly
+(`a list`, `a status --json`'s `agent`/`agent_profile`, the attach status
+bar). When you switch agents the tree can still hold the old one — the new
+agent launched from inside it, or the old one suspended with Ctrl-Z — and
+detection keeps reporting whichever it meets first. When the label lies,
+pin it:
+
+```bash
+a agent myrepo:main claude   # pin the agent (a variation token works too: zcodex)
+a agent myrepo:main          # what is reported now, pin or live detection
+a agent myrepo:main --clear  # unpin; live detection answers again
+```
+
+A pinned agent is reported on every surface until cleared, even when
+nothing is running; the token must name a real agent (an agent name or a
+configured engine/profile variation), and `a rename`-style selectors work
+throughout.
+
 
 For an agent started inside a plain shell session, pass its native JSONL file
 with `--path` and its engine with `--engine`. The explicit file takes priority
@@ -381,6 +404,7 @@ print(a.capture("api:review").decode(errors="replace"))
 | `a warnings` | list unacknowledged crash/OOM warnings |
 | `a ack` | acknowledge crash/OOM warnings so they stop showing |
 | `a rename` | change a session's tag |
+| `a agent` | pin/show which agent a session reports (`--clear` unpins) |
 | `a engines` / `a profiles` | list configured or discovered engines / profiles |
 | `a doctor` | check the environment and config for problems |
 | `a doctor --fix` | pin engine executables that only your shell's PATH can resolve to absolute config paths |
