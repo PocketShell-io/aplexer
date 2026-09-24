@@ -51,6 +51,12 @@ enum OutputEvent {
     /// `handle_attach`'s writer thread maps this to a `ServerEvent::Layout`
     /// JSON frame for `want_screen` subscribers and drops it otherwise.
     Layout(screen::LayoutChange),
+    /// The worker's authoritative record changed (`OutputHub::broadcast_record`,
+    /// fed by `WorkerRuntime::update_record`); the writer thread maps this to
+    /// a `ServerEvent::RecordUpdated` JSON frame for `want_record`
+    /// subscribers and drops it otherwise -- the same old-client gate as
+    /// `Layout`. Boxed for the same reason the wire type is.
+    RecordUpdated(Box<SessionRecord>),
     Exit(ExitInfo),
     Error(String),
 }

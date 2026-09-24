@@ -96,6 +96,15 @@ fn establish_once(
             want_screen,
             rows,
             cols,
+            // This client renders the record (status bar, goodbye line) and
+            // has no other way to learn about renames issued elsewhere --
+            // PocketShell's `a rename` inside the session used to leave the
+            // bar wearing the old tag until the next switch. An old worker
+            // ignores the unknown field and simply never pushes; the flag is
+            // also what keeps OLD clients safe on a new worker, which gates
+            // `RecordUpdated` on it (their serde would hard-fail on the
+            // unrecognized `event` tag).
+            want_record: true,
         },
         None,
         ATTACH_HANDSHAKE_TIMEOUT,

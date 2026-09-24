@@ -86,6 +86,14 @@ pub(crate) struct StatusBarCtx {
     pub(crate) mouse_owned: Arc<Mutex<Option<bool>>>,
     /// Whether borrowing the mouse is permitted at all (`APLEXER_MOUSE`).
     pub(crate) mouse_capture: bool,
+    /// Set by the frame loop when the worker pushed a fresh authoritative
+    /// record (`ServerEvent::RecordUpdated`). The frame loop swaps it into
+    /// `record` and redraws immediately from the swap -- the tag is pure
+    /// record text -- while this flag hands the deeper refresh (siblings
+    /// after a workspace move, the agent label behind a pin) to the status
+    /// thread, whose tick bounds it without blocking the relay on the
+    /// fetch's round-trips. See `note_record_update`.
+    pub(crate) record_dirty: Arc<AtomicBool>,
 }
 
 type LastDrawnStatus = Option<(String, u16, u16, Option<(u16, u16)>)>;

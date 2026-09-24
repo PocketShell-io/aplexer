@@ -153,6 +153,17 @@ fn run_status_loop(config: StatusThreadConfig) {
             continue;
         }
 
+        // A worker-pushed record landed (a rename, a state push, an agent
+        // pin). The frame loop already redrew the bar from the swapped
+        // record; this refetch adds what only a fresh `LiveStatus` carries
+        // -- the sibling list after a workspace move, the agent label
+        // behind a pin -- and redraws, all on this thread so the relay
+        // never blocks on the round-trips.
+        if config.status.record_dirty.swap(false, Ordering::Relaxed) {
+            refresh_live_status(&config.status);
+            draw_status_bar(&config.status, false);
+        }
+
         let idle_for = activity.elapsed();
         let overdue = last_draw.elapsed() >= STATUS_BAR_MAX_INTERVAL;
         let animating = status_is_animating(&config.status);

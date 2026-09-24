@@ -150,7 +150,30 @@ fn handle_json_frame(config: &SessionLoopConfig, payload: &[u8]) -> Result<JsonF
             }
             JsonFrameAction::Continue
         }
+        ServerEvent::RecordUpdated { record } => {
+            note_record_update(&config.status, *record);
+            JsonFrameAction::Continue
+        }
     })
+}
+
+/// A worker-pushed record landed: a rename issued from another client (the
+/// PocketShell `a rename` inside the session), a state push, an agent pin.
+/// The swap is unconditional -- even a `--no-status` client's goodbye line
+/// names this record -- and, when the bar is free to draw, the new text
+/// goes up right here: the tag is pure record text, so no round-trip is
+/// needed before the rename is visible. `record_dirty` hands the rest of
+/// the refresh (siblings after a workspace move, the agent label behind a
+/// pin) to the status thread, whose 150 ms tick bounds it without blocking
+/// the relay on the fetch. The draw mirrors `handle_data_frame`'s guards:
+/// while the pager or an overlay owns the bar row, the flag alone stays
+/// set and the refresh happens when the modal comes down.
+pub(crate) fn note_record_update(status: &StatusBarCtx, record: SessionRecord) {
+    *status.record.lock().unwrap_or_else(PoisonError::into_inner) = record;
+    status.record_dirty.store(true, Ordering::Relaxed);
+    if !status.scroll.is_active() && !status.overlay.is_active() {
+        draw_status_bar(status, false);
+    }
 }
 
 fn handle_layout_event(status: &StatusBarCtx) {

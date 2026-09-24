@@ -81,33 +81,41 @@ impl WorkerRuntime {
     where
         F: FnOnce(&mut SessionRecord),
     {
-        let mut record = lock(&self.record)?;
-        // Checked under the record lock (see `OutputHub::finalized`): a
-        // write that got here first has already landed before the removal,
-        // and one that gets here later must not recreate the state dir.
-        if self.output.finalized() {
-            bail!(
-                "session {} is finalized; its durable record has been removed",
-                record.id
-            );
-        }
-        // Persist a candidate before publishing it. Otherwise a failed Rename
-        // can leak into live Status and an unrelated later activity write can
-        // commit that rejected selector outside the registry lock.
-        let mut candidate = record.clone();
-        update(&mut candidate);
-        candidate.updated_at_ms = now_ms();
-        match atomic_write_json(&self.record_path, &candidate) {
-            Ok(()) => {
-                *record = candidate.clone();
-                *lock(&self.record_persistence_error)? = None;
-                Ok(candidate)
+        let published = {
+            let mut record = lock(&self.record)?;
+            // Checked under the record lock (see `OutputHub::finalized`): a
+            // write that got here first has already landed before the removal,
+            // and one that gets here later must not recreate the state dir.
+            if self.output.finalized() {
+                bail!(
+                    "session {} is finalized; its durable record has been removed",
+                    record.id
+                );
             }
-            Err(error) => {
-                *lock(&self.record_persistence_error)? = Some(format!("{error:#}"));
-                Err(error)
+            // Persist a candidate before publishing it. Otherwise a failed Rename
+            // can leak into live Status and an unrelated later activity write can
+            // commit that rejected selector outside the registry lock.
+            let mut candidate = record.clone();
+            update(&mut candidate);
+            candidate.updated_at_ms = now_ms();
+            match atomic_write_json(&self.record_path, &candidate) {
+                Ok(()) => {
+                    *record = candidate.clone();
+                    *lock(&self.record_persistence_error)? = None;
+                }
+                Err(error) => {
+                    *lock(&self.record_persistence_error)? = Some(format!("{error:#}"));
+                    return Err(error);
+                }
             }
-        }
+            candidate
+        };
+        // The subscriber push runs after the record guard is gone: every
+        // broadcast takes the hub lock, and `mark_finalized` holds the hub
+        // lock while taking the record one -- broadcasting inside the block
+        // above would let record→hub meet hub→record and deadlock.
+        self.output.broadcast_record(&published);
+        Ok(published)
     }
     /// Refuse every later durable write (see `OutputHub::finalized`). Both
     /// locks are held while the flag is set so a writer that already holds
@@ -190,6 +198,7 @@ impl WorkerRuntime {
         &self,
         payload: AttachPayload,
         geometry: Option<(u16, u16)>,
+        want_record: bool,
     ) -> Result<(u64, u64, Vec<u8>, OutputReceiver)> {
         let mut terminal = lock(&self.terminal)?;
         let previous_size = (terminal.rows, terminal.cols);
@@ -207,7 +216,7 @@ impl WorkerRuntime {
             // matching tmux. Keep attach best-effort if the PTY is exiting.
             let _ = self.apply_size(&mut terminal, rows, cols);
         }
-        match self.output.subscribe(payload) {
+        match self.output.subscribe(payload, want_record) {
             Ok((subscription, initial, rx)) => Ok((client_id, subscription, initial, rx)),
             Err(error) => {
                 terminal.clients.remove(&client_id);
@@ -800,6 +809,56 @@ mod tests {
         runtime.last_activity_ms.store(0, Ordering::Relaxed);
         let served = connection::status_value(&runtime).unwrap();
         assert_eq!(served["last_activity_ms"].as_u64(), Some(1_000));
+    }
+
+    /// The one funnel: a committed record write pushes the fresh record to
+    /// subscribers that opted in (`want_record`), which is how a rename
+    /// issued by a second client reaches an attached status bar within one
+    /// round-trip instead of at that client's next poll.
+    #[test]
+    pub(super) fn committed_record_write_pushes_the_fresh_record_to_subscribers() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime(&dir, dir.path().join("session.json"));
+        let (_, _, rx) = runtime
+            .output
+            .subscribe(AttachPayload::Screen, true)
+            .unwrap();
+
+        let renamed = runtime
+            .update_record(|record| record.tag = "renamed".into())
+            .unwrap();
+        assert!(matches!(
+            rx.recv().unwrap(),
+            OutputEvent::RecordUpdated(got)
+                if got.id == renamed.id && got.tag == "renamed"
+        ));
+    }
+
+    /// A write that never committed must push nothing: the rejected
+    /// candidate must not leak onto the wire (the same
+    /// persist-before-publish rule `update_record` applies to the in-memory
+    /// record).
+    #[test]
+    pub(super) fn failed_record_persistence_pushes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let record_path = dir.path().join("session.json");
+        // Atomic rename onto a directory deterministically fails after the
+        // candidate was serialized (same trick as the test above).
+        fs::create_dir(&record_path).unwrap();
+        let runtime = test_runtime(&dir, record_path);
+        let (_, _, rx) = runtime
+            .output
+            .subscribe(AttachPayload::Screen, true)
+            .unwrap();
+
+        assert!(runtime
+            .update_record(|record| record.tag = "after".into())
+            .is_err());
+        runtime.output.fail_subscribers("done".into());
+        assert!(
+            matches!(rx.recv().unwrap(), OutputEvent::Error(_)),
+            "no RecordUpdated may precede the terminal event"
+        );
     }
 
     /// The clean-exit resurrection: `run_lifecycle` removes the state dir,

@@ -267,6 +267,7 @@ fn raw_attach(
         Operation::Attach {
             history_bytes,
             want_screen,
+            want_record: false,
             rows,
             cols,
         },
@@ -641,6 +642,7 @@ fn rejected_attach_does_not_keep_its_requested_geometry() {
             Operation::Attach {
                 history_bytes: Some(0),
                 want_screen: false,
+                want_record: false,
                 rows: Some(10),
                 cols: Some(20),
             },

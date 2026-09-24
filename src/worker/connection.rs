@@ -119,6 +119,7 @@ fn dispatch_operation(
         Operation::Attach {
             history_bytes,
             want_screen,
+            want_record,
             rows,
             cols,
         } => handle_attach(
@@ -127,6 +128,7 @@ fn dispatch_operation(
             id,
             history_bytes,
             want_screen,
+            want_record,
             rows,
             cols,
         )?,

@@ -136,6 +136,7 @@ fn attach(socket: &Path, id: Uuid, rows: Option<u16>, cols: Option<u16>) -> (Uni
         Operation::Attach {
             history_bytes: Some(0),
             want_screen: false,
+            want_record: false,
             rows,
             cols,
         },

@@ -38,6 +38,7 @@ pub(super) fn establish_attach(
     reader: &UnixStream,
     history_bytes: Option<usize>,
     want_screen: bool,
+    want_record: bool,
     rows: Option<u16>,
     cols: Option<u16>,
 ) -> Result<(AttachGuard, Vec<u8>, OutputReceiver, UnixStream)> {
@@ -59,7 +60,8 @@ pub(super) fn establish_attach(
     } else {
         AttachPayload::Tail(history_bytes)
     };
-    let (client_id, subscription, initial, rx) = runtime.attach_client(payload, geometry)?;
+    let (client_id, subscription, initial, rx) =
+        runtime.attach_client(payload, geometry, want_record)?;
     let guard = AttachGuard {
         runtime: Arc::clone(runtime),
         client_id,
@@ -71,28 +73,37 @@ pub(super) fn establish_attach(
     Ok((guard, initial, rx, writer))
 }
 
+#[allow(clippy::too_many_arguments)] // one flag per protocol opt-in, mirroring the request
 pub(super) fn handle_attach(
     mut reader: UnixStream,
     runtime: Arc<WorkerRuntime>,
     request_id: String,
     history_bytes: Option<usize>,
     want_screen: bool,
+    want_record: bool,
     rows: Option<u16>,
     cols: Option<u16>,
 ) -> Result<()> {
-    let (attach_guard, initial, rx, writer_stream) =
-        match establish_attach(&runtime, &reader, history_bytes, want_screen, rows, cols) {
-            Ok(established) => established,
-            Err(error) => {
-                // Still under the handshake's worker-wide write deadline, so
-                // a peer that stopped reading cannot hold its slot with this.
-                write_json(
-                    &mut reader,
-                    &Response::error(request_id, format!("{error:#}")),
-                )?;
-                return Ok(());
-            }
-        };
+    let (attach_guard, initial, rx, writer_stream) = match establish_attach(
+        &runtime,
+        &reader,
+        history_bytes,
+        want_screen,
+        want_record,
+        rows,
+        cols,
+    ) {
+        Ok(established) => established,
+        Err(error) => {
+            // Still under the handshake's worker-wide write deadline, so
+            // a peer that stopped reading cannot hold its slot with this.
+            write_json(
+                &mut reader,
+                &Response::error(request_id, format!("{error:#}")),
+            )?;
+            return Ok(());
+        }
+    };
     let client_id = attach_guard.client_id;
     let subscription = attach_guard.subscription;
     // An established attach is intentionally long-lived. Before this point,
@@ -164,7 +175,7 @@ pub(super) fn handle_attach(
     thread::spawn({
         let writer = Arc::clone(&writer);
         let runtime = Arc::clone(&runtime);
-        move || pump_output(writer, runtime, rx, subscription, want_screen)
+        move || pump_output(writer, runtime, rx, subscription, want_screen, want_record)
     });
     pump_input(&mut reader, &runtime, &writer, client_id)?;
     let _ = reader.shutdown(std::net::Shutdown::Both);
@@ -180,6 +191,7 @@ fn pump_output(
     rx: OutputReceiver,
     subscription: u64,
     want_screen: bool,
+    want_record: bool,
 ) {
     let mut stall = StallGuard::new(ATTACH_STALL_TICKS);
     while let Ok(event) = rx.recv() {
@@ -211,6 +223,20 @@ fn pump_output(
                         margins_reset: change.margins_reset,
                         erase_reset: change.erase_reset,
                     })?;
+                    let mut transfer = FrameTransfer::new(FrameKind::Json, &payload)?;
+                    stall
+                        .write(&mut out, |out| transfer.pump(out))?
+                        .into_outcome()
+                }
+                OutputEvent::RecordUpdated(record) => {
+                    // Same old-client gate as Layout, on its own flag: a
+                    // subscriber that never asked for record pushes gets
+                    // the event dropped here rather than a frame its serde
+                    // cannot parse.
+                    if !want_record {
+                        return Ok(PumpOutcome::Continue);
+                    }
+                    let payload = serde_json::to_vec(&ServerEvent::RecordUpdated { record })?;
                     let mut transfer = FrameTransfer::new(FrameKind::Json, &payload)?;
                     stall
                         .write(&mut out, |out| transfer.pump(out))?

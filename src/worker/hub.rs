@@ -226,6 +226,7 @@ impl OutputHub {
     pub(super) fn subscribe(
         &self,
         payload: AttachPayload,
+        want_record: bool,
     ) -> Result<(u64, Vec<u8>, OutputReceiver)> {
         let mut inner = lock(&self.inner)?;
         let want_screen = matches!(payload, AttachPayload::Screen);
@@ -256,6 +257,7 @@ impl OutputHub {
         let subscriber = SubscriberSender {
             shared: Arc::clone(&shared),
             want_screen,
+            want_record,
         };
         let receiver = OutputReceiver { shared };
         if let Some(terminal) = inner.terminal.clone() {
@@ -268,6 +270,29 @@ impl OutputHub {
     pub(super) fn unsubscribe(&self, id: u64) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.subscribers.remove(&id);
+        }
+    }
+    /// Queue a `RecordUpdated` event for every subscriber that opted into
+    /// record pushes, dropping the ones whose receiver is gone. Fed by
+    /// `WorkerRuntime::update_record` -- the one funnel every record
+    /// mutation flows through -- so a rename issued by another client
+    /// reaches an attached status bar within one round-trip of the RPC
+    /// that committed it, instead of whenever that client's next poll
+    /// happens to land.
+    pub(super) fn broadcast_record(&self, record: &SessionRecord) {
+        // A finalized session is being torn down; its subscribers get the
+        // terminal Exit event from `finish` and don't need a record first.
+        if self.finalized() {
+            return;
+        }
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.subscribers.retain(|_, subscriber| {
+                // Subscribers that never asked are *kept*, just not
+                // queued to; only a failed delivery (a dead receiver)
+                // retires one.
+                !subscriber.want_record
+                    || subscriber.try_event(OutputEvent::RecordUpdated(Box::new(record.clone())))
+            });
         }
     }
     /// Record the terminal outcome (an outcome already recorded wins) and

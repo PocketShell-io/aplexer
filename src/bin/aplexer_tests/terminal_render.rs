@@ -95,6 +95,7 @@ fn status_ctx_for_test(reserved: bool) -> StatusBarCtx {
         prompt: Arc::new(Mutex::new(None)),
         mouse_owned: Arc::new(Mutex::new(None)),
         mouse_capture: false,
+        record_dirty: Arc::new(AtomicBool::new(false)),
     }
 }
 
@@ -889,3 +890,42 @@ fn real_zero_sized_pty_uses_conventional_geometry() {
 // the bar and nothing ever rewrote it, because the frame loop `continue`d
 // past every bar path while scroll mode was active and the status tick's
 // dirty check saw unchanged text.
+
+/// A `ServerEvent::RecordUpdated` (a rename issued by PocketShell inside
+/// the session): the frame loop must swap the pushed record in, raise
+/// `record_dirty` for the status thread's deeper refresh, and -- this is
+/// the point of the push -- redraw the bar with the new tag immediately,
+/// not at the status thread's next poll or a switch.
+#[test]
+fn record_update_swaps_the_record_and_redraws_the_bar_with_the_new_tag() {
+    let _guard = StdoutToDevNull::new();
+    let ctx = status_ctx_for_test(true);
+    assert!(draw_status_bar(&ctx, false), "initial draw must land");
+
+    let pipe = StdoutToPipe::new();
+    let mut renamed = ctx
+        .record
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    renamed.tag = "renamed".into();
+    note_record_update(&ctx, renamed);
+
+    assert_eq!(
+        ctx.record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .tag,
+        "renamed",
+        "the pushed record must replace the attach-time snapshot"
+    );
+    assert!(
+        ctx.record_dirty.load(Ordering::Relaxed),
+        "the status thread must be asked to refetch the live facts"
+    );
+    let written = String::from_utf8_lossy(&pipe.take()).into_owned();
+    assert!(
+        written.contains("renamed"),
+        "the bar must be redrawn with the new tag within the same event, got {written:?}"
+    );
+}

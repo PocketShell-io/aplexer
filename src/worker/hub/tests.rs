@@ -48,7 +48,7 @@ pub(super) fn one_row_wrapped_pty_output_stays_capturable_and_streams_verbatim()
 pub(super) fn lagging_subscriber_is_evicted_when_queue_fills() {
     let dir = tempfile::tempdir().unwrap();
     let hub = test_hub(&dir);
-    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None)).unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None), false).unwrap();
 
     // Fill past the ~1 MiB byte cap with max-size PTY reads: 32 x 32 KiB
     // fits exactly, the 33rd exceeds it and evicts.
@@ -75,7 +75,7 @@ pub(super) fn screen_subscriber_coalesces_to_snapshot_instead_of_replaying() {
     // straight to the current screen instead.
     let dir = tempfile::tempdir().unwrap();
     let hub = test_hub(&dir);
-    let (_, _, rx) = hub.subscribe(AttachPayload::Screen).unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Screen, false).unwrap();
 
     // Two max-size PTY reads fit under the coalescing threshold and
     // stream; the third pushes the backlog past 64 KiB and coalesces.
@@ -111,7 +111,7 @@ pub(super) fn screen_subscriber_coalesces_on_event_count_not_just_bytes() {
     // (see event_cap_still_bounds_a_pathological_stream_of_tiny_writes).
     let dir = tempfile::tempdir().unwrap();
     let hub = test_hub(&dir);
-    let (_, _, rx) = hub.subscribe(AttachPayload::Screen).unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Screen, false).unwrap();
 
     for _ in 0..=MAX_SUBSCRIBER_QUEUED_EVENTS {
         hub.append(b"y").unwrap();
@@ -142,7 +142,7 @@ pub(super) fn tail_subscriber_does_not_coalesce_small_backlog() {
     // a screen subscriber must stream verbatim for a tail subscriber.
     let dir = tempfile::tempdir().unwrap();
     let hub = test_hub(&dir);
-    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None)).unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None), false).unwrap();
 
     let chunk = vec![b'x'; 32 * 1024];
     for _ in 0..3 {
@@ -165,7 +165,7 @@ pub(super) fn event_cap_still_bounds_a_pathological_stream_of_tiny_writes() {
     // megabytes of per-event overhead; the event cap bounds that.
     let dir = tempfile::tempdir().unwrap();
     let hub = test_hub(&dir);
-    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None)).unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None), false).unwrap();
 
     for _ in 0..=MAX_SUBSCRIBER_QUEUED_EVENTS {
         hub.append(b"x").unwrap();
@@ -194,7 +194,7 @@ pub(super) fn small_burst_of_many_tiny_writes_does_not_evict_subscriber() {
     // it takes.
     let dir = tempfile::tempdir().unwrap();
     let hub = test_hub(&dir);
-    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None)).unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None), false).unwrap();
 
     let chunk = vec![b'x'; 200];
     for _ in 0..200 {
@@ -214,7 +214,7 @@ pub(super) fn small_burst_of_many_tiny_writes_does_not_evict_subscriber() {
 pub(super) fn full_subscriber_queue_drains_before_explicit_exit() {
     let dir = tempfile::tempdir().unwrap();
     let hub = test_hub(&dir);
-    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None)).unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None), false).unwrap();
     // A full (but not over-full) queue: 32 x 32 KiB == the 1 MiB byte
     // cap exactly, so nothing is evicted and `finish` must still deliver
     // every queued byte before the Exit.
@@ -244,7 +244,7 @@ pub(super) fn full_subscriber_queue_drains_before_explicit_exit() {
 pub(super) fn full_subscriber_queue_drains_before_explicit_error() {
     let dir = tempfile::tempdir().unwrap();
     let hub = test_hub(&dir);
-    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None)).unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None), false).unwrap();
     let chunk = vec![b'x'; 32 * 1024];
     for _ in 0..32 {
         hub.append(&chunk).unwrap();
@@ -266,11 +266,11 @@ pub(super) fn subscriber_count_is_bounded() {
     let hub = test_hub(&dir);
     let mut receivers = Vec::new();
     for _ in 0..MAX_SUBSCRIBERS {
-        let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None)).unwrap();
+        let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None), false).unwrap();
         receivers.push(rx);
     }
 
-    assert!(hub.subscribe(AttachPayload::Tail(None)).is_err());
+    assert!(hub.subscribe(AttachPayload::Tail(None), false).is_err());
     assert_eq!(receivers.len(), MAX_SUBSCRIBERS);
 }
 
@@ -294,7 +294,7 @@ pub(super) fn history_failure_does_not_interrupt_live_output_and_can_recover() {
         dir.path().join("screen.txt"),
     )
     .unwrap();
-    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None)).unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None), false).unwrap();
 
     hub.append(b"still-live").unwrap();
     assert!(matches!(
@@ -322,7 +322,7 @@ pub(super) fn history_failure_does_not_interrupt_live_output_and_can_recover() {
 pub(super) fn history_append_failure_does_not_drop_subscribers_or_stop_live_output() {
     let dir = tempfile::tempdir().unwrap();
     let hub = test_hub(&dir);
-    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None)).unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None), false).unwrap();
 
     hub.inject_history_append_failure(libc::ENOSPC);
     hub.append(b"still-live").unwrap();
@@ -393,4 +393,64 @@ pub(super) fn descriptor_pressure_accept_errors_are_retriable() {
     assert!(!transient_accept_error(&io::Error::from_raw_os_error(
         libc::EBADF
     )));
+}
+
+// -- record pushes (`broadcast_record`, fed by `WorkerRuntime::update_record`)
+
+/// A rename issued by a second client must reach the subscriber that opted
+/// into record pushes, and must never be queued for one that did not: the
+/// old client's serde would hard-fail on the unrecognized `event` tag. The
+/// terminal error at the end proves what was (and wasn't) queued ahead of
+/// it deterministically, without polling.
+#[test]
+pub(super) fn record_updates_reach_only_subscribers_that_asked_for_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = test_hub(&dir);
+    let (_, _, rx_want) = hub.subscribe(AttachPayload::Screen, true).unwrap();
+    let (_, _, rx_other) = hub.subscribe(AttachPayload::Tail(None), false).unwrap();
+
+    let renamed = SessionRecord::fixture(dir.path(), "renamed");
+    hub.broadcast_record(&renamed);
+
+    assert!(
+        matches!(
+            rx_want.recv().unwrap(),
+            OutputEvent::RecordUpdated(ref got) if got.id == renamed.id && got.tag == "renamed"
+        ),
+        "the opted-in subscriber must receive the pushed record first"
+    );
+    hub.fail_subscribers("done".into());
+    assert!(
+        matches!(rx_other.recv().unwrap(), OutputEvent::Error(_)),
+        "the subscriber that never asked must have nothing queued but the terminal event"
+    );
+    assert!(matches!(
+        rx_want.recv().unwrap(),
+        OutputEvent::Error(message) if message == "done"
+    ));
+}
+
+#[test]
+pub(super) fn record_broadcast_drops_dead_receivers_and_spares_finalized_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = test_hub(&dir);
+    let (_, _, rx) = hub.subscribe(AttachPayload::Screen, true).unwrap();
+    drop(rx);
+    hub.broadcast_record(&SessionRecord::fixture(dir.path(), "renamed"));
+    assert!(
+        hub.inner.lock().unwrap().subscribers.is_empty(),
+        "a broadcast to a dead receiver must retire the subscriber, not retain it forever"
+    );
+
+    // A finalized session's subscribers are about to get the terminal Exit;
+    // the broadcast must not resurrect queue state behind it.
+    let hub = test_hub(&dir);
+    let (_, _, rx) = hub.subscribe(AttachPayload::Screen, true).unwrap();
+    hub.finalized.store(true, Ordering::SeqCst);
+    hub.broadcast_record(&SessionRecord::fixture(dir.path(), "renamed"));
+    hub.fail_subscribers("done".into());
+    assert!(
+        matches!(rx.recv().unwrap(), OutputEvent::Error(_)),
+        "a finalized session must not push record updates"
+    );
 }

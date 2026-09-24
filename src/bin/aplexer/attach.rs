@@ -130,6 +130,7 @@ pub(crate) fn attach(
         prompt: Arc::new(Mutex::new(None)),
         mouse_owned: Arc::new(Mutex::new(None)),
         mouse_capture: status_enabled && input_tty && mouse_capture_enabled(),
+        record_dirty: Arc::new(AtomicBool::new(false)),
     };
 
     // Hold the host on the alternate screen for the whole attach, *before*

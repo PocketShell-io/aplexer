@@ -31,6 +31,12 @@ pub(in crate::worker) struct SubscriberSender {
     /// backlog coalescing in `OutputHub::append`; tail subscribers keep the
     /// evict-and-reattach contract so `--history-bytes` stays byte-exact.
     pub(in crate::worker) want_screen: bool,
+    /// Whether this subscriber opted into record pushes (`Operation::Attach`'s
+    /// `want_record`). Non-asking subscribers are never handed a
+    /// `RecordUpdated` event: their serde would hard-fail on the unknown
+    /// `event` tag, so the filter runs here, at the queue, not later in the
+    /// writer thread.
+    pub(in crate::worker) want_record: bool,
 }
 
 /// What one subscriber did with an offered PTY chunk.

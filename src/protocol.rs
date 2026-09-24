@@ -9,7 +9,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::ExitInfo;
+use crate::{ExitInfo, SessionRecord};
 
 pub const PROTOCOL_VERSION: u16 = 1;
 
@@ -137,6 +137,16 @@ pub enum Operation {
         rows: Option<u16>,
         #[serde(default)]
         cols: Option<u16>,
+        /// Opt into `ServerEvent::RecordUpdated` pushes: whenever this
+        /// session's authoritative record changes (a `Rename`, a
+        /// `ReportState`, a `SetAgent`), the worker queues the fresh record
+        /// to this subscriber. Same old-client logic as `want_screen`: the
+        /// field is additive, an old worker's serde ignores it (and simply
+        /// never pushes), and an old client never sends it so its serde --
+        /// which would hard-fail on the unrecognized `event` tag -- is
+        /// never handed one.
+        #[serde(default)]
+        want_record: bool,
     },
     Resize {
         rows: u16,
@@ -268,6 +278,18 @@ pub enum ServerEvent {
         // on an existing one.
         #[serde(default)]
         erase_reset: bool,
+    },
+    /// The session's authoritative record changed and the worker pushed the
+    /// fresh copy (`want_record` subscribers only -- see `Operation::Attach`).
+    /// The reason it exists: an attached client's record is an attach-time
+    /// snapshot, so a rename issued from another client (PocketShell's
+    /// `a rename` inside the session) left the status bar wearing the old
+    /// tag until the next switch; the push makes the new name land within
+    /// one round-trip of the RPC that committed it. `Box` is serde-
+    /// transparent -- the wire bytes are the record's own -- and keeps this
+    /// variant from bloating every other `ServerEvent`.
+    RecordUpdated {
+        record: Box<SessionRecord>,
     },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
