@@ -621,7 +621,7 @@ mod tests {
         let runtime = test_runtime(&dir, dir.path().join("session.json"));
         *runtime.pty_write.lock().unwrap() = Some(Arc::new(master));
         let (client_id, _, _, rx) = runtime
-            .attach_client(AttachPayload::Tail(None), None)
+            .attach_client(AttachPayload::Tail(None), None, false)
             .unwrap();
 
         // The outer SSH PTY may accept 37x1. The aplexer-owned workload PTY

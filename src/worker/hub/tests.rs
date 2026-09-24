@@ -20,7 +20,7 @@ pub(super) fn one_row_wrapped_pty_output_stays_capturable_and_streams_verbatim()
         dir.path().join("screen.txt"),
     )
     .unwrap();
-    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None)).unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None), false).unwrap();
     let output = b"\r\nPS2884_RESUMED_READY_ps2856repro09240145\r\n";
     assert!(
         output.len() > 37,
