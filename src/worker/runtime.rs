@@ -162,6 +162,7 @@ impl WorkerRuntime {
     /// model that's still the wrong shape for the geometry the workload was
     /// just told about.
     pub(super) fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        let (rows, cols) = screen::validate_worker_size(rows, cols)?;
         let mut terminal = lock(&self.terminal)?;
         self.apply_size(&mut terminal, rows, cols)
     }
@@ -238,7 +239,7 @@ impl WorkerRuntime {
     }
 
     pub(super) fn resize_client(&self, client_id: u64, rows: u16, cols: u16) -> Result<()> {
-        let (rows, cols) = screen::validate_size(rows, cols)?;
+        let (rows, cols) = screen::validate_worker_size(rows, cols)?;
         let mut terminal = lock(&self.terminal)?;
         let previous_activity_clock = terminal.activity_clock;
         let client = terminal
@@ -566,6 +567,77 @@ mod tests {
             before,
             "failed PTY resize left the screen model at the rejected size"
         );
+    }
+
+    #[test]
+    pub(super) fn one_row_resize_normalizes_worker_pty_and_survives_round_trips() {
+        fn pty_size(fd: std::os::fd::RawFd) -> (u16, u16) {
+            let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
+            assert_eq!(
+                unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, size.as_mut_ptr()) },
+                0,
+                "read worker PTY winsize"
+            );
+            let size = unsafe { size.assume_init() };
+            (size.ws_row, size.ws_col)
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let (master, _slave) = crate::process::open_pty(24, 80).unwrap();
+        let observed_master = master.try_clone().unwrap();
+        let runtime = test_runtime(&dir, dir.path().join("session.json"));
+        *runtime.pty_write.lock().unwrap() = Some(Arc::new(master));
+        let (client_id, _, _, rx) = runtime
+            .attach_client(AttachPayload::Tail(None), None)
+            .unwrap();
+
+        // The outer SSH PTY may accept 37x1. The aplexer-owned workload PTY
+        // and vt100 model share the safe effective geometry 37x2.
+        runtime.resize_client(client_id, 1, 37).unwrap();
+        assert_eq!(pty_size(observed_master.as_raw_fd()), (2, 37));
+        {
+            let terminal = runtime.terminal.lock().unwrap();
+            assert_eq!((terminal.rows, terminal.cols), (2, 37));
+        }
+        assert_eq!(
+            runtime.output.inner.lock().unwrap().screen.rows(),
+            2,
+            "the screen model must use the same normalized height as the worker PTY"
+        );
+
+        let first = b"\r\nPS2884_RESUMED_READY_ps2856repro09240145\r\n";
+        runtime.output.append(first).unwrap();
+        assert!(matches!(
+            rx.recv().unwrap(),
+            OutputEvent::Data(data) if &data[..] == first
+        ));
+
+        runtime.resize_client(client_id, 17, 37).unwrap();
+        assert_eq!(pty_size(observed_master.as_raw_fd()), (17, 37));
+        assert_eq!(runtime.output.inner.lock().unwrap().screen.rows(), 17);
+
+        let second = b"\r\nPS2884_OUTPUT_AFTER_GROWTH\r\n";
+        runtime.output.append(second).unwrap();
+        assert!(matches!(
+            rx.recv().unwrap(),
+            OutputEvent::Data(data) if &data[..] == second
+        ));
+
+        // Repeated shrinking and growing must continue to synchronize the
+        // parser and the actual kernel PTY while preserving raw attach bytes.
+        runtime.resize_client(client_id, 1, 37).unwrap();
+        assert_eq!(pty_size(observed_master.as_raw_fd()), (2, 37));
+        runtime.resize_client(client_id, 23, 37).unwrap();
+        assert_eq!(pty_size(observed_master.as_raw_fd()), (23, 37));
+        assert_eq!(runtime.output.inner.lock().unwrap().screen.rows(), 23);
+
+        assert_eq!(
+            runtime.output.snapshot(None).unwrap(),
+            [first.as_slice(), second.as_slice()].concat(),
+            "resize normalization must not change or drop bytes delivered to raw attach"
+        );
+        let screen = runtime.output.screen_contents().unwrap();
+        assert!(screen.contains("PS2884_OUTPUT_AFTER_GROWTH"));
     }
 
     /// A `WorkerRuntime` over a throwaway hub, with its durable record at

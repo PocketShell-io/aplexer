@@ -42,7 +42,7 @@ pub(super) fn establish_attach(
     cols: Option<u16>,
 ) -> Result<(AttachGuard, Vec<u8>, OutputReceiver, UnixStream)> {
     let geometry = match (rows, cols) {
-        (Some(rows), Some(cols)) => Some(screen::validate_size(rows, cols)?),
+        (Some(rows), Some(cols)) => Some(screen::validate_worker_size(rows, cols)?),
         _ => None,
     };
     // Geometry-first (design doc section 6.1): resize the PTY and the

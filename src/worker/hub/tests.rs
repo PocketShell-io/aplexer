@@ -11,6 +11,40 @@ pub(crate) fn test_hub(dir: &tempfile::TempDir) -> OutputHub {
 }
 
 #[test]
+pub(super) fn one_row_wrapped_pty_output_stays_capturable_and_streams_verbatim() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = OutputHub::new(
+        History::open(dir.path().join("history.bin"), 1024 * 1024).unwrap(),
+        1,
+        37,
+        dir.path().join("screen.txt"),
+    )
+    .unwrap();
+    let (_, _, rx) = hub.subscribe(AttachPayload::Tail(None)).unwrap();
+    let output = b"\r\nPS2884_RESUMED_READY_ps2856repro09240145\r\n";
+    assert!(
+        output.len() > 37,
+        "the marker must wrap at the recorded PTY width"
+    );
+
+    hub.append(output)
+        .expect("one-row PTY output must not panic the reader");
+
+    assert_eq!(
+        hub.snapshot(None).unwrap(),
+        output,
+        "capture must retain exact PTY bytes"
+    );
+    let _screen_capture = hub
+        .screen_contents()
+        .expect("screen capture must remain available after wrapped PTY output");
+    assert!(matches!(
+        rx.recv().unwrap(),
+        OutputEvent::Data(data) if &data[..] == output
+    ));
+}
+
+#[test]
 pub(super) fn lagging_subscriber_is_evicted_when_queue_fills() {
     let dir = tempfile::tempdir().unwrap();
     let hub = test_hub(&dir);

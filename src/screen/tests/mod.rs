@@ -22,6 +22,20 @@ fn zero_dimensions_use_a_non_degenerate_terminal_fallback() {
 }
 
 #[test]
+fn one_row_request_is_preserved_but_worker_geometry_uses_vt100_safe_minimum() {
+    assert_eq!(validate_size(1, 37).unwrap(), (1, 37));
+    assert_eq!(
+        validate_worker_size(1, 37).unwrap(),
+        (MIN_TERMINAL_ROWS, 37)
+    );
+
+    let mut tracker = ScreenTracker::try_new(1, 37).unwrap();
+    assert_eq!((tracker.rows(), tracker.cols()), (MIN_TERMINAL_ROWS, 37));
+    tracker.process(b"\r\nPS2884_RESUMED_READY_ps2856repro09240145\r\n");
+    assert!(!tracker.contents().is_empty());
+}
+
+#[test]
 fn screen_dimensions_are_bounded_and_overflow_safe() {
     assert_eq!(
         validate_size(0, 0).unwrap(),

@@ -3,7 +3,7 @@ use anyhow::Result;
 use super::boundary::Sequence;
 use super::client::without_scroll_regions;
 use super::margins::MarginTracker;
-use super::validate_size;
+use super::validate_screen_size;
 
 /// Seed-replay piece cap: the longest stretch replayed between cuts when
 /// the workload sends no synchronized-output frames to split on. Detection
@@ -254,7 +254,7 @@ impl ScreenTracker {
     /// `scrollback_lines_for` so `lines * cols` respects
     /// `MAX_SCROLLBACK_CELLS`.
     pub fn try_new_with_scrollback(rows: u16, cols: u16, scrollback: usize) -> Result<Self> {
-        let (rows, cols) = validate_size(rows, cols)?;
+        let (rows, cols) = validate_screen_size(rows, cols)?;
         Ok(Self {
             parser: vt100::Parser::new(rows, cols, scrollback),
             margins: MarginTracker::new(rows),
@@ -613,7 +613,7 @@ impl ScreenTracker {
     /// scrollback, and a skipped or superfluous compensation costs nothing
     /// permanent because SIGWINCH makes the workload repaint anyway.
     pub fn try_set_size(&mut self, rows: u16, cols: u16) -> Result<()> {
-        let (rows, cols) = validate_size(rows, cols)?;
+        let (rows, cols) = validate_screen_size(rows, cols)?;
         if rows < self.rows() && self.margins.margins().is_none() && self.at_escape_boundary() {
             let (cursor_row, _) = self.cursor_position();
             let excess = i32::from(cursor_row) - i32::from(rows) + 1;
