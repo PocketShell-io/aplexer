@@ -71,9 +71,14 @@ That gives you three things:
 ```bash
 git clone https://github.com/alexeygrigorev/aplexer
 cd aplexer
-cargo install --path .   # puts the `aplexer` binary on your PATH
-ln -s aplexer ~/.local/bin/a   # optional: the `a` alias
+scripts/install.sh   # builds --release, installs to ~/.local/bin
 ```
+
+The script installs one real binary, `aplexer`, and creates the `a` command
+as a symlink to it (never a copy), so the two names cannot drift apart and
+upgrading is a single-file operation. It also replaces a stale regular-file
+`a` left behind by an older copy-based install. Pass a directory to install
+somewhere else: `scripts/install.sh ~/.cargo/bin`.
 
 </details>
 
