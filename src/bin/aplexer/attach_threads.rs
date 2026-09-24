@@ -164,6 +164,15 @@ fn run_status_loop(config: StatusThreadConfig) {
             draw_status_bar(&config.status, false);
         }
 
+        // Live agent transitions (claude exited back to a shell, codex
+        // started inside one) are detected at query time, so the client is
+        // the only watcher there can be: re-run the walk every tick and
+        // repaint on a label change instead of letting the segment coast
+        // until the next TTL refresh happens to coincide with a draw.
+        if refresh_detected_agent(&config.status) {
+            draw_status_bar(&config.status, false);
+        }
+
         let idle_for = activity.elapsed();
         let overdue = last_draw.elapsed() >= STATUS_BAR_MAX_INTERVAL;
         let animating = status_is_animating(&config.status);

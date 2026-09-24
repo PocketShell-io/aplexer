@@ -82,6 +82,38 @@ pub(crate) fn refresh_live_status(ctx: &StatusBarCtx) {
     *ctx.live.lock().unwrap_or_else(PoisonError::into_inner) = fresh;
 }
 
+/// Just the detection half of `refresh_live_status`, run between TTL
+/// rounds: the walk is a bounded BFS over the workload's own subtree (a
+/// handful of `comm`/`cmdline` reads), cheap enough for every status tick,
+/// and it is the one `LiveStatus` fact whose transitions the user watches
+/// for -- claude exited back to a shell, codex started inside one. The TTL
+/// refresh alone surfaced a transition only when it coincided with a draw,
+/// which an idle session could stall for `STATUS_BAR_MAX_INTERVAL`s at a
+/// time. Updates the cached agent in place and reports whether the bar's
+/// agent segment changed, so the caller can repaint immediately; `false`
+/// when the cache belongs to another session (a switch mid-flight --
+/// `refresh_live_status` fills it) or detection renders the same label.
+pub(crate) fn refresh_detected_agent(ctx: &StatusBarCtx) -> bool {
+    let record = ctx
+        .record
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let detected = aplexer::api::record_detected(&record);
+    let mut live = ctx.live.lock().unwrap_or_else(PoisonError::into_inner);
+    if live.session != Some(record.id) {
+        return false;
+    }
+    // `engine_label` is everything detection contributes to the bar, and it
+    // distinguishes the pairs that matter: kind names never collide with an
+    // engine, and a profile change re-renders as `kind/profile`.
+    if engine_label(&record, live.agent.as_ref()) == engine_label(&record, detected.as_ref()) {
+        return false;
+    }
+    live.agent = detected;
+    true
+}
+
 /// The cached facts for `session`, or none when the cache was fetched for
 /// another session (or never): every indicator then degrades to "omitted",
 /// exactly as a failed round-trip does.
