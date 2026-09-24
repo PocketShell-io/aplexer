@@ -306,7 +306,7 @@ pub(super) fn bring_up(
         startup_checkpoint("after_control_socket")?;
 
         let requested_size = initial_size.unwrap_or((24, 80));
-        let (rows, cols) = screen::validate_size(requested_size.0, requested_size.1)?;
+        let (rows, cols) = screen::validate_worker_size(requested_size.0, requested_size.1)?;
         // A capped launch resolves its placement decision, trusted helpers,
         // and kernel-side identity without spawning anything. The scope
         // itself now comes into being around the workload in the same

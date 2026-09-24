@@ -62,19 +62,48 @@ pub fn scrollback_lines_for(cols: u16, lines: usize) -> usize {
 
 /// Conventional geometry used when a PTY exists but its kernel winsize has
 /// not been initialized. Linux reports that state as `0x0`; feeding the
-/// zeros (or a `1x1` clamp) to vt100 leaves several parser operations with a
-/// degenerate grid that real terminals never use.
+/// zeros to vt100 leaves several parser operations with a degenerate grid.
 pub const DEFAULT_TERMINAL_ROWS: u16 = 24;
 pub const DEFAULT_TERMINAL_COLS: u16 = 80;
 
+/// vt100's automatic-wrap path cannot safely scroll a one-row grid: when the
+/// cursor wraps, the previous row scrolls off before vt100 marks it wrapped.
+/// The worker's PTY must match the parser's minimum, including while a small
+/// viewport or the on-screen keyboard reports only one row.
+pub const MIN_TERMINAL_ROWS: u16 = 2;
+
 /// Normalize the protocol's zero dimensions and reject grids that would
-/// exceed the worker's fixed cell budget. `checked_mul` keeps this correct if
-/// the dimension types are widened in the future.
+/// exceed the worker's fixed cell budget. A nonzero one-row request stays
+/// one row; worker PTY callers use [`validate_worker_size`] and vt100 model
+/// constructors use [`validate_screen_size`] when they need the parser-safe
+/// minimum.
 pub fn validate_size(rows: u16, cols: u16) -> Result<(u16, u16)> {
+    validate_size_with_minimum(rows, cols, 1)
+}
+
+/// Normalize geometry for the aplexer-owned workload PTY and its matching
+/// screen model. An outer SSH PTY can accept 37x1 while the nested workload
+/// sees 37x2; columns stay unchanged, but a one-row viewport can have one
+/// extra row of workload output beyond its visible height. Keep this floor at
+/// the worker boundary so a requested host geometry remains distinguishable
+/// from the worker's safe effective geometry.
+pub(crate) fn validate_worker_size(rows: u16, cols: u16) -> Result<(u16, u16)> {
+    validate_size_with_minimum(rows, cols, MIN_TERMINAL_ROWS)
+}
+
+/// Normalize the geometry of any vt100-backed model. `ClientScreen` also
+/// needs this minimum: it parses the same wrapped PTY byte stream and would
+/// otherwise hit vt100's one-row wrap panic even when its physical terminal
+/// remains one row tall.
+pub(crate) fn validate_screen_size(rows: u16, cols: u16) -> Result<(u16, u16)> {
+    validate_size_with_minimum(rows, cols, MIN_TERMINAL_ROWS)
+}
+
+fn validate_size_with_minimum(rows: u16, cols: u16, min_rows: u16) -> Result<(u16, u16)> {
     let rows = if rows == 0 {
         DEFAULT_TERMINAL_ROWS
     } else {
-        rows
+        rows.max(min_rows)
     };
     let cols = if cols == 0 {
         DEFAULT_TERMINAL_COLS

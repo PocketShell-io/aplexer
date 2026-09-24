@@ -2,6 +2,19 @@ use crate::screen::client::without_scroll_regions;
 use crate::screen::host_alt::HostAltHold;
 use crate::screen::*;
 
+#[test]
+fn one_row_client_model_survives_wrapped_output() {
+    let mut client = ClientScreen::try_new(1, 37).unwrap();
+    let output = b"\r\nPS2884_RESUMED_READY_ps2856repro09240145\r\n";
+
+    client.relay(output);
+
+    assert!(
+        !client.snapshot().is_empty(),
+        "the one-row client model must remain capturable after wrapped output"
+    );
+}
+
 // -- retained history (the grid `Ctrl-b [` pages through) --------------
 
 /// Rows scrolled off the top are kept and can be paged back to, and the
