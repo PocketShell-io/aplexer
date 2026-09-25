@@ -50,6 +50,25 @@ pub(super) fn control_socket_matches_identity(
     trusted_socket_identity(path).is_ok_and(|current| current == identity)
 }
 
+/// Whether the session's durable record is gone from the state dir.
+///
+/// The record is this worker's only addressability: every listing, status,
+/// kill, rename, and prune resolves the session through it. When it is
+/// deleted out from under a live worker (issue #21: an integration test's
+/// `TempDir` drops while the detached worker lives on), no client can ever
+/// list or kill this session again -- the socket recovery below refuses to
+/// republish without the record, so the worker would serve a socket path
+/// nobody can find until the machine reboots. A NotFound is that decision
+/// made by whoever removed the state; every other read failure (a busy
+/// mount, a vanished network filesystem) stays ambiguous, so only NotFound
+/// self-reaps and anything else keeps deferring.
+fn durable_record_vanished(runtime: &WorkerRuntime) -> bool {
+    matches!(
+        fs::symlink_metadata(&runtime.record_path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound
+    )
+}
+
 /// The filesystem socket node and the open listener descriptor do not share
 /// an inode on Linux. Capture the pathname's identity immediately after bind
 /// and compare later pathname metadata against that stable identity instead
@@ -140,7 +159,9 @@ pub(super) fn recover_control_socket(
 /// lifecycle thread ends the process; this loop only returns on an accept
 /// failure that is not resource pressure. Each idle interval re-checks that
 /// the socket path still names this worker's listener and rebinds it if
-/// cleanup software removed the runtime directory (`recover_control_socket`).
+/// cleanup software removed the runtime directory (`recover_control_socket`),
+/// and that the durable record still exists -- a worker whose record is gone
+/// is unreachable by every client and self-reaps instead (issue #21).
 pub(super) fn serve_control_socket(
     mut listener: UnixListener,
     mut control_socket_identity: FileIdentity,
@@ -149,6 +170,7 @@ pub(super) fn serve_control_socket(
     runtime: Arc<WorkerRuntime>,
 ) -> Result<()> {
     let mut accept_retry = ACCEPT_RETRY_INITIAL;
+    let mut self_reap_requested = false;
     loop {
         match poll_control_connection(&listener, CONTROL_SOCKET_CHECK_INTERVAL) {
             Ok(Some((stream, _))) => {
@@ -171,7 +193,21 @@ pub(super) fn serve_control_socket(
                 }
             }
             Ok(None) => {
-                if !control_socket_matches_identity(&runtime.socket_path, control_socket_identity) {
+                if !self_reap_requested && durable_record_vanished(&runtime) {
+                    self_reap_requested = true;
+                    log_best_effort(&format!(
+                        "aplexer worker: durable record {} is gone; no client can list, status, \
+                         or kill this session any more -- terminating the workload and exiting",
+                        runtime.record_path.display()
+                    ));
+                    request_termination();
+                }
+                if !self_reap_requested
+                    && !control_socket_matches_identity(
+                        &runtime.socket_path,
+                        control_socket_identity,
+                    )
+                {
                     match recover_control_socket(&runtime, worker_lock_identity) {
                         Ok((
                             replacement,

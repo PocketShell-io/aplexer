@@ -25,7 +25,11 @@ pub(super) fn notify_event_fd(fd: RawFd) {
     }
 }
 
-extern "C" fn request_worker_termination(_: libc::c_int) {
+/// Ask the worker to terminate from ordinary thread context -- the same
+/// request the TERM/INT handler makes. The monitor thread answers both the
+/// same way: kill the contained workload, and the lifecycle finalizes and
+/// exits the process.
+pub(super) fn request_termination() {
     TERMINATION_REQUESTED.store(true, Ordering::SeqCst);
     let fd = TERMINATION_EVENT_FD.load(Ordering::Relaxed);
     if fd >= 0 {
@@ -34,6 +38,10 @@ extern "C" fn request_worker_termination(_: libc::c_int) {
         // mutex, allocator, or periodic polling in the monitor thread.
         notify_event_fd(fd);
     }
+}
+
+extern "C" fn request_worker_termination(_: libc::c_int) {
+    request_termination();
 }
 
 pub(super) fn create_worker_event_fd(context: &'static str) -> Result<RawFd> {

@@ -1964,6 +1964,27 @@ Two hazards the broadened predicate opens, and how a reclaim closes them:
   refusal there fails the start and rolls the replacement back, rather than
   leaving two durable records claiming one selector.
 
+### 32.2 A worker whose record is gone self-reaps (issue #21)
+
+The durable record is the worker's only addressability: every listing,
+status, kill, rename, and prune resolves the session through it. When that
+record is deleted out from under a live worker -- the classic case is an
+integration test whose per-test `TempDir` drops while the detached worker
+lives on -- no client can ever list or kill the session again, and the
+worker would serve a control socket path nobody can find until the machine
+reboots. So the worker's idle accept-loop tick also checks that its durable
+record still exists: a NotFound is the remover's decision that this session
+is gone, and the worker acts on it by requesting its own termination -- the
+same path as SIGTERM -- killing the contained workload, finalizing, and
+exiting. Any other read failure (a busy mount, a vanished network
+filesystem) stays ambiguous and keeps deferring.
+
+This is the deliberate boundary between the two deletion shapes: losing
+only the runtime dir republishes reachability (`recover_control_socket`,
+authorized by the durable identity evidence); losing the durable record
+ends the worker. Orphaned workers whose whole state vanished therefore
+clean themselves up within about a second, including on test unwind.
+
 
 ---
 

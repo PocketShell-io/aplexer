@@ -36,6 +36,10 @@ struct Harness {
     state: TempDir,
     config: PathBuf,
     workspace: TempDir,
+    /// Every session this test started, so Drop can kill the workers even on
+    /// an assertion unwind (issue #21: an un-killed worker outlives these
+    /// TempDirs and used to orphan itself to init).
+    sessions: Vec<String>,
 }
 
 impl Harness {
@@ -49,7 +53,12 @@ impl Harness {
             state,
             config,
             workspace,
+            sessions: Vec::new(),
         }
+    }
+
+    fn track(&mut self, id: &str) {
+        self.sessions.push(id.to_owned());
     }
 
     fn paths(&self) -> Paths {
@@ -150,6 +159,17 @@ impl Harness {
     }
 }
 
+impl Drop for Harness {
+    fn drop(&mut self) {
+        for id in &self.sessions {
+            let _ = self.run(
+                &["kill", id, "--signal", "KILL", "--grace-ms", "0"],
+                Duration::from_secs(10),
+            );
+        }
+    }
+}
+
 fn run_with_timeout(mut command: Command, timeout: Duration) -> std::process::Output {
     command
         .stdin(Stdio::null())
@@ -230,7 +250,7 @@ fn agent_appears_and_clears_as_a_fake_claude_runs_inside_a_shell_session() {
         Path::new("/bin/bash").exists(),
         "/bin/bash is required by this test"
     );
-    let harness = Harness::new();
+    let mut harness = Harness::new();
     let workspace = harness
         .workspace
         .path()
@@ -265,6 +285,7 @@ fn agent_appears_and_clears_as_a_fake_claude_runs_inside_a_shell_session() {
     );
     let started: Value = serde_json::from_str(&stdout).expect("start JSON");
     let id = started["id"].as_str().expect("session id").to_owned();
+    harness.track(&id);
 
     // A bare shell session: the key is present and explicitly null.
     wait_until(
@@ -318,7 +339,7 @@ fn the_plain_human_list_labels_a_shell_session_by_its_agent() {
         Path::new("/bin/bash").exists(),
         "/bin/bash is required by this test"
     );
-    let harness = Harness::new();
+    let mut harness = Harness::new();
     let workspace = harness
         .workspace
         .path()
@@ -351,6 +372,7 @@ fn the_plain_human_list_labels_a_shell_session_by_its_agent() {
     );
     let started: Value = serde_json::from_str(&stdout).expect("start JSON");
     let id = started["id"].as_str().expect("session id").to_owned();
+    harness.track(&id);
 
     // A bare shell row says shell ...
     let line = harness.list_plain_line("plain-list");
@@ -404,7 +426,7 @@ fn a_fake_zcodex_inside_a_shell_session_reports_the_codex_kind() {
         Path::new("/bin/bash").exists(),
         "/bin/bash is required by this test"
     );
-    let harness = Harness::new();
+    let mut harness = Harness::new();
     let workspace = harness
         .workspace
         .path()
@@ -448,6 +470,7 @@ fn a_fake_zcodex_inside_a_shell_session_reports_the_codex_kind() {
     );
     let started: Value = serde_json::from_str(&stdout).expect("start JSON");
     let id = started["id"].as_str().expect("session id").to_owned();
+    harness.track(&id);
 
     wait_until(
         || harness.list_agent(&id) == Value::Null,
@@ -502,7 +525,7 @@ fn a_pinned_agent_reports_on_every_surface_until_cleared() {
         Path::new("/bin/bash").exists(),
         "/bin/bash is required by this test"
     );
-    let harness = Harness::new();
+    let mut harness = Harness::new();
     let workspace = harness
         .workspace
         .path()
@@ -543,6 +566,7 @@ fn a_pinned_agent_reports_on_every_surface_until_cleared() {
     );
     let started: Value = serde_json::from_str(&stdout).expect("start JSON");
     let id = started["id"].as_str().expect("session id").to_owned();
+    harness.track(&id);
 
     // A bare shell: live detection has nothing to say.
     wait_until(
