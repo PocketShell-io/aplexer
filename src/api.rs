@@ -205,6 +205,7 @@ pub fn snapshot_json(paths: &Paths, running: bool) -> Result<Value> {
     crate::warnings::sweep_warnings(paths);
     let records = list_records(paths)?;
     let mut enriched = Vec::with_capacity(records.len());
+    let mut roots = Vec::new();
     // One clock for the whole snapshot, so two rows created in the same
     // instant cannot land on opposite sides of the startup window.
     let now = crate::now_ms();
@@ -257,7 +258,33 @@ pub fn snapshot_json(paths: &Paths, running: bool) -> Result<Value> {
         value["warning"] = crate::warnings::load_warning_for(paths, record.id)
             .map(|warning| warning.to_json())
             .unwrap_or(Value::Null);
+        if record.worker_phase_active() && worker_alive {
+            if let Some(pid) = record.worker_pid {
+                roots.push((record.id, pid));
+            }
+        }
         enriched.push(value);
+    }
+    // One `/proc` pass for every row. No wait: a rate is reported only when
+    // a previous listing already stored a sample (the human list does that
+    // with a short bracket). A dead worker is an empty tree, not a guess
+    // about whichever process now owns its old pid.
+    let usage = crate::proc_usage::cached_session_proc_usage(
+        Path::new("/proc"),
+        &paths.proc_usage_cache(),
+        &roots,
+    );
+    for value in &mut enriched {
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|text| text.parse::<Uuid>().ok());
+        let sample = id.and_then(|id| usage.get(&id)).copied();
+        value["processes"] = json!(sample.map(|sample| sample.processes).unwrap_or(0));
+        value["cpu_percent"] = match sample.and_then(|sample| sample.cpu_percent_1dp()) {
+            Some(cpu) => json!(cpu),
+            None => Value::Null,
+        };
     }
     Ok(Value::Array(enriched))
 }

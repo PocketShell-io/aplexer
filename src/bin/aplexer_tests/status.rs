@@ -102,6 +102,10 @@ fn status_json_value_preserves_runtime_diagnostics() {
         record_persistence_error: Some("record warning".into()),
         foreground_command: Some("vim".into()),
         warning: None,
+        proc_usage: SessionProcUsage {
+            processes: 4,
+            cpu_percent: Some(12.04),
+        },
     };
 
     let value = status.json_value().unwrap();
@@ -116,6 +120,8 @@ fn status_json_value_preserves_runtime_diagnostics() {
     // No crash on record: the field is present and null, never absent, so
     // consumers can index it unconditionally.
     assert_eq!(value["warning"], serde_json::Value::Null);
+    assert_eq!(value["processes"], 4);
+    assert_eq!(value["cpu_percent"], json!(12.0));
 }
 
 #[test]

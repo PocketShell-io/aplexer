@@ -1143,6 +1143,16 @@ agent runs the engine's own config untouched, and `null` exactly when
 only in some installation's config file is detected there without a code
 change.
 
+`processes` is how many live processes belong to that session: the worker
+and every process whose nearest queried worker ancestor is that worker, so
+a session started inside another session is not counted twice. `0` when the
+worker is not alive. `cpu_percent` is the tree's recent CPU as a percent of
+one core (400 means about four cores), or `null` when this call had no
+earlier sample close enough to turn the counters into a rate. `a snapshot
+--json` and `a status --json` never wait for that second sample; a human
+`a` / `a status` on a terminal takes at most a few tens of milliseconds
+when it still needs one. Neither number is persisted.
+
 `last_accessed_ms` is when a client last attached to the session's PTY
 (absent until the first attach, including on records written before the
 field existed). It is not PTY-output recency (`last_activity_ms`) and not

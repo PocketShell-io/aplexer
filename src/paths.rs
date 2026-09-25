@@ -105,6 +105,12 @@ impl Paths {
     pub fn registry_lock(&self) -> PathBuf {
         self.state_root.join("registry.lock")
     }
+    /// Last per-session process sample (`proc_usage`). Runtime, not state:
+    /// it is a rate baseline, and losing it only hides CPU until the next
+    /// pair of samples.
+    pub fn proc_usage_cache(&self) -> PathBuf {
+        self.runtime_root.join("proc-usage.json")
+    }
     /// Finished-session tombstones and superseded-session archives live
     /// here; both answer "this id is deliberately gone".
     pub fn retired_sessions_dir(&self) -> PathBuf {

@@ -31,6 +31,12 @@ pub use util::*;
 mod process;
 pub use process::*;
 
+mod proc_usage;
+pub use proc_usage::{
+    bracket_session_proc_usage, cached_session_proc_usage, cpu_percent, scan_session_procs,
+    SessionProcUsage, PROC_CPU_WINDOW,
+};
+
 mod record;
 pub use record::*;
 

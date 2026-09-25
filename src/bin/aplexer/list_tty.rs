@@ -169,6 +169,15 @@ fn workspace_summary(states: &[RowState]) -> String {
     summary
 }
 
+fn workspace_summary_with_cpu(states: &[RowState], cpu_percent: f64) -> String {
+    let summary = workspace_summary(states);
+    if cpu_percent >= 50.0 {
+        format!("{summary} · {cpu_percent:.0}% cpu")
+    } else {
+        summary
+    }
+}
+
 fn print_workspace_header(
     index: usize,
     workspace: &Path,
@@ -245,6 +254,7 @@ fn print_session_row(
     tag_width: usize,
     engine_width: usize,
     lineage: Option<&String>,
+    usage: Option<&SessionProcUsage>,
     now: u64,
     color: bool,
 ) {
@@ -269,8 +279,9 @@ fn print_session_row(
         Some(label) => paint(color, ANSI_DIM, label),
         None => String::new(),
     };
+    let usage = usage_suffix(color, usage);
     println!(
-        "{} {:>2}  {}  {}  {}{} {}{}",
+        "{} {:>2}  {}  {}  {}{} {}{}{}",
         paint(color, ANSI_GRAY, connector),
         index + 1,
         tag,
@@ -278,8 +289,25 @@ fn print_session_row(
         state_text,
         attention_mark,
         age,
+        usage,
         lineage
     );
+}
+
+/// ` 17p 340%` when the tree is worth a glance. Hot trees (a full core or
+/// more) are yellow; a quiet `3p` stays gray. Empty when there is no live
+/// worker, so stopped rows do not grow a `0p`.
+fn usage_suffix(color: bool, usage: Option<&SessionProcUsage>) -> String {
+    let Some(usage) = usage else {
+        return String::new();
+    };
+    let text = usage.list_suffix();
+    if text.is_empty() {
+        return String::new();
+    }
+    let hot = usage.cpu_percent.unwrap_or(0.0) >= 100.0;
+    let tone = if hot { ANSI_YELLOW } else { ANSI_GRAY };
+    paint(color, tone, &format!("  {text}"))
 }
 
 fn print_list_footer(sort: ListSort, hidden_exited: usize, color: bool) {
@@ -329,7 +357,19 @@ pub(crate) fn cmd_list_tty(paths: &Paths, args: ListArgs) -> Result<()> {
 
     let sort = load_list_sort(paths);
     let groups = group_by_workspace(records, sort);
+    // Sample before agent detection. Detection walks the same trees and is
+    // the slow part of a loaded registry, so the CPU window often elapses
+    // inside it and the second sample below does not sleep.
+    let roots = live_worker_roots(groups.iter().flat_map(|(_, sessions)| sessions.iter()));
+    let proc_first = scan_session_procs(Path::new("/proc"), &roots);
     let agents = detect_row_agents(paths, &groups);
+    let proc_usage = bracket_session_proc_usage(
+        Path::new("/proc"),
+        &paths.proc_usage_cache(),
+        &proc_first,
+        &roots,
+        PROC_CPU_WINDOW,
+    );
     // One width pair for the whole listing, so the tag/engine/state/age
     // columns line up across workspace blocks instead of re-fitting under
     // every [N] header.
@@ -351,11 +391,19 @@ pub(crate) fn cmd_list_tty(paths: &Paths, args: ListArgs) -> Result<()> {
             .collect();
         let here = current_workspace.as_deref() == Some(workspace.as_path());
         let recency = workspace_recency_label(sort, sessions, now);
+        let cpu: f64 = sessions
+            .iter()
+            .filter_map(|record| {
+                proc_usage
+                    .get(&record.id)
+                    .and_then(|usage| usage.cpu_percent)
+            })
+            .sum();
         print_workspace_header(
             workspace_index + 1,
             workspace,
             here,
-            &workspace_summary(&states),
+            &workspace_summary_with_cpu(&states, cpu),
             &recency,
             color,
         );
@@ -372,6 +420,7 @@ pub(crate) fn cmd_list_tty(paths: &Paths, args: ListArgs) -> Result<()> {
                 tag_width,
                 engine_width,
                 lineage.get(&record.id),
+                proc_usage.get(&record.id),
                 now,
                 color,
             );
@@ -498,6 +547,11 @@ mod tests {
             attention: false,
         }];
         assert_eq!(workspace_summary(&all_active), "1 active");
+        assert_eq!(workspace_summary_with_cpu(&all_active, 10.0), "1 active");
+        assert_eq!(
+            workspace_summary_with_cpu(&all_active, 340.2),
+            "1 active · 340% cpu"
+        );
     }
 
     #[test]

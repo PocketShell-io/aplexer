@@ -307,7 +307,9 @@ fn status_json_agrees_with_list_json_and_human_output_for_a_live_record() {
 /// manager-wide kill leaves the failure domain provable) and the derived
 /// `worker_placement`/`workload_placement` summaries classified from them,
 /// plus `warning` -- the ack-gated crash/OOM warning (`a warnings`,
-/// `a ack`), `null` when the session has none.
+/// `a ack`), `null` when the session has none -- plus `processes` (live
+/// processes in the worker's tree) and `cpu_percent` (a rate, `null` until
+/// two samples are close enough).
 /// The baseline is the released binary's real output (see
 /// `BASELINE_STATUS_JSON_KEYS`), so this fails on a removed or renamed key
 /// even though nothing in the source says "these keys are load-bearing", and
@@ -342,6 +344,8 @@ fn status_json_adds_only_the_derived_state_and_agent_fields() {
         vec![
             "agent",
             "agent_profile",
+            "cpu_percent",
+            "processes",
             "state",
             "warning",
             "worker_cgroup",
@@ -350,6 +354,6 @@ fn status_json_adds_only_the_derived_state_and_agent_fields() {
             "workload_placement",
         ],
         "`a status --json` changed its wire shape by more than the additive derived \
-         state/agent/placement/warning fields"
+         state/agent/placement/warning/proc-usage fields"
     );
 }

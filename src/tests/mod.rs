@@ -6,6 +6,7 @@ mod history;
 mod paths;
 mod persist;
 mod placement;
+mod proc_usage;
 mod process;
 mod protocol;
 mod record;

@@ -116,6 +116,19 @@ pub(crate) fn derived_liveness(
     observed_state(phase, worker_alive, created_at_ms, now_ms())
 }
 
+/// Workers whose process tree is still this session's. A dead or not-yet
+/// registered pid is left out so a recycled pid cannot be billed to the
+/// record that used to own it.
+pub(crate) fn live_worker_roots<'a>(
+    records: impl IntoIterator<Item = &'a SessionRecord>,
+) -> Vec<(Uuid, u32)> {
+    records
+        .into_iter()
+        .filter(|record| record.worker_phase_active() && record.worker_alive())
+        .filter_map(|record| record.worker_pid.map(|pid| (record.id, pid)))
+        .collect()
+}
+
 pub(crate) fn session_ui_state(record: &SessionRecord, now: u64) -> (&'static str, &'static str) {
     // Deferred to `observed_state` rather than repeating its predicate, so
     // the TTY UI cannot go on painting a mid-create session `broken` after

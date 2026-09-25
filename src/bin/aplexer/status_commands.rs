@@ -12,6 +12,9 @@ pub(crate) struct StatusData {
     /// The ack-gated crash warning for this session (`crate::warnings`),
     /// materialized by the caller's sweep; `None` renders as JSON `null`.
     pub(crate) warning: Option<aplexer::warnings::SessionWarning>,
+    /// Live process tree of the worker. The plain (redirected) status path
+    /// leaves this at zero and does not print it.
+    pub(crate) proc_usage: SessionProcUsage,
 }
 
 impl StatusData {
@@ -52,6 +55,10 @@ impl StatusData {
             current,
             raw,
             warning: None,
+            proc_usage: SessionProcUsage {
+                processes: 0,
+                cpu_percent: None,
+            },
         }
     }
 
@@ -87,6 +94,11 @@ impl StatusData {
         value["workload_placement"] =
             aplexer::placement::placement_summary(self.current.workload_cgroup.as_deref());
         value["worker_reachable"] = json!(self.worker_reachable);
+        value["processes"] = json!(self.proc_usage.processes);
+        value["cpu_percent"] = match self.proc_usage.cpu_percent_1dp() {
+            Some(cpu) => json!(cpu),
+            None => Value::Null,
+        };
         value["warning"] = match &self.warning {
             Some(warning) => warning.to_json(),
             None => Value::Null,
@@ -173,9 +185,28 @@ pub(crate) fn cmd_status(paths: &Paths, target: TargetArgs, json_output: bool) -
     aplexer::warnings::sweep_warnings(paths);
     let mut status = StatusData::load(resolve(paths, &target)?);
     status.warning = aplexer::warnings::load_warning_for(paths, status.current.id);
+    let roots = live_worker_roots(std::slice::from_ref(&status.current));
     if json_output {
+        // No wait on the machine path. A rate appears when a recent human
+        // listing already stored a sample, or on the next JSON call.
+        status.proc_usage =
+            cached_session_proc_usage(Path::new("/proc"), &paths.proc_usage_cache(), &roots)
+                .get(&status.current.id)
+                .copied()
+                .unwrap_or(status.proc_usage);
         status.print_json()?;
     } else if io::stdout().is_terminal() {
+        let first = scan_session_procs(Path::new("/proc"), &roots);
+        status.proc_usage = bracket_session_proc_usage(
+            Path::new("/proc"),
+            &paths.proc_usage_cache(),
+            &first,
+            &roots,
+            PROC_CPU_WINDOW,
+        )
+        .get(&status.current.id)
+        .copied()
+        .unwrap_or(status.proc_usage);
         cmd_status_tty(paths, &status)?;
     } else {
         status.print_plain();
@@ -265,6 +296,7 @@ fn print_status_identity(paths: &Paths, status: &StatusData, now: u64, color: bo
         _ => "unknown".to_string(),
     };
     println!("  activity    {activity_text}");
+    println!("  processes   {}", status.proc_usage.detail());
     println!(
         "  command     {}",
         current
