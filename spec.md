@@ -356,6 +356,20 @@ The implementation should prefer boring, explicit systems code over a large asyn
 
 Tokio is not required for v1.
 
+### 6.1 Shared window size with several attached clients
+
+One PTY has one size, and one session can have several attached clients whose terminals differ. The size is therefore the **common denominator** of the attached geometries: the smallest row count and the smallest column count any of them reported, following the shape of tmux's `window-size=smallest` with a componentwise minimum rather than tmux's smallest-client-by-area (which does not fit both when one client is short and the other is narrow).
+
+The rules that follow from it:
+
+- the shared screen fits every attached terminal at once, so no client has to crop it;
+- **input is not in the arithmetic** — no keystroke may move the size. tmux's default (`window-size=latest`) hands the PTY to the most recently active client, which makes a session watched from two devices resize back and forth on every keypress, each keystroke costing the workload a `SIGWINCH` repaint;
+- a resize by a client that is not the binding constraint changes nothing;
+- the smallest client leaving hands the size back to what is left; the last one leaving leaves the PTY as it is;
+- a geometry the worker refuses to apply never enters the registry, so it cannot clamp the other clients.
+
+When the size really moves, the worker reflows its own screen model and repaints every attached client from it. A client cannot derive the reflowed screen from the output stream — the worker's grid is the authoritative one — and a client whose terminal is larger than the shared screen additionally needs the rows and columns the workload no longer owns cleared, which nothing in the stream will ever address.
+
 ---
 
 ## 7. Resource isolation and OOM behavior

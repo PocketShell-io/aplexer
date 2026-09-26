@@ -984,9 +984,45 @@ patch branch.
 - Resize (worker-side model resize + geometry-carrying attach).
 - Multi-client attach (snapshot is a stateless render; each subscriber
   gets its own, under the same lock discipline as today). Input and output
-  are shared, and PTY geometry follows tmux's default `window-size=latest`
-  policy: attach, input, or resize activity makes that sized client latest;
-  detaching it falls back to the most recently active remaining client.
+  are shared, and one PTY has one size, so the size is the **common
+  denominator** of the attached geometries — the smallest row count and the
+  smallest column count any of them reported — following the shape of tmux's
+  `window-size=smallest` (one size, derived from the clients) with a
+  componentwise minimum rather than tmux's smallest-client-by-area, which
+  does not fit both when one client is short and the other is narrow.
+  Consequences, all of them the point:
+  - the screen fits every attached terminal at once, so no client ever has
+    to crop it;
+  - **input is not in the arithmetic**, so typing on one device cannot resize
+    the session under another. tmux's default (`window-size=latest`) makes
+    every keystroke on a device adopt its own geometry, and a session
+    watched from two devices resized back and forth on every keypress, each
+    keystroke costing the workload a SIGWINCH repaint;
+  - a resize by a client that is not the binding constraint re-derives the
+    size the PTY already has and changes nothing;
+  - the smallest client leaving hands the size straight back to what is left,
+    and the last one leaving leaves the PTY as it was.
+
+  When the shared size really moves, the worker reflows its own grid (the
+  synthetic `CSI n S` of §5.3) and repaints every `want_screen` subscriber
+  with a fresh snapshot plus a layout nudge (`OutputHub::broadcast_resize`,
+  the same pair the coalescing path queues). It has to be the worker that
+  sends it: its grid is the authoritative one, and a client cannot derive
+  the reflowed screen from the output stream. The repaint's Erase in Display
+  also clears the rows and columns the workload no longer owns, in the
+  client's own model as well as on its terminal, so no stale screen can be
+  painted back.
+
+  **Known gap, client side.** A terminal *larger* than the shared screen
+  shows the workload's screen at its top-left — reflowed and correct — with
+  the relay continuing below it rather than confined to it, because the
+  client's model and the region it reserves on the host are still sized to
+  its own terminal. Closing that means re-fitting the client model to the
+  shared size (so a line wraps where the workload's wraps), reserving the
+  shared screen rather than the whole terminal, and keeping the pad blank;
+  `ClientScreen`'s doc comment carries the checklist. It is not new: the
+  previous `latest` policy showed the same artifact whenever a passive client
+  was the larger of the two.
 
 **Approximate / accepted v1 limitations** (each is strictly no worse than
 today's byte replay, which gets all of them wrong *and* the screen too):

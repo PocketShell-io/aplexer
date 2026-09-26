@@ -175,9 +175,11 @@ Recommendations:
    worker already has `resize`; the wiggle is a few lines. Honest caveats: (a) it only helps
    programs that repaint on SIGWINCH — a bare shell prompt won't replay history, so shell
    sessions should keep a small tail replay; (b) PTY size is global to the session, so the wiggle
-   is visible to any *other* attached client. Multi-client sizing now follows tmux's
-   `window-size=latest` policy rather than unconditional last-resize-wins, but a synthetic wiggle
-   would still temporarily affect the one shared PTY.
+   is visible to any *other* attached client. Multi-client sizing follows the tmux
+   `window-size=smallest` *shape* — the common denominator of the attached geometries, so the
+   shared screen fits every attached terminal and no keystroke can move it (see
+   docs/terminal-state-design.md section 11) — but a synthetic wiggle would still resize the one
+   shared PTY for everyone, so it stays speculative.
 4. **A terminal-state parser (real screen snapshots) remains the eventual clean answer** — spec
    §17 already lists it as a later feature, and it is what "send exactly one screenful,
    perfectly" requires. It is *not* load-bearing here: SSH compression + small tail + repaint

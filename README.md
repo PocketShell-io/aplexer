@@ -203,6 +203,32 @@ your terminal.
 
 </details>
 
+## Attaching from more than one device
+
+A session is one live terminal, so you can attach to it from a laptop and
+from a phone at once. Input from every attached device goes to the same
+program, and every byte it emits is fanned out to every attached device, so
+what you type on one shows up on the other.
+
+Terminals differ in size, and there is only one PTY behind all of them, so
+the session runs at the size **every** attached terminal can show: the
+smallest height and the smallest width in play. Attach a phone and the
+session follows the phone down; close it and the session goes back to your
+laptop's real size, with no keystroke needed. Your terminal never has to
+crop the screen.
+
+Typing never changes the size. That is the difference from tmux's default
+(`window-size=latest`, where the device that typed last takes over the
+window), and it is the point: with two devices attached, that policy resizes
+the session back and forth on every keypress, and the program redraws itself
+each time. Here a keystroke is a keystroke.
+
+One rough edge: a terminal *larger* than the shared screen shows the
+program's screen in its top-left corner, with the session continuing below
+it rather than neatly boxed in. The content is right - it is reflowed and
+repainted whenever the shared size changes - but the padding is not managed
+yet.
+
 ## Driving sessions without attaching
 
 Anything you can do attached, you can do scripted:
