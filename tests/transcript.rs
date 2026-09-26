@@ -400,15 +400,23 @@ fn whoami_inside_session_survives_cleared_env() {
     let record: Value = serde_json::from_str(&stdout).expect("start json");
     let id = record["id"].as_str().expect("id").to_string();
 
-    h.run_ok(&[
-        "send",
-        &id,
-        "--enter",
-        // Keep the completion marker out of the echoed input line; otherwise
-        // capture() can mistake the command itself for its output and the
-        // following kill races the whoami subprocess.
-        "env -u APLEXER_SESSION_ID a whoami; printf 'WHOAMI_'; printf 'DONE\\n'",
-    ]);
+    // The completion marker is kept out of the echoed input line (two
+    // printfs, not one): otherwise capture() can mistake the command itself
+    // for its output and the following kill races the whoami subprocess.
+    //
+    // The binary goes in by absolute path, not by name. What is under test is
+    // `discover_session_id`'s ancestor walk when a tool subprocess has cleared
+    // APLEXER_SESSION_ID, and a session's PATH is whatever the test runner
+    // inherited: on a developer machine that usually has an `a` shim
+    // installed, on a clean runner it has nothing at all, and the test failed
+    // there with `env: 'a': No such file or directory` (on two commits,
+    // while passing locally). The shim's own installation is
+    // tests/install_script.rs's subject, not this one's.
+    let command = format!(
+        "env -u APLEXER_SESSION_ID {} whoami; printf 'WHOAMI_'; printf 'DONE\\n'",
+        aplexer::shell_quote(env!("CARGO_BIN_EXE_aplexer"))
+    );
+    h.run_ok(&["send", &id, "--enter", &command]);
     h.run_ok(&["send", &id, "--hex", "0d"]);
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
     let mut captured = String::new();
