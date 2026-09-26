@@ -295,6 +295,48 @@ impl OutputHub {
             });
         }
     }
+    /// Queue a fresh rendering of the live screen for every subscriber that
+    /// asked for one, because the shared PTY just changed size
+    /// (`WorkerRuntime::apply_size`, design doc section 11).
+    ///
+    /// This is the whole client-side story of a resize, and it has to be the
+    /// worker that sends it. The worker's grid is the authoritative one: on a
+    /// shrink it reflows the content up by the excess (design doc section
+    /// 5.3), and it is the only party that knows what the reflowed screen
+    /// looks like. A client watching a *larger* terminal than the shared
+    /// screen additionally has rows and columns the workload no longer owns,
+    /// which nothing in the output stream will ever address -- the snapshot's
+    /// own Erase in Display clears them, in the client model as well as on its
+    /// terminal, so a later repaint cannot paint the old screen back.
+    ///
+    /// Exactly the pair the coalescing path in `append` queues when a
+    /// subscriber falls behind: the snapshot, then a layout nudge, because
+    /// that ED2 ignores scroll margins and so can wipe the client's reserved
+    /// status row. Both go through the ordinary bounded queue, so a client
+    /// that has stopped reading still gets the "fell behind, reattach"
+    /// outcome rather than an unbounded backlog.
+    ///
+    /// Raw-tail subscribers (`--history-bytes`) are kept but not queued to,
+    /// for the reason `broadcast_record` gates on `want_record`: their stream
+    /// has to stay byte-exact, and a repaint in the middle of it would not be.
+    pub(super) fn broadcast_resize(&self) {
+        if self.finalized() {
+            return;
+        }
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        let snapshot: Arc<[u8]> = Arc::from(inner.screen.snapshot());
+        inner.subscribers.retain(|_, subscriber| {
+            !subscriber.want_screen
+                || (subscriber.try_event(OutputEvent::Data(Arc::clone(&snapshot)))
+                    && subscriber.try_event(OutputEvent::Layout(screen::LayoutChange {
+                        alt_screen: false,
+                        margins_reset: false,
+                        erase_reset: true,
+                    })))
+        });
+    }
     /// Record the terminal outcome (an outcome already recorded wins) and
     /// hand it to every subscriber, running `persist` in between under the
     /// same lock so post-mortem files are written before any client learns

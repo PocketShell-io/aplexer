@@ -401,7 +401,6 @@ pub(super) fn bring_up(
                 cols,
                 clients: HashMap::new(),
                 next_client_id: 1,
-                activity_clock: 0,
             }),
             cgroup: Mutex::new(cgroup),
             kill_gate: Mutex::new(()),

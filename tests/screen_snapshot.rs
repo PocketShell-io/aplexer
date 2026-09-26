@@ -498,20 +498,25 @@ fn old_client_compat_want_screen_false_gets_raw_tail() {
     harness.run_ok(&["kill", &id, "--signal", "KILL"], Duration::from_secs(5));
 }
 
-/// tmux 3.4's default `window-size=latest` behavior, measured against two
-/// real differently-sized tmux clients, is:
+/// Two devices attached to one session, measured the way tmux 3.4 measures
+/// `window-size=smallest` against two real differently-sized clients: the one
+/// PTY is the **common denominator** of the attached geometries -- the
+/// smallest height and the smallest width -- so
 ///
-/// - a newly attached client owns the PTY size;
-/// - input or resize activity transfers ownership to that client;
-/// - detaching the latest client falls back to the most recently active
-///   remaining client.
+/// - the shared screen fits every attached terminal at once, and nobody has
+///   to crop it;
+/// - typing on either device does *not* move it, so neither device's screen
+///   reflows under the other's keystrokes (this is the ping-pong that
+///   `window-size=latest` produced, one repaint per keypress);
+/// - a resize by a device that is not the binding constraint changes nothing
+///   at all, until it becomes smaller than the current one;
+/// - the binding device leaving hands the size straight back to what is left.
 ///
-/// Exercise the same lifecycle through two simultaneous aplexer protocol
-/// attachments. The marker assertions are also the user-visible contract:
-/// text entered from device B is PTY output received by device A, and vice
-/// versa -- both clients are live views of one shared terminal.
+/// The marker assertions are the rest of the user-visible contract: text
+/// entered from device B is PTY output received by device A, and vice versa
+/// -- both clients are live views of one shared terminal.
 #[test]
-fn multi_client_attach_shares_output_and_uses_latest_active_geometry() {
+fn multi_client_attach_shares_output_and_uses_the_common_geometry() {
     let harness = Harness::new();
     let root = TempDir::new().expect("workspace root");
     let workspace = root.path().join("multi-client");
@@ -522,34 +527,55 @@ fn multi_client_attach_shares_output_and_uses_latest_active_geometry() {
     let (mut device_a, _, _) = raw_attach(&socket, Some(0), false, Some(30), Some(100));
     let (mut device_b, _, _) = raw_attach(&socket, Some(0), false, Some(20), Some(70));
 
-    // B attached last, so its geometry is current. Its command's composed
-    // marker does not occur literally in the typed input, proving the shell
-    // executed it and the resulting PTY output was broadcast to both A/B.
+    // B's command's composed marker does not occur literally in the typed
+    // input, proving the shell executed it and the resulting PTY output was
+    // broadcast to both A and B. `stty size` in the same breath is the
+    // assertion: the shared screen is the smaller of the two, not B's.
     send_attached_input(&mut device_b, "stty size; printf 'FROM-B-%s\\n' 'VISIBLE'");
     for (stream, label) in [(&mut device_a, "device A"), (&mut device_b, "device B")] {
         let output = read_attached_until(stream, "FROM-B-VISIBLE", label);
         assert!(
             String::from_utf8_lossy(&output).contains("20 70"),
-            "{label} did not observe device B's active geometry; output:\n{}",
+            "{label} did not observe the common geometry; output:\n{}",
             String::from_utf8_lossy(&output)
         );
     }
 
-    // Typing on A makes A latest before its bytes enter the PTY. B must see
-    // both A's output and the size transition, just as A saw B's above.
+    // Typing on A must not move it either. Under `window-size=latest` this is
+    // the exact step that flipped the shared PTY to A's 30x100 and made the
+    // workload repaint for a keystroke that changed nothing about A.
     send_attached_input(&mut device_a, "stty size; printf 'FROM-A-%s\\n' 'VISIBLE'");
     for (stream, label) in [(&mut device_a, "device A"), (&mut device_b, "device B")] {
         let output = read_attached_until(stream, "FROM-A-VISIBLE", label);
         assert!(
-            String::from_utf8_lossy(&output).contains("30 100"),
-            "{label} did not observe device A's active geometry; output:\n{}",
+            String::from_utf8_lossy(&output).contains("20 70"),
+            "{label} saw device A's input resize the shared screen; output:\n{}",
+            String::from_utf8_lossy(&output)
+        );
+    }
+
+    // A growing is not a constraint on B, so the shared screen does not move
+    // and neither device is reflowed.
+    send_attach_control(
+        &mut device_a,
+        &AttachControl::Resize {
+            rows: 40,
+            cols: 120,
+        },
+    );
+    send_attached_input(&mut device_b, "stty size; printf 'A-GROWN-%s\\n' 'VISIBLE'");
+    for (stream, label) in [(&mut device_a, "device A"), (&mut device_b, "device B")] {
+        let output = read_attached_until(stream, "A-GROWN-VISIBLE", label);
+        assert!(
+            String::from_utf8_lossy(&output).contains("20 70"),
+            "{label} saw the shared screen follow a client that was never the constraint; output:\n{}",
             String::from_utf8_lossy(&output)
         );
     }
 
     // An oversized resize is rejected before it can replace B's remembered
-    // geometry or make B the latest client. When B next types, its last valid
-    // 20x70 geometry must still transfer to the PTY.
+    // geometry, which would otherwise clamp every other client to a size B
+    // never had.
     send_attach_control(
         &mut device_b,
         &AttachControl::Resize {
@@ -559,7 +585,7 @@ fn multi_client_attach_shares_output_and_uses_latest_active_geometry() {
     );
     send_attached_input(
         &mut device_b,
-        "stty size; printf 'B-AFTER-INVALID-%s\n' 'VISIBLE'",
+        "stty size; printf 'B-AFTER-INVALID-%s\\n' 'VISIBLE'",
     );
     for (stream, label) in [(&mut device_a, "device A"), (&mut device_b, "device B")] {
         let output = read_attached_until(stream, "B-AFTER-INVALID-VISIBLE", label);
@@ -570,29 +596,25 @@ fn multi_client_attach_shares_output_and_uses_latest_active_geometry() {
         );
     }
 
-    // A terminal resize is activity in tmux and likewise makes B latest.
-    send_attach_control(&mut device_b, &AttachControl::Resize { rows: 25, cols: 90 });
-    harness.run_ok(
-        &[
-            "send",
-            &id,
-            "stty size; printf 'B-RESIZE-%s\\n' 'VISIBLE'",
-            "--enter",
-        ],
-        Duration::from_secs(5),
+    // B shrinking below the shared size does move it -- once, to B's own
+    // geometry, which is now the smallest of the two.
+    send_attach_control(&mut device_b, &AttachControl::Resize { rows: 15, cols: 60 });
+    send_attached_input(
+        &mut device_b,
+        "stty size; printf 'B-SHRUNK-%s\\n' 'VISIBLE'",
     );
     for (stream, label) in [(&mut device_a, "device A"), (&mut device_b, "device B")] {
-        let output = read_attached_until(stream, "B-RESIZE-VISIBLE", label);
+        let output = read_attached_until(stream, "B-SHRUNK-VISIBLE", label);
         assert!(
-            String::from_utf8_lossy(&output).contains("25 90"),
-            "{label} did not observe device B's resized geometry; output:\n{}",
+            String::from_utf8_lossy(&output).contains("15 60"),
+            "{label} did not observe the new common geometry; output:\n{}",
             String::from_utf8_lossy(&output)
         );
     }
 
-    // B is latest. Once it detaches, the PTY immediately falls back to A's
-    // last geometry; the out-of-band send deliberately cannot make A active
-    // and mask a missing detach fallback.
+    // B leaves: the common denominator is A's own geometry again, with no
+    // keystroke and no resize from anyone. The out-of-band send deliberately
+    // cannot make A active and mask a missing detach fallback.
     send_attach_control(&mut device_b, &AttachControl::Detach);
     wait_for_attach_eof(&mut device_b, "device B");
     harness.run_ok(
@@ -606,8 +628,8 @@ fn multi_client_attach_shares_output_and_uses_latest_active_geometry() {
     );
     let output = read_attached_until(&mut device_a, "AFTER-B-DETACH", "device A");
     assert!(
-        String::from_utf8_lossy(&output).contains("30 100"),
-        "device A did not regain geometry after B detached; output:\n{}",
+        String::from_utf8_lossy(&output).contains("40 120"),
+        "device A did not get its own size back when B detached; output:\n{}",
         String::from_utf8_lossy(&output)
     );
 
@@ -1175,6 +1197,12 @@ fn scroll_command(prefix: &str, count: u32) -> String {
 /// includes the CLI's raw mode, input scanner, status-row reservation, and
 /// stdout rendering -- the same path used by two laptops/phones attaching
 /// over separate SSH connections.
+///
+/// The size assertions are the common denominator (design doc section 11):
+/// the smaller terminal decides, and *nobody's typing* changes it. Under
+/// `window-size=latest` the second block below saw `29 100` here -- A's own
+/// geometry, adopted because A had just typed -- and that repaint-on-
+/// keystroke is the ping-pong this policy exists to remove.
 #[test]
 fn two_real_attach_clients_see_each_others_changes() {
     let harness = Harness::new();
@@ -1203,7 +1231,7 @@ fn two_real_attach_clients_see_each_others_changes() {
     ] {
         assert!(
             String::from_utf8_lossy(&output[start..end]).contains("19 70"),
-            "{label} did not see device B's tmux-style active size; captured:\n{}",
+            "{label} did not see the common geometry; captured:\n{}",
             escape(&output[start..end])
         );
     }
@@ -1220,8 +1248,6 @@ fn two_real_attach_clients_see_each_others_changes() {
         );
     }
 
-    let a_mark = device_a.mark();
-    let b_mark = device_b.mark();
     device_a.send(b"stty size; printf 'FROM-A-%s\\n' 'VISIBLE'\r");
     let a_end = device_a.wait_for_offset(b"FROM-A-VISIBLE", a_mark, "device A to see its output");
     let b_end = device_b.wait_for_offset(
@@ -1234,8 +1260,9 @@ fn two_real_attach_clients_see_each_others_changes() {
         (device_b.output(), b_mark, b_end, "device B"),
     ] {
         assert!(
-            String::from_utf8_lossy(&output[start..end]).contains("29 100"),
-            "{label} did not see device A's tmux-style active size; captured:\n{}",
+            String::from_utf8_lossy(&output[start..end]).contains("19 70"),
+            "{label} saw device A's input move the shared size off the common \
+             denominator; captured:\n{}",
             escape(&output[start..end])
         );
     }
@@ -1254,6 +1281,107 @@ fn two_real_attach_clients_see_each_others_changes() {
 
     device_b.detach();
     device_a.detach();
+    harness.run_ok(&["kill", &id, "--signal", "KILL"], Duration::from_secs(5));
+}
+
+/// The tmux-shaped half of the same policy, end to end: one real `a attach`
+/// on a large terminal, and a second -- smaller -- client attaching to the
+/// same session, which drags the one shared PTY down to the common
+/// denominator (design doc section 11). The workload's screen shrinks under
+/// the big terminal, so this pins what the desktop client is given:
+///
+/// - the new shared geometry, in the workload's own `stty size`;
+/// - the screen *reflowed* to it -- the content scrolled up by the excess,
+///   which only the worker can do, since its grid is the authoritative one
+///   and the client's own model is a different shape entirely;
+/// - no stale rows: the repaint's Erase in Display covers the rows and
+///   columns the workload no longer owns, in the client's model as well as on
+///   its terminal, so a later repaint cannot paint the old screen back.
+///
+/// Not asserted here, and the reason this test is worth its weight: the
+/// desktop's terminal is *larger* than the shared screen, and the region the
+/// client reserves on the host is still the whole terminal. Confinining the
+/// relayed stream to the shared screen -- so the pad below it stays blank
+/// instead of collecting the workload's post-resize output, and a long line
+/// wraps where the workload's wraps rather than at the client's own width --
+/// is the client-side half of the policy and is not done. See the
+/// `ClientScreen` viewport note in src/screen/client.rs.
+#[test]
+fn a_client_larger_than_the_shared_screen_is_repainted_at_the_new_size() {
+    let harness = Harness::new();
+    let root = TempDir::new().expect("workspace root");
+    let workspace = root.path().join("viewport-padding");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let id = start_session(&harness, &workspace, "viewport-padding");
+    let (rows, cols) = (30u16, 100u16);
+    let mut desktop = PtyClient::spawn(&harness, &id, rows, cols);
+    desktop.wait_for(b"attached to", 0, "the desktop client to attach");
+
+    // Fill the client's whole model (29 of its rows are the workload's) with
+    // identifiable lines, so a repaint that did not reflow would leave the
+    // *old* top rows on screen and fail this.
+    let mark = desktop.mark();
+    desktop.send(format!("{}\r", scroll_command("FILLER", 25)).as_bytes());
+    desktop.wait_for(b"FILLER-25", mark, "the filler lines to reach the host");
+    assert!(
+        host_terminal(&desktop.output(), rows, cols)
+            .screen()
+            .contents()
+            .contains("FILLER-1\n"),
+        "the filler never rendered"
+    );
+
+    // A phone-shaped client attaches: 10x40, and the common denominator is
+    // now its geometry. The desktop keeps its own 30x100 terminal.
+    let socket = socket_path(&harness, &id);
+    let (phone, _, _) = raw_attach(&socket, Some(0), false, Some(10), Some(40));
+    let phone_mark = desktop.mark();
+    desktop.send(b"stty size; printf 'SHRUNK-%s\\n' 'VISIBLE'\r");
+    let end = desktop.wait_for_offset(
+        b"SHRUNK-VISIBLE",
+        phone_mark,
+        "the desktop to see the resized workload output",
+    );
+    let output = desktop.output();
+    assert!(
+        String::from_utf8_lossy(&output[..end]).contains("10 40"),
+        "the shared screen did not follow the smaller client; captured:\n{}",
+        escape(&output[..end])
+    );
+
+    // Poll to convergence: the repaint, the `stty size` output and the
+    // prompt that follows it are separate writes.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let host = host_terminal(&output, rows, cols);
+        let contents = host.screen().contents();
+        if contents.contains("SHRUNK-VISIBLE") {
+            let shared: Vec<&str> = contents.lines().take(10).collect();
+            assert!(
+                shared[0].contains("FILLER-17"),
+                "the shared screen was not reflowed to the new size; its first row is {:?}",
+                shared[0]
+            );
+            assert!(
+                !contents.contains("FILLER-1\n"),
+                "a stale row of the pre-resize screen survived the repaint; screen:\n{contents}"
+            );
+            let bar = host.screen().contents_between(rows - 1, 0, rows - 1, cols);
+            assert!(
+                bar.contains("viewport-padding"),
+                "the client's own reserved row no longer holds its status bar, so the \
+                 repaint's Erase in Display went past it; bar: {bar:?}\nscreen:\n{contents}"
+            );
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("the desktop was never repainted at the shared size; screen:\n{contents}");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    drop(phone);
     harness.run_ok(&["kill", &id, "--signal", "KILL"], Duration::from_secs(5));
 }
 

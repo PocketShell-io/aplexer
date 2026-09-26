@@ -157,6 +157,15 @@ pub(in crate::worker) struct OutputReceiver {
 }
 
 impl OutputReceiver {
+    /// Take one already-queued event without waiting, for tests that assert a
+    /// client was *not* told something. Never blocks and never reports a
+    /// terminal outcome as pending: those are delivered exactly once, by
+    /// `recv`.
+    #[cfg(test)]
+    pub(in crate::worker) fn try_recv(&self) -> Option<OutputEvent> {
+        self.shared.poisoned_lock().queue.pop_front()
+    }
+
     /// Drain already-queued output before reporting the terminal outcome.
     /// Queued data always wins over a terminal event; once the queue is
     /// empty the terminal outcome (if any) is returned exactly once, and

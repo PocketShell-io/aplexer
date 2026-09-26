@@ -17,21 +17,55 @@ pub(super) struct WorkloadState {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AttachedClient {
+    /// The client's own terminal geometry (already normalized by
+    /// `validate_worker_size`), or `None` for an attach that did not report
+    /// one -- a `want_screen` snapshot is rendered at the shared size
+    /// regardless, and a geometry-less client must not be able to pull the
+    /// shared size around.
     pub(super) geometry: Option<(u16, u16)>,
-    pub(super) last_activity: u64,
 }
 
-/// The one PTY has one size, even when several clients are attached. tmux's
-/// default `window-size=latest` policy resolves that by giving the most
-/// recently active sized client control of the PTY geometry. Keep the client
-/// registry and the applied size behind the same mutex so two clients cannot
-/// race an older resize past a newer activity event.
+/// The one PTY has one size, even when several clients are attached, so the
+/// size has to be one every attached client can show at once: the smallest
+/// height and the smallest width any of them has reported.
+///
+/// tmux's default (`window-size=latest`) instead hands the PTY to whichever
+/// client was most recently active, and that is what made a session attached
+/// from two devices resize back and forth forever -- every keystroke on one
+/// device moved the shared PTY to *its* geometry and the workload repainted
+/// at the new size, so typing on either device reflowed the other one's
+/// screen. The common denominator cannot do that: input does not enter the
+/// arithmetic at all, and the size only moves when the smallest client
+/// actually resizes.
+///
+/// Keep the client registry and the applied size behind the same mutex so the
+/// size a client is shown and the size the PTY has cannot disagree.
 pub(super) struct TerminalState {
     pub(super) rows: u16,
     pub(super) cols: u16,
     pub(super) clients: HashMap<u64, AttachedClient>,
     pub(super) next_client_id: u64,
-    pub(super) activity_clock: u64,
+}
+
+impl TerminalState {
+    /// The geometry that fits every attached client at once: the smallest
+    /// row count and the smallest column count reported by any of them.
+    ///
+    /// Componentwise rather than "the single smallest client" (tmux's
+    /// `window-size=smallest`, which picks one client by area): a 10x200
+    /// phone held in portrait and a 50x5 side-by-side split are *both* fully
+    /// shown only by the componentwise minimum, and neither one's own
+    /// geometry would do. `None` while no client has reported a geometry,
+    /// which leaves the PTY at the size it has -- what tmux does for a window
+    /// nothing is attached to.
+    fn common_size(&self) -> Option<(u16, u16)> {
+        self.clients
+            .values()
+            .filter_map(|client| client.geometry)
+            .reduce(|(rows, cols), (other_rows, other_cols)| {
+                (rows.min(other_rows), cols.min(other_cols))
+            })
+    }
 }
 
 pub(super) struct WorkerRuntime {
@@ -139,8 +173,13 @@ impl WorkerRuntime {
         (&*file).flush()?;
         Ok(())
     }
-    /// Apply a size while `terminal` is held. The shared state check avoids
-    /// sending SIGWINCH for every keystroke from the already-active client.
+    /// Apply a size while `terminal` is held, and repaint every attached
+    /// client once it has actually landed. The shared-state check is what
+    /// makes the common denominator cheap: a resize by a client that is not
+    /// the smallest re-derives the size the PTY already has, returns here
+    /// without a syscall, and -- the point of the policy -- without a
+    /// SIGWINCH the workload would repaint at, or a repaint every client would
+    /// have to absorb.
     pub(super) fn apply_size(
         &self,
         terminal: &mut TerminalState,
@@ -160,7 +199,25 @@ impl WorkerRuntime {
         })?;
         terminal.rows = rows;
         terminal.cols = cols;
+        // Only now, with the model reflowed and the PTY told: the snapshot
+        // clients are about to receive is the screen at the new size. Still
+        // the terminal -> hub order this path already uses; no hub call ever
+        // takes `terminal`.
+        self.output.broadcast_resize();
         Ok(())
+    }
+
+    /// Re-derive the shared size from the client registry and apply it.
+    /// Every registry change goes through here -- attach, resize, detach --
+    /// so there is exactly one definition of "the size every client can
+    /// show", and one place it is published from. `terminal` is held.
+    fn apply_common_size(&self, terminal: &mut TerminalState) -> Result<()> {
+        match terminal.common_size() {
+            Some((rows, cols)) => self.apply_size(terminal, rows, cols),
+            // Nothing sized is attached any more: keep the PTY as it is, the
+            // way tmux keeps a detached window's last size.
+            None => Ok(()),
+        }
     }
 
     /// Resizes the live screen model *before* the PTY ioctl (design doc
@@ -169,31 +226,33 @@ impl WorkerRuntime {
     /// means a subsequent attach's snapshot is never rendered against a
     /// model that's still the wrong shape for the geometry the workload was
     /// just told about.
+    ///
+    /// The out-of-band RPC path, which has no client behind it: an explicit
+    /// override, held until the next registry change re-derives the common
+    /// denominator (there is no `window-size=manual`).
     pub(super) fn resize(&self, rows: u16, cols: u16) -> Result<()> {
         let (rows, cols) = screen::validate_worker_size(rows, cols)?;
         let mut terminal = lock(&self.terminal)?;
         self.apply_size(&mut terminal, rows, cols)
     }
 
-    pub(super) fn bump_client_activity(
-        terminal: &mut TerminalState,
-        client_id: u64,
-    ) -> Option<(u16, u16)> {
-        let geometry = terminal.clients.get(&client_id)?.geometry;
-        if geometry.is_some() {
-            terminal.activity_clock = terminal.activity_clock.saturating_add(1);
-            if let Some(client) = terminal.clients.get_mut(&client_id) {
-                client.last_activity = terminal.activity_clock;
-            }
-        }
-        geometry
+    /// The geometry every attached client can show at once, or `None` while
+    /// none of them has reported one. Read-only, and deliberately not a
+    /// decision point: sizing goes through `apply_common_size`, so this is
+    /// the same arithmetic a caller could do, and there is no second way to
+    /// ask for a size.
+    #[cfg(test)]
+    pub(super) fn shared_size(&self) -> Option<(u16, u16)> {
+        lock(&self.terminal)
+            .ok()
+            .and_then(|terminal| terminal.common_size())
     }
 
     /// Registers a subscriber and renders its initial payload while holding
     /// the client-size mutex. This makes geometry selection + snapshot one
-    /// indivisible operation with respect to another client's attach/input/
-    /// resize, instead of allowing a concurrent client to change the model's
-    /// dimensions between those two steps.
+    /// indivisible operation with respect to another client's attach, resize
+    /// or detach, instead of allowing a concurrent client to change the
+    /// model's dimensions between those two steps.
     pub(super) fn attach_client(
         &self,
         payload: AttachPayload,
@@ -201,112 +260,75 @@ impl WorkerRuntime {
         want_record: bool,
     ) -> Result<(u64, u64, Vec<u8>, OutputReceiver)> {
         let mut terminal = lock(&self.terminal)?;
-        let previous_size = (terminal.rows, terminal.cols);
         let client_id = terminal.next_client_id;
         terminal.next_client_id += 1;
-        terminal.clients.insert(
-            client_id,
-            AttachedClient {
-                geometry,
-                last_activity: 0,
-            },
-        );
-        if let Some((rows, cols)) = Self::bump_client_activity(&mut terminal, client_id) {
-            // Attaching a real terminal makes it the latest active client,
-            // matching tmux. Keep attach best-effort if the PTY is exiting.
-            let _ = self.apply_size(&mut terminal, rows, cols);
-        }
+        terminal
+            .clients
+            .insert(client_id, AttachedClient { geometry });
+        // This client's geometry is now part of the common denominator, so a
+        // phone attaching can shrink the shared screen under a desktop that
+        // is already watching it. That is the point of the policy, and the
+        // subscribers are told about it by `apply_size`. Best-effort: a
+        // closing PTY must not refuse the attach.
+        let _ = self.apply_common_size(&mut terminal);
         match self.output.subscribe(payload, want_record) {
             Ok((subscription, initial, rx)) => Ok((client_id, subscription, initial, rx)),
             Err(error) => {
                 terminal.clients.remove(&client_id);
-                // The attach was never established, so it must not retain
-                // ownership of the shared PTY geometry. No other client can
-                // race us while `terminal` is held.
-                let _ = self.apply_size(&mut terminal, previous_size.0, previous_size.1);
+                // The attach was never established, so its geometry must not
+                // keep holding the shared size down. No other client can race
+                // us while `terminal` is held.
+                let _ = self.apply_common_size(&mut terminal);
                 Err(error)
             }
         }
     }
 
-    /// Input activity transfers size ownership before the bytes reach the
-    /// workload. Both operations happen under `terminal`, so another client
-    /// cannot slip its resize between this client's activation and input.
-    pub(super) fn send_from_client(&self, client_id: u64, data: &[u8]) -> Result<()> {
-        let mut terminal = lock(&self.terminal)?;
-        if let Some((rows, cols)) = Self::bump_client_activity(&mut terminal, client_id) {
-            // Preserve input delivery if a closing/broken PTY rejects the
-            // best-effort geometry update; `send` below remains the source
-            // of truth for whether the workload can still accept input.
-            let _ = self.apply_size(&mut terminal, rows, cols);
-        }
-        // PTY writes can block behind a stopped or backpressured workload.
-        // Geometry ownership is settled above; never hold the global client
-        // registry mutex while waiting for the workload to consume input.
-        drop(terminal);
+    /// Input reaches the PTY and nothing else. It deliberately does *not*
+    /// re-derive the shared size: the common denominator does not depend on
+    /// who is typing, and coupling the two is exactly what made a session
+    /// watched from two devices resize back and forth on every keystroke.
+    /// PTY writes can block behind a stopped or backpressured workload, so
+    /// this holds no lock at all on the way in.
+    pub(super) fn send_from_client(&self, _client_id: u64, data: &[u8]) -> Result<()> {
         self.send(data)
     }
 
     pub(super) fn resize_client(&self, client_id: u64, rows: u16, cols: u16) -> Result<()> {
         let (rows, cols) = screen::validate_worker_size(rows, cols)?;
         let mut terminal = lock(&self.terminal)?;
-        let previous_activity_clock = terminal.activity_clock;
         let client = terminal
             .clients
             .get_mut(&client_id)
             .ok_or_else(|| anyhow!("attached client is gone"))?;
-        let previous_client = *client;
+        let previous_geometry = client.geometry;
         client.geometry = Some((rows, cols));
-        let (rows, cols) = Self::bump_client_activity(&mut terminal, client_id)
-            .ok_or_else(|| anyhow!("attached client has no geometry"))?;
-        if let Err(error) = self.apply_size(&mut terminal, rows, cols) {
-            terminal.activity_clock = previous_activity_clock;
+        if let Err(error) = self.apply_common_size(&mut terminal) {
+            // A rejected size must not stick: it would keep clamping every
+            // other client to a geometry this client never had.
             if let Some(client) = terminal.clients.get_mut(&client_id) {
-                *client = previous_client;
+                client.geometry = previous_geometry;
             }
             return Err(error);
         }
         Ok(())
     }
 
-    pub(super) fn signal_from_client(&self, client_id: u64, signal: i32) -> Result<()> {
-        let mut terminal = lock(&self.terminal)?;
-        if let Some((rows, cols)) = Self::bump_client_activity(&mut terminal, client_id) {
-            let _ = self.apply_size(&mut terminal, rows, cols);
-        }
+    pub(super) fn signal_from_client(&self, _client_id: u64, signal: i32) -> Result<()> {
         self.signal(signal)
     }
 
-    /// If the latest client leaves, fall back to the most recently active
-    /// remaining sized client. If no sized client remains, keep the current
-    /// PTY size, as tmux does for a detached window.
+    /// The departing client's geometry leaves the common denominator, so the
+    /// shared size grows to whatever is left -- a phone leaving hands the
+    /// session back to the desktop's real size, in one step, with no
+    /// keystroke needed. With no sized client left the PTY keeps the size it
+    /// has, as tmux does for a window nothing is attached to.
     pub(super) fn detach_client(&self, client_id: u64) {
         let Ok(mut terminal) = self.terminal.lock() else {
             return;
         };
-        let latest_before = terminal
-            .clients
-            .iter()
-            .filter(|(_, client)| client.geometry.is_some())
-            .max_by_key(|(_, client)| client.last_activity)
-            .map(|(&id, _)| id);
         terminal.clients.remove(&client_id);
-        if latest_before != Some(client_id) {
-            return;
-        }
-        let fallback = terminal
-            .clients
-            .values()
-            .filter_map(|client| {
-                client
-                    .geometry
-                    .map(|geometry| (client.last_activity, geometry))
-            })
-            .max_by_key(|(activity, _)| *activity)
-            .map(|(_, geometry)| geometry);
-        if let Some((rows, cols)) = fallback {
-            let _ = self.apply_size(&mut terminal, rows, cols);
-        }
+        let _ = self.apply_common_size(&mut terminal);
     }
     pub(super) fn signal(&self, signal: i32) -> Result<()> {
         let workload = lock(&self.workload)?;
@@ -673,6 +695,262 @@ mod tests {
         assert!(screen.contains("PS2884_OUTPUT_AFTER_GROWTH"));
     }
 
+    fn pty_size(fd: std::os::fd::RawFd) -> (u16, u16) {
+        let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
+        assert_eq!(
+            unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, size.as_mut_ptr()) },
+            0,
+            "read worker PTY winsize"
+        );
+        let size = unsafe { size.assume_init() };
+        (size.ws_row, size.ws_col)
+    }
+
+    /// A runtime whose PTY is a real pty pair, so the size the workload would
+    /// see is observable rather than inferred.
+    fn test_runtime_with_pty(dir: &tempfile::TempDir) -> (WorkerRuntime, Arc<File>) {
+        let (master, _slave) = crate::process::open_pty(24, 80).unwrap();
+        let observed = master.try_clone().unwrap();
+        let runtime = test_runtime(dir, dir.path().join("session.json"));
+        *runtime.pty_write.lock().unwrap() = Some(Arc::new(master));
+        (runtime, Arc::new(observed))
+    }
+
+    /// The whole point of the policy, as a unit test: with two clients
+    /// attached, the shared PTY is the smallest of their geometries, *input
+    /// from either one cannot move it*, a resize by the client that is not
+    /// the smallest cannot move it either, and the smallest one leaving hands
+    /// the size straight back to what is left.
+    ///
+    /// The old `window-size=latest` behavior fails the second and third
+    /// assertions: every keystroke flipped the PTY to the typing client's own
+    /// geometry, which is what made a session watched from a laptop and a
+    /// phone resize back and forth forever.
+    #[test]
+    pub(super) fn the_shared_pty_is_the_smallest_attached_geometry_and_input_cannot_move_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, pty) = test_runtime_with_pty(&dir);
+        let (desktop, _, _, _) = runtime
+            .attach_client(AttachPayload::Tail(None), Some((30, 100)), false)
+            .unwrap();
+        let (phone, _, _, _) = runtime
+            .attach_client(AttachPayload::Tail(None), Some((20, 70)), false)
+            .unwrap();
+        assert_eq!(
+            pty_size(pty.as_raw_fd()),
+            (20, 70),
+            "the phone attached last but the shared size is the common denominator, not the latest"
+        );
+        assert_eq!(runtime.shared_size(), Some((20, 70)));
+
+        // Input, in both directions, must leave the geometry alone.
+        runtime.send_from_client(desktop, b"x").unwrap();
+        runtime.send_from_client(phone, b"y").unwrap();
+        assert_eq!(
+            pty_size(pty.as_raw_fd()),
+            (20, 70),
+            "typing on either client resized the shared PTY"
+        );
+
+        // Growing the client that is not the smallest changes nothing: it
+        // still fits, so the shared screen is still the phone's.
+        runtime.resize_client(desktop, 40, 120).unwrap();
+        assert_eq!(
+            pty_size(pty.as_raw_fd()),
+            (20, 70),
+            "a resize by a non-smallest client moved the shared PTY"
+        );
+        // Shrinking it below the phone's size does move it, in one step.
+        runtime.resize_client(desktop, 12, 50).unwrap();
+        assert_eq!(pty_size(pty.as_raw_fd()), (12, 50));
+        // And the componentwise minimum is not "the smallest client": the
+        // desktop is smaller in rows, the phone in columns, so the shared
+        // screen is the pair of minima and neither client's own shape.
+        runtime.resize_client(desktop, 10, 200).unwrap();
+        runtime.resize_client(phone, 50, 40).unwrap();
+        assert_eq!(
+            pty_size(pty.as_raw_fd()),
+            (10, 40),
+            "the common denominator must be the componentwise minimum, not one client's geometry"
+        );
+
+        // The client that was holding the size down leaves: the remainder's
+        // own geometry, with no keystroke and no resize from anyone.
+        runtime.detach_client(desktop);
+        assert_eq!(
+            pty_size(pty.as_raw_fd()),
+            (50, 40),
+            "the smallest client leaving did not hand the size to what is left"
+        );
+        runtime.detach_client(phone);
+        assert_eq!(
+            pty_size(pty.as_raw_fd()),
+            (50, 40),
+            "the last client leaving must leave the PTY as it is, as tmux does"
+        );
+    }
+
+    /// A geometry the worker refuses must not enter the registry: kept, it
+    /// would clamp every other client to a size this client never had, for as
+    /// long as it stayed attached.
+    #[test]
+    pub(super) fn a_rejected_geometry_never_reaches_the_common_denominator() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, pty) = test_runtime_with_pty(&dir);
+        runtime
+            .attach_client(AttachPayload::Tail(None), Some((30, 100)), false)
+            .unwrap();
+        let (other, _, _, _) = runtime
+            .attach_client(AttachPayload::Tail(None), Some((20, 70)), false)
+            .unwrap();
+
+        let error = runtime
+            .resize_client(other, u16::MAX, u16::MAX)
+            .expect_err("an oversized geometry must be refused");
+        assert!(format!("{error:#}").contains("cells"), "{error:#}");
+        assert_eq!(
+            pty_size(pty.as_raw_fd()),
+            (20, 70),
+            "a refused geometry still moved the shared PTY"
+        );
+
+        // The refused client's remembered geometry is the one it last had, so
+        // it keeps clamping only for as long as it says so.
+        assert_eq!(
+            runtime
+                .terminal
+                .lock()
+                .unwrap()
+                .clients
+                .get(&other)
+                .expect("the refused client is still attached")
+                .geometry,
+            Some((20, 70)),
+            "the refused geometry replaced the client's last valid one"
+        );
+        runtime.detach_client(other);
+        assert_eq!(pty_size(pty.as_raw_fd()), (30, 100));
+        assert_eq!(runtime.shared_size(), Some((30, 100)));
+    }
+
+    /// A client that never reported a geometry (a raw-tail `--history-bytes`
+    /// attach) is a viewer, not a constraint: it must be able to watch a
+    /// session at whatever size the sized clients agree on.
+    #[test]
+    pub(super) fn a_geometry_less_client_does_not_constrain_the_shared_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, pty) = test_runtime_with_pty(&dir);
+        let (sized, _, _, _) = runtime
+            .attach_client(AttachPayload::Tail(None), Some((24, 80)), false)
+            .unwrap();
+        let (viewer, _, _, _) = runtime
+            .attach_client(AttachPayload::Tail(None), None, false)
+            .unwrap();
+        assert_eq!(pty_size(pty.as_raw_fd()), (24, 80));
+        assert_eq!(runtime.shared_size(), Some((24, 80)));
+        assert_eq!(
+            runtime
+                .terminal
+                .lock()
+                .unwrap()
+                .clients
+                .get(&viewer)
+                .expect("the viewer is still attached")
+                .geometry,
+            None
+        );
+        assert!(runtime
+            .terminal
+            .lock()
+            .unwrap()
+            .clients
+            .contains_key(&sized));
+    }
+
+    /// Every move of the shared size repaints the clients that render the
+    /// screen, and nothing else does: a client whose terminal is not the
+    /// binding constraint must not be made to absorb a repaint for a resize
+    /// that did not happen, and a raw-tail subscriber's byte-exact stream
+    /// must never gain a repaint in the middle of it.
+    ///
+    /// The repaint is the *snapshot*, not a size announcement, because the
+    /// worker's grid is the authoritative one: it reflowed the content on the
+    /// shrink and it is the only party that knows what the result looks like.
+    /// A client whose terminal is larger than the shared screen also gets its
+    /// stale rows and columns cleared, since the snapshot's Erase in Display
+    /// covers them in the client's own model too.
+    #[test]
+    pub(super) fn only_real_size_changes_repaint_screen_subscribers() {
+        let dir = tempfile::tempdir().unwrap();
+        // A real PTY: `apply_size` publishes only after the ioctl lands, and
+        // the fixture's `/dev/null` handle has no winsize to set.
+        let (runtime, _pty) = test_runtime_with_pty(&dir);
+        // The screen starts 24x80, so put a marker on its last row: the
+        // repaint that follows has to be a rendering of the *current* grid,
+        // not a replay of what the workload wrote.
+        runtime.output.append(b"\x1b[24;1HLAST-ROW-BEFORE").unwrap();
+        let (_, _, screen_rx) = runtime
+            .output
+            .subscribe(AttachPayload::Screen, false)
+            .unwrap();
+        let (_, _, tail_rx) = runtime
+            .output
+            .subscribe(AttachPayload::Tail(None), false)
+            .unwrap();
+
+        let expect_repaint = |rx: &OutputReceiver, rows: u16, cols: u16, what: &str| {
+            let OutputEvent::Data(data) = rx.recv().unwrap() else {
+                panic!("{what}: expected the repaint snapshot");
+            };
+            let mut screen = crate::screen::ScreenTracker::try_new(rows, cols).unwrap();
+            screen.process(&data);
+            assert!(
+                screen.contents().contains("LAST-ROW-BEFORE"),
+                "{what}: the repaint is not the screen at the new size"
+            );
+            // ...and the layout nudge, because the snapshot's own ED2 ignores
+            // scroll margins and so can wipe the client's reserved row.
+            match rx.recv().unwrap() {
+                OutputEvent::Layout(screen::LayoutChange {
+                    erase_reset: true, ..
+                }) => {}
+                other => panic!("{what}: expected the layout nudge, got {other:?}"),
+            }
+        };
+
+        // The subscriber is already attached, so it sees a repaint per real
+        // move: the desktop's own attach, then the phone dragging the screen
+        // down under it.
+        let (desktop, _, _, _) = runtime
+            .attach_client(AttachPayload::Tail(None), Some((30, 100)), false)
+            .unwrap();
+        expect_repaint(&screen_rx, 30, 100, "the desktop's attach");
+        let (phone, _, _, _) = runtime
+            .attach_client(AttachPayload::Tail(None), Some((20, 70)), false)
+            .unwrap();
+        expect_repaint(&screen_rx, 20, 70, "the phone's attach");
+        assert!(
+            tail_rx.try_recv().is_none(),
+            "a raw-tail subscriber was handed a repaint inside its byte-exact stream"
+        );
+
+        // Growing the desktop: still above the phone, so nothing moves and
+        // nothing is repainted.
+        runtime.resize_client(desktop, 40, 120).unwrap();
+        assert_eq!(runtime.shared_size(), Some((20, 70)));
+        assert!(
+            screen_rx.try_recv().is_none(),
+            "a resize that did not move the shared size repainted anyway"
+        );
+        assert!(tail_rx.try_recv().is_none());
+
+        // The phone leaving does move it, and every screen subscriber is
+        // repainted at the size that is left.
+        runtime.detach_client(phone);
+        expect_repaint(&screen_rx, 40, 120, "the phone's detach");
+        assert!(tail_rx.try_recv().is_none());
+    }
+
     /// A `WorkerRuntime` over a throwaway hub, with its durable record at
     /// `record_path` and every other path under `dir`.
     pub(super) fn test_runtime(
@@ -703,7 +981,6 @@ mod tests {
                 cols: 80,
                 clients: HashMap::new(),
                 next_client_id: 1,
-                activity_clock: 0,
             }),
             cgroup: Mutex::new(None),
             kill_gate: Mutex::new(()),

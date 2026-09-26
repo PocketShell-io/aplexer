@@ -62,6 +62,38 @@ pub(super) fn without_scroll_regions(data: &[u8]) -> std::borrow::Cow<'_, [u8]> 
 /// every row the workload can reach. Unlike the worker's model it retains
 /// scrollback, which is what `Ctrl-b [` pages through
 /// (docs/terminal-state-design.md section 7.2).
+///
+/// **The one assumption this size rests on is now conditional, and closing
+/// the gap is unfinished work.** One PTY serves every attached client at the
+/// common denominator of their geometries (docs/terminal-state-design.md
+/// section 11), so with a *smaller* device also attached, the workload's
+/// screen is smaller than this model and than the user's terminal. The worker
+/// handles its half of that: it reflows its grid on a shrink and repaints
+/// every attached client (`OutputHub::broadcast_resize`), so what the client
+/// receives is the authoritative screen at the new size rather than stale
+/// rows. What is missing is the client half, and it needs one protocol
+/// addition first -- the client cannot see the shared geometry in a snapshot:
+///
+/// ```text
+/// . a ServerEvent carrying the shared size, on `want_screen` subscribers
+/// .   (there is none yet), and the attach response's size, so the client
+/// .   knows the viewport before its first frame;
+/// . this model is re-fit to it, so a line wraps where the workload's wraps
+/// .   instead of at this terminal's width;
+/// . the region the client reserves on the host (`terminal_layout_sequence`,
+/// .   `status_bar_sequence`) becomes the shared screen rather than the whole
+/// .   terminal, so the workload's scrolling cannot walk into the pad below;
+/// . the pad is kept blank, and `relay`'s reserved-row repair keeps comparing
+/// .   the model's last row against the *shared* screen's last row.
+/// ```
+///
+/// Until then, a terminal larger than the shared screen shows the workload's
+/// screen at its top-left -- reflowed and correct -- with the relay continuing
+/// below it instead of being confined to it. That is the same artifact the
+/// previous `window-size=latest` policy showed whenever a passive client was
+/// the larger of the two; the common denominator makes it the standing case
+/// for a session watched from a desktop and a phone rather than a transient
+/// one, which is why it is written down here and not left to be rediscovered.
 pub struct ClientScreen {
     screen: ScreenTracker,
     /// When set, bytes written to the host have alt-screen DECSET/DECRST
