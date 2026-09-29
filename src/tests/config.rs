@@ -20,6 +20,40 @@ fn load_config_text(text: &str) -> Result<Config> {
     Config::load(&paths)
 }
 
+/// A regression guard for a real launch bug: aplexer is authoritative for
+/// pocketshell's engine argv, and its opencode builtin shipped with an
+/// empty `skip_permissions_argv`. pocketshell therefore launched a bare
+/// `opencode`, and every path outside the project raised a
+/// `external_directory` prompt -- opencode's agent default is
+/// `"*": "ask"` for that permission.
+///
+/// `--auto` is opencode's documented "auto-approve permissions that are
+/// not explicitly denied" flag. `--yolo` and
+/// `--dangerously-skip-permissions` are hidden aliases for the same
+/// switch (packages/opencode/src/cli/cmd/tui.ts) and could be dropped by an
+/// opencode release without notice, so the documented one is pinned here.
+#[test]
+fn every_prompting_builtin_engine_declares_a_skip_permissions_flag() {
+    let config = load_config_text("").unwrap();
+    let expected = [
+        ("claude", "--dangerously-skip-permissions"),
+        ("codex", "--dangerously-bypass-approvals-and-sandbox"),
+        ("grok", "--always-approve"),
+        ("opencode", "--auto"),
+    ];
+    for (engine, flag) in expected {
+        let entry = config
+            .engines
+            .get(engine)
+            .unwrap_or_else(|| panic!("{engine} must ship as a built-in engine"));
+        assert_eq!(
+            entry.skip_permissions_argv,
+            vec![flag.to_string()],
+            "{engine} must pass {flag} when launched with skip-permissions",
+        );
+    }
+}
+
 #[test]
 fn zcodex_is_not_a_builtin_but_still_a_codex_family_variant() {
     // The codex-rs fork is one box's setup, not a shared default: no

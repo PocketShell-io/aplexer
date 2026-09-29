@@ -44,9 +44,20 @@ impl Config {
         }
         let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         // Skip-permissions argv is ported from pocketshell engines.py's
-        // LaunchSpecs. opencode has none there (permissions are config-driven
-        // via opencode.json) and gemini is an aplexer-only extra with no
-        // pocketshell source, so both stay empty.
+        // LaunchSpecs. `--auto` is opencode's documented flag for
+        // "auto-approve permissions that are not explicitly denied";
+        // `--yolo` is an undocumented (`hidden: true`) alias for the same
+        // thing, so the documented one is what we pass.
+        //
+        // opencode's `external_directory` permission defaults to `"*":
+        // "ask"` (packages/opencode/src/agent/agent.ts), so a launch
+        // without this flag prompts for every path outside the project --
+        // which is why opencode is listed here rather than left empty.
+        // opencode's `permission` block in opencode.json is the primary
+        // mechanism; this is the defense-in-depth second layer, and the two
+        // must stay in sync (see `every_engine_with_a_skip_flag_declares_one`).
+        // gemini is an aplexer-only extra with no pocketshell source, so it
+        // stays empty.
         let engines: [(&str, &[&str], &[&str]); 6] = [
             ("shell", &[shell.as_str(), "-l"], &[]),
             (
@@ -57,7 +68,7 @@ impl Config {
             ("claude", &["claude"], &["--dangerously-skip-permissions"]),
             ("gemini", &["gemini"], &[]),
             ("grok", &["grok"], &["--always-approve"]),
-            ("opencode", &["opencode"], &[]),
+            ("opencode", &["opencode"], &["--auto"]),
         ];
         engines
             .into_iter()
