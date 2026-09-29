@@ -303,7 +303,7 @@ jobs:
           mkdir -p release-assets
           for dir in artifacts/aplexer-bins-*; do
             platform="${dir#artifacts/aplexer-bins-}"
-            cp "$dir/a" "release-assets/a-${platform}"
+            cp "$dir/aplexer" "release-assets/a-${platform}"
             cp "$dir/aplexer" "release-assets/aplexer-${platform}"
           done
           python - <<'PY'
