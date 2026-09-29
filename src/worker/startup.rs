@@ -8,6 +8,7 @@
 //! step failed.
 
 use super::*;
+use crate::persist::replace_existing_json;
 
 pub(super) fn startup_checkpoint(point: &str) -> Result<()> {
     if TERMINATION_REQUESTED.load(Ordering::SeqCst) {
@@ -293,6 +294,9 @@ pub(super) fn bring_up(
         record.updated_at_ms = now_ms();
         startup.failure_record = record.clone();
         atomic_write_json(&record_path, &record)?;
+        // Probe replacement on this session's actual filesystem before any
+        // socket or workload exists. Running workers require this operation.
+        replace_existing_json(&record_path, &record)?;
         startup_checkpoint("after_worker_record")?;
 
         let socket_path = paths.socket(id);

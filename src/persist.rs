@@ -98,6 +98,10 @@ pub(crate) fn replace_existing_json<T: Serialize>(path: &Path, value: &T) -> Res
 }
 
 fn exchange_existing(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(feature = "startup-test-hooks")]
+    if std::env::var_os("APLEXER_TEST_FAIL_RECORD_EXCHANGE").is_some() {
+        return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+    }
     let from = CString::new(from.as_os_str().as_bytes())?;
     let to = CString::new(to.as_os_str().as_bytes())?;
     let result = unsafe {
