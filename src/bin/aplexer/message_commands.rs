@@ -3,11 +3,19 @@ use super::*;
 // -- Inter-agent messaging (docs/inter-agent-messaging-design.md) --
 
 /// Workspace for `send`/`reply`/`inbox`/`ack`/`show`, which take no
-/// `--workspace` flag (design doc section 7): `$APLEXER_WORKSPACE`, else
-/// cwd. `log`/`gc` accept an explicit override, passed as `explicit`.
+/// `--workspace` flag: the current session record (which follows `cd`),
+/// then `$APLEXER_WORKSPACE` for older sessions, then cwd. `log`/`gc` accept
+/// an explicit override, passed as `explicit`.
 pub(crate) fn resolve_message_workspace(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         return canonical_workspace(p);
+    }
+    if let Some(id) = discover_session_id() {
+        if let Ok(paths) = Paths::discover() {
+            if let Ok(record) = read_record(&paths.record(id)) {
+                return Ok(record.workspace);
+            }
+        }
     }
     if let Ok(v) = env::var("APLEXER_WORKSPACE") {
         if !v.is_empty() {

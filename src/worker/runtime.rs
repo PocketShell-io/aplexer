@@ -484,6 +484,51 @@ impl WorkerRuntime {
             r.tag = tag;
         })
     }
+
+    /// Keep the session's workspace aligned with its running shell (or
+    /// directly launched agent). A shell's own /proc cwd changes on `cd`
+    /// even while an agent it launched occupies the foreground PTY.
+    pub(super) fn sync_workspace_from_cwd(&self) -> Result<()> {
+        let record = self.record()?;
+        let Some(pid) = record.workload_pid else {
+            return Ok(());
+        };
+        if !lock(&self.workload)?.running {
+            return Ok(());
+        }
+        let Ok(cwd) = std::fs::read_link(format!("/proc/{pid}/cwd")) else {
+            return Ok(());
+        };
+        let Ok(workspace) = canonical_workspace(&cwd) else {
+            return Ok(());
+        };
+        if workspace == record.workspace {
+            return Ok(());
+        }
+
+        let _registry = registry_lock_within(&self.paths, RENAME_REGISTRY_WAIT)?;
+        // Another rename may have landed since the /proc read. Preserve its
+        // latest tag while moving, and give this session a free destination
+        // tag rather than displacing a live session there.
+        let current = self.record()?;
+        if current.workspace == workspace {
+            return Ok(());
+        }
+        let records = list_records(&self.paths)?;
+        let tag = std::iter::once(current.tag.clone())
+            .chain((2..).map(|n| format!("{}-{n}", current.tag)))
+            .find(|tag| {
+                !records.iter().any(|other| {
+                    other.id != self.id && other.workspace == workspace && other.tag == *tag
+                })
+            })
+            .expect("a free workspace tag exists");
+        self.update_record(|r| {
+            r.workspace = workspace;
+            r.tag = tag;
+        })?;
+        Ok(())
+    }
     /// Retire every dead holder of the pair this rename wants, refusing --
     /// with the holder named and a way out -- if any of them still owns it.
     /// Registry contents cannot change under the caller's lock: a start
@@ -604,6 +649,49 @@ pub(super) fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
 mod tests {
     use super::*;
     use crate::worker::hub::tests::test_hub;
+
+    #[test]
+    fn shell_cd_moves_workspace_even_with_a_foreground_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("project");
+        fs::create_dir(&destination).unwrap();
+        let mut shell = std::process::Command::new("bash")
+            .args([
+                "-c",
+                "cd \"$1\"; sleep 30 & child=$!; trap 'kill $child 2>/dev/null' EXIT; wait $child",
+                "bash",
+            ])
+            .arg(&destination)
+            .spawn()
+            .unwrap();
+        let record_path = dir.path().join("session.json");
+        let runtime = test_runtime(&dir, record_path.clone());
+        fs::create_dir_all(runtime.paths.state_root.join("sessions")).unwrap();
+        let mut occupied = SessionRecord::fixture(&destination, "before");
+        occupied.socket_path = runtime.paths.socket(occupied.id);
+        occupied.history_path = runtime.paths.history(occupied.id);
+        let occupied_path = runtime.paths.record(occupied.id);
+        fs::create_dir_all(occupied_path.parent().unwrap()).unwrap();
+        atomic_write_json(&occupied_path, &occupied).unwrap();
+        runtime.record.lock().unwrap().workload_pid = Some(shell.id());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while std::fs::read_link(format!("/proc/{}/cwd", shell.id()))
+            .ok()
+            .as_deref()
+            != Some(destination.as_path())
+        {
+            assert!(Instant::now() < deadline, "shell did not change directory");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        runtime.sync_workspace_from_cwd().unwrap();
+        assert_eq!(runtime.record().unwrap().workspace, destination);
+        assert_eq!(runtime.record().unwrap().tag, "before-2");
+        assert_eq!(read_record(&record_path).unwrap().workspace, destination);
+        assert_eq!(read_record(&occupied_path).unwrap().tag, "before");
+        assert_eq!(unsafe { libc::kill(shell.id() as i32, libc::SIGTERM) }, 0);
+        shell.wait().unwrap();
+    }
 
     #[test]
     pub(super) fn failed_pty_resize_restores_the_previous_screen_geometry() {

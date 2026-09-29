@@ -384,6 +384,9 @@ pub(super) fn run_periodic_flush(runtime: Arc<WorkerRuntime>) {
 /// checkpoint rule in `persist_activity_checkpoint` keeps the retry honest
 /// even with no new PTY output); nothing here may unwind.
 pub(super) fn flush_tick(runtime: &WorkerRuntime, persisted_activity_ms: &mut u64) {
+    if let Err(error) = runtime.sync_workspace_from_cwd() {
+        log_best_effort(&format!("aplexer worker: sync workspace: {error:#}"));
+    }
     if let Err(error) = runtime.output.flush() {
         log_best_effort(&format!("aplexer worker: flush history: {error:#}"));
     }

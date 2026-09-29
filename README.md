@@ -167,7 +167,7 @@ actually use:
 | `Ctrl-b` `R` | rename this session's tag |
 | `Ctrl-b` `?` | show the full key reference on screen |
 
-The mouse wheel scrolls back too (unless the running program wants the mouse),
+The mouse wheel scrolls back too, even when the running program uses the mouse,
 and holding `Ctrl-b` briefly puts the whole cheat sheet on screen. Pressing
 `Ctrl-b` twice sends one `Ctrl-b` straight through to the session and raises
 nothing - which is how Claude Code's `Ctrl-b Ctrl-b` run-in-background chord
@@ -378,6 +378,11 @@ A pinned agent is reported on every surface until cleared, even when
 nothing is running; the token must name a real agent (an agent name or a
 configured engine/profile variation), and `a rename`-style selectors work
 throughout.
+
+The session's workspace follows the running shell's directory, including
+when an agent is launched after `cd`. The change appears in `a list` and the
+attach status bar within a second. If the destination already has the same
+tag, aplexer adds a numeric suffix (for example, `main-2`).
 
 
 For an agent started inside a plain shell session, pass its native JSONL file
