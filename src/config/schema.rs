@@ -25,8 +25,9 @@ pub struct EngineConfig {
     /// Argv appended after `command` when skip-permissions is requested
     /// (ported from PocketShell's `LaunchSpec.skip_permissions_argv` /
     /// `engines.py::builtin_manifests`). Empty means the engine has no such
-    /// flag (e.g. `opencode`, `shell`) -- permissions are config-driven or
-    /// not applicable.
+    /// flag (e.g. `gemini`, `shell`) -- permissions are config-driven or not
+    /// applicable. Every agent engine that can prompt declares one; see
+    /// `every_prompting_builtin_engine_declares_a_skip_permissions_flag`.
     #[serde(default)]
     pub skip_permissions_argv: Vec<String>,
 }

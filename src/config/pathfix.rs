@@ -295,10 +295,12 @@ pub struct AppliedPin {
 /// Persist a fix candidate for every pin-worthy row into the user's
 /// `config.toml`, preserving everything else in the file (toml_edit keeps
 /// comments and layout; only the touched tables change). An engine the user
-/// never configured gets its full merged command written with the resolved
-/// absolute argv[0] — pinning builtin arguments as of today's aplexer, the
-/// same trade the manual config fix made. Rows without a resolvable
-/// candidate are reported in the returned failures and change nothing.
+/// never configured gets its full merged entry written — command with the
+/// resolved absolute argv[0] plus the builtin `skip_permissions_argv` and
+/// `env`, because a user entry replaces the builtin wholesale — pinning
+/// builtin arguments as of today's aplexer, the same trade the manual config
+/// fix made. Rows without a resolvable candidate are reported in the
+/// returned failures and change nothing.
 pub fn apply_pins(
     paths: &Paths,
     config: &Config,
@@ -341,6 +343,30 @@ pub fn apply_pins(
             let mut command = engine.command.clone();
             command[0] = resolved.to_string_lossy().into_owned();
             entry.insert("command", toml_edit::value(strings_to_toml_array(&command)));
+            // A user `[engines.<id>]` entry REPLACES the whole builtin
+            // (`Config::merge_user_file` extends the map; it does not merge
+            // fields), so writing only `command` would drop the builtin's
+            // skip-permissions flag and silently turn a yolo launch back
+            // into a prompting one on the next load. Carry the rest of the
+            // merged engine across. `env_unset` needs no pin: every
+            // non-shell engine force-unions it with the provider strip at
+            // resolve time (`EngineConfig::resolved_env_unset`).
+            if !engine.skip_permissions_argv.is_empty() {
+                entry.insert(
+                    "skip_permissions_argv",
+                    toml_edit::value(strings_to_toml_array(&engine.skip_permissions_argv)),
+                );
+            }
+            if !engine.env.is_empty() {
+                let mut table_inline = toml_edit::InlineTable::new();
+                for (name, value) in &engine.env {
+                    table_inline.insert(name, toml_edit::Value::from(value.as_str()));
+                }
+                entry.insert(
+                    "env",
+                    toml_edit::Item::Value(toml_edit::Value::InlineTable(table_inline)),
+                );
+            }
         } else if config.profiles.get(&row.name).unwrap().command.is_some() {
             let mut command = config
                 .profiles
@@ -586,6 +612,46 @@ mod tests {
             reparsed.engines["fakecodex"].command,
             vec![expected.to_string_lossy().into_owned(), "serve".into()]
         );
+    }
+
+    /// A user `[engines.<id>]` entry replaces the whole builtin, so a pin
+    /// that wrote only `command` silently dropped the builtin's
+    /// skip-permissions flag. That is how `a doctor --fix` turned a yolo
+    /// opencode launch back into a prompting one: it pinned the nvm-resolved
+    /// argv[0] into `~/.config/aplexer/config.toml` as `[engines.opencode]
+    /// command = [...]` with no `skip_permissions_argv`, and the empty entry
+    /// won on the next load.
+    #[test]
+    fn apply_pins_carries_skip_permissions_argv_and_env_across_the_pin() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let (_dir, dir_path) = bin_dir_with("fakepinner");
+        let paths = test_paths(&temp, "config.toml");
+        let config = Config {
+            engines: BTreeMap::from([(
+                "fakepinner".to_string(),
+                super::super::EngineConfig {
+                    command: vec!["fakepinner".into()],
+                    env: BTreeMap::from([("PINNED".to_string(), "1".to_string())]),
+                    env_unset: Vec::new(),
+                    skip_permissions_argv: vec!["--auto".into()],
+                },
+            )]),
+            ..Config::default()
+        };
+        let rows = resolution_rows(&config, &dir_path, "/usr/bin");
+        let (applied, failures) = apply_pins(&paths, &config, &rows).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(applied.len(), 1);
+
+        // The pinned entry must stand on its own: a fresh load has no builtin
+        // to fall back on, so anything not written here is lost.
+        let written = fs::read_to_string(&paths.config_file).unwrap();
+        let reparsed: Config = toml::from_str(&written).unwrap();
+        assert_eq!(
+            reparsed.engines["fakepinner"].skip_permissions_argv,
+            vec!["--auto".to_string()]
+        );
+        assert_eq!(reparsed.engines["fakepinner"].env["PINNED"], "1");
     }
 
     #[test]
