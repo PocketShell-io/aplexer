@@ -8,5 +8,5 @@ exclude-newer-span = "P7D"
 
 [[package]]
 name = "aplexer-client"
-version = "0.1.8"
+version = "0.1.9"
 source = { editable = "." }
