@@ -296,7 +296,8 @@ pub(super) fn bring_up(
         atomic_write_json(&record_path, &record)?;
         // Probe replacement on this session's actual filesystem before any
         // socket or workload exists. Running workers require this operation.
-        replace_existing_json(&record_path, &record)?;
+        replace_existing_json(&record_path, &record)
+            .context("session state filesystem must support RENAME_EXCHANGE")?;
         startup_checkpoint("after_worker_record")?;
 
         let socket_path = paths.socket(id);

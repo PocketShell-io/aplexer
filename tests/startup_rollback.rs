@@ -967,7 +967,8 @@ fn unsupported_record_exchange_refuses_before_workload_spawn() {
         "unsupported exchange started a session"
     );
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("rename"),
+        String::from_utf8_lossy(&output.stderr)
+            .contains("session state filesystem must support RENAME_EXCHANGE"),
         "unexpected error: {}",
         String::from_utf8_lossy(&output.stderr)
     );

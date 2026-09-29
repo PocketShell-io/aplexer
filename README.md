@@ -45,6 +45,8 @@ Five things it does differently:
 You need:
 
 - Linux (x86_64 or aarch64)
+- The session state filesystem (`APLEXER_STATE_DIR`) must support Linux
+  `RENAME_EXCHANGE`; startup checks this before launching a workload
 - Python 3.11+ for the pip install (the binaries are precompiled)
 - Optional: a systemd user session with cgroup-v2 delegation for `--memory`
   / `--pids` / `--cpu-*` limits - everything else works without it
