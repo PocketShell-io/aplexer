@@ -1386,6 +1386,117 @@ fn a_client_larger_than_the_shared_screen_is_repainted_at_the_new_size() {
 }
 
 #[test]
+fn send_enter_writes_carriage_return_to_raw_pty() {
+    let harness = Harness::new();
+    let root = TempDir::new().expect("workspace root");
+    let workspace = root.path().join("send-enter-raw");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let script = r#"
+import os, time, tty
+tty.setraw(0)
+os.write(1, b"READY\n")
+data = b""
+first_at = None
+while len(data) < 4:
+    chunk = os.read(0, 1)
+    if first_at is None:
+        first_at = time.monotonic()
+    data += chunk
+    if chunk == b"\r":
+        gap_ms = int((time.monotonic() - first_at) * 1000)
+        os.write(1, f"GAP_MS:{gap_ms}\n".encode())
+os.write(1, b"INPUT:" + data.hex().encode() + b"\n")
+"#;
+    let id = start_session_with_command(
+        &harness,
+        &workspace,
+        "send-enter-raw",
+        &["python3", "-u", "-c", script],
+    );
+    let mut client = PtyClient::spawn_no_status(&harness, &id, 24, 80);
+    client.wait_for(b"READY", 0, "the workload to enter raw input mode");
+
+    let sent = harness.run_ok(
+        &["--json", "send", &id, "abc", "--enter"],
+        Duration::from_secs(5),
+    );
+    let status: Value = serde_json::from_str(&sent).unwrap();
+    assert_eq!(status["status"], "pty_written");
+    assert_eq!(status["bytes"], 4);
+    client.wait_for(b"INPUT:6162630d", 0, "send --enter to submit with CR");
+    let output = String::from_utf8_lossy(&client.output()).into_owned();
+    let gap_ms: u64 = output
+        .split("GAP_MS:")
+        .nth(1)
+        .expect("raw PTY probe reported text-to-CR gap")
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .expect("valid millisecond gap");
+    assert!(
+        gap_ms >= 120,
+        "Enter arrived in Codex's 120 ms paste-suppression window: {gap_ms} ms"
+    );
+    client.wait_exit();
+    let _ = harness.run(&["kill", &id, "--signal", "KILL"], Duration::from_secs(5));
+}
+
+#[test]
+fn codex_text_submission_uses_explicit_paste_but_hex_stays_raw() {
+    let harness = Harness::new();
+    let root = TempDir::new().expect("workspace root");
+    let workspace = root.path().join("codex-submit-raw");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let script = r#"
+import os, tty
+tty.setraw(0)
+os.write(1, b"READY\n")
+data = b""
+while len(data) < 20:
+    data += os.read(0, 20 - len(data))
+os.write(1, b"INPUT:" + data.hex().encode() + b"\n")
+"#;
+    let id = harness.run_ok(
+        &[
+            "start",
+            "--workspace",
+            workspace.to_str().unwrap(),
+            "--tag",
+            "codex-submit-raw",
+            "--engine",
+            "codex",
+            "--json",
+            "--",
+            "python3",
+            "-u",
+            "-c",
+            script,
+        ],
+        Duration::from_secs(15),
+    );
+    let id = serde_json::from_str::<Value>(&id).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut client = PtyClient::spawn_no_status(&harness, &id, 24, 80);
+    client.wait_for(b"READY", 0, "raw codex-family probe");
+
+    harness.run_ok(&["send", &id, "abc", "--enter"], Duration::from_secs(5));
+    harness.run_ok(
+        &["send", &id, "--hex", "616263", "--enter"],
+        Duration::from_secs(5),
+    );
+    client.wait_for(
+        b"INPUT:1b5b3230307e6162631b5b3230317e0d6162630d",
+        0,
+        "only the text submission to use bracketed paste",
+    );
+    client.wait_exit();
+    let _ = harness.run(&["kill", &id, "--signal", "KILL"], Duration::from_secs(5));
+}
+
+#[test]
 fn no_status_is_plain_relay_without_chrome_and_forwards_raw_input() {
     let harness = Harness::new();
     let root = TempDir::new().expect("workspace root");

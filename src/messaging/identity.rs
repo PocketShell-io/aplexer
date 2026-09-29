@@ -38,6 +38,7 @@ pub fn session_by_tag<'a>(
 #[derive(Debug, Clone)]
 pub struct SessionIdentity {
     pub id: Uuid,
+    pub workspace: Option<PathBuf>,
     pub tag: Option<String>,
     pub engine: Option<String>,
     pub profile: Option<String>,
@@ -47,6 +48,7 @@ impl SessionIdentity {
     fn from_record(record: &SessionRecord) -> Self {
         Self {
             id: record.id,
+            workspace: Some(record.workspace.clone()),
             tag: Some(record.tag.clone()),
             engine: Some(record.engine.clone()),
             profile: record.profile.clone(),
@@ -82,6 +84,7 @@ impl MessageFrom {
         match identity {
             Some(identity) => Self {
                 session_id: Some(identity.id),
+                workspace: identity.workspace,
                 tag: identity.tag,
                 engine: identity.engine,
                 profile: identity.profile,
@@ -117,6 +120,7 @@ pub fn resolve_identity(
         Some(record) => SessionIdentity::from_record(record),
         None => SessionIdentity {
             id: session_id,
+            workspace: None,
             tag: std::env::var("APLEXER_TAG").ok(),
             engine: None,
             profile: None,

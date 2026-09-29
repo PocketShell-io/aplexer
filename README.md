@@ -247,6 +247,9 @@ a send review --stdin < patch.diff
 a status review
 ```
 
+`--enter` appends a carriage return to submit agent prompts. Without it,
+`a send` writes only the bytes supplied (including `--stdin` and `--hex`).
+
 ## Session lifecycle
 
 The lifecycle is four commands:
@@ -393,15 +396,23 @@ binding is not changed.
 
 ## Messaging between sessions
 
-Sibling sessions in a workspace share a durable inbox - handy when one agent
-needs to hand off to another:
+Sessions share a durable inbox within each workspace. A session can also
+address a session in another workspace by naming that destination:
 
 ```bash
 a message send --to review "done, see api.md"   # note to one sibling, by tag
 a message send --all "standup in 5"             # every sibling in the workspace
+a message send --workspace ../other-repo --to review "please check the API"
 a message inbox                                 # what's unread for this session
+a message reply <id> "confirmed"                # routes back to the sender's workspace
 a message log                                   # the whole workspace conversation
 ```
+
+Cross-workspace sends require a real aplexer session identity. Use `--pane`
+to also submit a framed message to a running agent's terminal; the frame
+includes the message id and reply command. A successful send proves storage
+or PTY injection, not that the recipient acted. Request a reply when receipt
+matters.
 
 ## From Python
 

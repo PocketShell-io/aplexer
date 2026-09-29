@@ -229,7 +229,7 @@ pub(crate) struct SendArgs {
     /// Interpret TEXT as hex and send the decoded bytes
     #[arg(long)]
     pub(crate) hex: bool,
-    /// Append a newline, like pressing Enter
+    /// Append a carriage return, like pressing Enter in an agent prompt
     #[arg(long)]
     pub(crate) enter: bool,
 }

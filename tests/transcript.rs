@@ -417,7 +417,6 @@ fn whoami_inside_session_survives_cleared_env() {
         aplexer::shell_quote(env!("CARGO_BIN_EXE_aplexer"))
     );
     h.run_ok(&["send", &id, "--enter", &command]);
-    h.run_ok(&["send", &id, "--hex", "0d"]);
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
     let mut captured = String::new();
     while std::time::Instant::now() < deadline {

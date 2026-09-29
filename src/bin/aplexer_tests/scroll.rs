@@ -443,19 +443,39 @@ fn scroll_keys_binds_i_to_type_through() {
 /// both framed and raw form, and `--no-enter` drops it in both.
 #[test]
 fn pane_delivery_appends_enter_by_default_and_no_enter_drops_it() {
+    let id = Uuid::from_u128(1);
+    let mut sender = MessageFrom::anonymous();
+    sender.tag = Some("review".into());
+    sender.session_id = Some(Uuid::from_u128(2));
+    sender.workspace = Some(PathBuf::from("/tmp/source"));
+    let mut envelope = MessageEnvelope {
+        schema_version: MESSAGE_SCHEMA_VERSION,
+        id,
+        workspace: PathBuf::from("/tmp/destination"),
+        created_at: 0,
+        from: sender,
+        to: Recipient::Tag {
+            tag: "target".into(),
+            session_id: None,
+        },
+        kind: "note".into(),
+        reply_to: None,
+        body: "ship it".into(),
+        data: None,
+        delivery: Delivery::Inbox,
+    };
     assert_eq!(
-        pane_input_bytes("ship it", Some("review"), false, false),
-        b"[aplexer message from review] ship it\r"
+        pane_input_bytes(&envelope, false, false),
+        format!(
+            "[aplexer message id={id} from=review session={} workspace=/tmp/source; reply with: aplexer message reply {id} '<text>'] ship it\r",
+            Uuid::from_u128(2)
+        )
+        .into_bytes()
     );
-    assert_eq!(
-        pane_input_bytes("ship it", Some("review"), true, false),
-        b"ship it\r"
-    );
-    assert_eq!(
-        pane_input_bytes("hold", Some("review"), false, true),
-        b"[aplexer message from review] hold"
-    );
-    assert_eq!(pane_input_bytes("hold", None, true, true), b"hold");
+    assert_eq!(pane_input_bytes(&envelope, true, false), b"ship it\r");
+    envelope.body = "hold".into();
+    assert!(!pane_input_bytes(&envelope, false, true).ends_with(b"\r"));
+    assert_eq!(pane_input_bytes(&envelope, true, true), b"hold");
 }
 
 /// While the client holds the mouse and the pager is *down*, mouse

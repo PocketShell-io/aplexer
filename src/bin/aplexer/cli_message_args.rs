@@ -41,12 +41,12 @@ pub(crate) enum MessageCommand {
 pub(crate) struct PaneDeliveryArgs {
     #[arg(
         long,
-        help = "Inject as terminal input into the target's PTY instead of the durable inbox"
+        help = "Persist the message, then also inject it as terminal input into the target's PTY"
     )]
     pub(crate) pane: bool,
     #[arg(
         long = "or-inbox",
-        help = "If --pane delivery fails, fall back to an inbox send instead of erroring"
+        help = "Return success with the durable inbox copy if pane injection fails (otherwise report an error with its stored message id)"
     )]
     pub(crate) or_inbox: bool,
     #[arg(
@@ -63,6 +63,12 @@ pub(crate) struct PaneDeliveryArgs {
 
 #[derive(Args)]
 pub(crate) struct MessageSendArgs {
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Destination workspace for a targeted message"
+    )]
+    pub(crate) workspace: Option<PathBuf>,
     #[arg(
         long,
         value_name = "TAG",

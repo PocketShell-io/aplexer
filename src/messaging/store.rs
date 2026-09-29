@@ -20,6 +20,24 @@ pub fn write_message_in(mp: &MessagePaths, envelope: &MessageEnvelope) -> Result
     )
 }
 
+/// Promote an already durable inbox message after its pane write succeeds.
+/// The id and workspace remain unchanged, so a failed promotion leaves a
+/// replyable inbox entry rather than a pane frame pointing at missing mail.
+pub fn mark_pane_delivered_in(mp: &MessagePaths, envelope: &MessageEnvelope) -> Result<()> {
+    let _mailbox = FileLock::exclusive(&mailbox_lock_path(mp), false)?;
+    let path = mp.msgs_dir.join(format!("{}.json", envelope.id));
+    let current = load_message_file(&path, &envelope.workspace)?;
+    if current.id != envelope.id || current.delivery != Delivery::Inbox {
+        bail!(
+            "message {} cannot be promoted to pane delivery",
+            envelope.id
+        );
+    }
+    let mut pane = envelope.clone();
+    pane.delivery = Delivery::Pane;
+    atomic_write_bytes(&path, &serialized_envelope(&pane)?)
+}
+
 pub(crate) fn write_message_limited(
     mp: &MessagePaths,
     envelope: &MessageEnvelope,

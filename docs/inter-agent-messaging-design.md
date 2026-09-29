@@ -1,10 +1,27 @@
 # Inter-agent messaging: a per-workspace communication channel
 
-Status: implemented (v1 scope -- see `a message --help`); event-stream push notification, `--when-waiting` deferred pane delivery, and cross-host bridging remain design-only, see section 8's open questions
-Scope: messaging between aplexer sessions that share a workspace
+Status: implemented (v1 scope plus local cross-workspace targeted send/reply -- see `a message --help`); event-stream push notification, `--when-waiting` deferred pane delivery, and cross-host bridging remain design-only, see section 8's open questions
+Scope: messaging between aplexer sessions on the same host, including targeted messages across workspace paths
 Related spec sections: 5.1 (no shared PTY owner), 14 (runtime storage), 18 (machine API), 19 (event stream), 26 (security), 32 (recovery)
 
 ## 1. Problem
+
+Implementation extension: `a message send --workspace PATH --to TAG` writes to
+the destination workspace mailbox, recording the real sender session UUID and
+workspace. `a message reply ID` reads the message in the recipient's workspace
+and writes its reply to the original sender's workspace mailbox, addressed to
+the immutable sender UUID. Cross-workspace `--from` overrides are refused.
+The rest of this design describes the original per-workspace v1 model and its
+delivery trade-offs. Cross-host bridging remains outside this extension.
+The implementation now writes the inbox copy before any pane injection.
+Failed injection leaves it replyable: strict `--pane` exits nonzero and names
+the stored id, while `--or-inbox` returns success with `delivery: inbox`.
+Successful injection promotes the record to pane delivery and pre-acks that
+recipient. A recipient may see the same id through inbox and pane during
+delivery or after a promotion error; handle it once by id, then reuse the
+existing reply or outcome rather than performing the work twice.
+The local same-user session identity is resolved from the session record and
+environment/process ancestry; it is not cryptographically authenticated.
 
 A user routinely runs several agent sessions in the same workspace:
 
@@ -236,7 +253,7 @@ role spec §15 permits.
 ## 4. Delivery semantics
 
 Semantics differ by delivery mode (§6): inbox mode is the durable default;
-pane mode trades durability for immediacy.
+pane mode adds an immediate terminal attempt after durable storage.
 
 **Inbox mode:**
 
@@ -270,18 +287,19 @@ pane mode trades durability for immediacy.
 
 **Pane mode (§6.2):**
 
-- **Synchronous at-most-once.** The commit point is the target worker
-  accepting the PTY write over its socket; success means the bytes reached
-  the PTY master, nothing more. Failure (no such session, worker dead, socket
-  unreachable) is reported immediately to the sender; nothing is queued
-  unless `--or-inbox` converts the failure into an inbox send.
+- **Durable first, then one PTY submission attempt.** The inbox file is
+  committed before terminal input begins, so every frame names a replyable
+  message id. A successful pane write proves only that bytes reached the
+  target worker, not that its agent processed them. A failed attempt without
+  `--or-inbox` returns nonzero but names the stored inbox id; inspect that
+  message before retrying. With `--or-inbox`, it returns the Inbox outcome.
 - **Requires a live target worker.** By construction — the PTY only exists
   while its worker does.
-- **Also recorded in the mailbox** (with `"delivery": "pane"`, pre-acked for
-  the recipient) so the workspace log remains a complete account of
-  inter-agent traffic in both modes. The mailbox write happens after
-  successful injection; a mailbox write failure after a successful injection
-  is reported as a warning, not a delivery failure.
+- **Also recorded in the mailbox.** Successful injection promotes the stored
+  entry to `"delivery": "pane"` and pre-acks the recipient. If promotion
+  fails after terminal input, the Inbox copy remains; the sender gets a
+  warning and the recipient may see the same id twice. A recipient should
+  process or reply to each id once, reusing that outcome on duplicate view.
 - **Ordering.** Pane messages order with the target's other terminal input by
   arrival at the PTY, and with mailbox traffic by their message id like
   everything else.
@@ -391,22 +409,20 @@ primitive:
 
 - **Addressed like any message** (workspace + tag, §2), with the same sender
   identity resolution — not a raw selector the sender must construct.
-- **Framed for an agent recipient.** The injected bytes are a single
-  fixed-shape line, e.g.
-  `[aplexer message from main] backend done, see api.md` followed by a
-  carriage return so an agent sitting at its prompt receives it as a submitted
-  instruction. `--raw` suppresses the frame and trailing return for the rare
-  case where exact bytes matter (at which point the sender is really doing
-  `a send` with better addressing).
-- **Recorded.** A pane-delivered message is *also* appended to the workspace
-  mailbox with `"delivery": "pane"`, so the workspace conversation log (§7,
-  `a message log`) stays complete and a later reader can see what was pushed
-  into whom. The recipient's cursor treats it as already-acked — it was
-  delivered by definition.
-- **Requires a live target.** Pane delivery fails immediately if the target
-  worker is not running or its socket is unreachable; there is no queueing in
-  pane mode. `--or-inbox` degrades to inbox mode on failure instead of
-  erroring, for senders who want "interrupt if you can, park it if you can't".
+- **Framed for an agent recipient.** The injected text includes the durable
+  message id, sender session and workspace, and a reply command. Text and
+  Enter are separate PTY writes. Codex-family sessions receive the text as an
+  explicit bracketed paste before Enter; this clears Codex's paste-burst
+  suppression state even when its event queue drains after the PTY write.
+  `--raw` suppresses the frame and paste wrapper; `--no-enter` suppresses
+  submission.
+- **Recorded first.** The mailbox entry is committed as Inbox before pane
+  input. Successful injection promotes it to `"delivery": "pane"` and
+  pre-acks the recipient. A recipient that also sees it in the inbox
+  deduplicates by message id.
+- **Requires a live target for pane input.** If the worker is unavailable,
+  strict `--pane` exits nonzero with the stored message id and Inbox status;
+  `--or-inbox` returns success with that durable Inbox outcome.
 - **Targeted only.** No pane broadcast. Injecting input into every session in
   a workspace at once is a footgun with no motivating use case; `--all` and
   `--pane` are mutually exclusive.
@@ -425,7 +441,7 @@ The rule of thumb the CLI help and the companion skill should teach:
 | Handoff, FYI, "when you get to it", any broadcast | inbox |
 | Recipient not running yet / might be down | inbox (or `--queue`) |
 | Recipient is an agent **waiting at its prompt** and you want it to act now | pane |
-| Steering a sibling mid-run ("stop, the API changed") | pane, accepting that mid-generation input lands wherever the target's UI puts it |
+| Steering a sibling mid-run ("stop, the API changed") | inbox; pane only after confirming the target has an empty, ready composer |
 | You need confirmation something was seen | inbox + ask for a `reply`; pane delivery proves injection, not comprehension |
 
 The honest trade-off, stated in both docs: pane mode buys immediacy at the
@@ -433,7 +449,7 @@ cost of transcript pollution and interleaving risk. Injected input is
 indistinguishable from the user typing, so the target agent will treat it as
 an instruction from its operator — powerful for cooperation, and exactly why
 it must be explicit (`--pane`), targeted, framed with a visible
-`[aplexer message from <tag>]` prefix, and logged in the mailbox. Within one
+`[aplexer message id=... from=<tag> ...]` prefix, and logged in the mailbox. Within one
 user's workspace this is an acceptable trust model (every participant already
 runs as the same user and could `a send` anyway); the frame prefix exists so
 the receiving agent and any human reading the transcript can tell
@@ -514,12 +530,11 @@ identity; `log` and `send` degrade gracefully per §2.1).
    disk-exhaustion requirement.
 10. **`a doctor` integration.** Mailbox health (orphaned workspace keys, torn
     temp files, and legacy/stable merge failures) belongs in doctor's checks.
-11. **Pane-mode framing details.** Exact prefix format for injected messages
-    (`[aplexer message from <tag>]`), whether the trailing byte is `\r` or
-    `\n` per engine (agents differ in what submits a prompt), whether
-    multi-line bodies are allowed in pane mode or rejected in favor of
-    "pointer into the inbox", and whether bracketed-paste framing should be
-    used when the target terminal has it enabled.
+11. **Pane-mode framing details.** Whether multi-line bodies are allowed in
+    pane mode or rejected in favor of a pointer into the inbox, and how to
+    confirm a recipient's composer is ready before a pane attempt. Codex-family
+    text submission now uses bracketed paste followed by CR; raw byte modes
+    retain their exact payload.
 12. **`--when-waiting` delivery.** Whether deferred pane delivery (§6.3)
     should live in the sender CLI (poll target state, then inject) or in the
     target's worker (accept-and-hold RPC) — the latter adds held state to the

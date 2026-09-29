@@ -71,6 +71,10 @@ mod list_plain;
 mod list_tty;
 #[path = "message_commands.rs"]
 mod message_commands;
+#[path = "message_delivery.rs"]
+mod message_delivery;
+#[path = "message_routing.rs"]
+mod message_routing;
 #[path = "mouse.rs"]
 mod mouse;
 #[path = "rename_prompt.rs"]
@@ -129,6 +133,8 @@ pub(crate) use list_helpers::*;
 pub(crate) use list_plain::*;
 pub(crate) use list_tty::*;
 pub(crate) use message_commands::*;
+pub(crate) use message_delivery::*;
+pub(crate) use message_routing::*;
 pub(crate) use mouse::*;
 pub(crate) use rename_prompt::*;
 pub(crate) use rpc::*;

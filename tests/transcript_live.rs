@@ -112,8 +112,6 @@ impl Harness {
             &["send", session_id, "--enter", text],
             Duration::from_secs(5),
         );
-        // Codex/Claude TUIs submit on CR, not LF.
-        self.run_ok(&["send", session_id, "--hex", "0d"], Duration::from_secs(5));
     }
 
     fn confirm_trust(&self, session_id: &str) {

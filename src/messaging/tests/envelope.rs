@@ -25,6 +25,17 @@ fn recipient_shapes_round_trip() {
 }
 
 #[test]
+fn sender_without_workspace_from_older_messages_still_deserializes() {
+    let sender: MessageFrom = serde_json::from_value(serde_json::json!({
+        "session_id": Uuid::from_u128(1),
+        "tag": "review",
+        "external": false
+    }))
+    .unwrap();
+    assert_eq!(sender.workspace, None);
+}
+
+#[test]
 fn body_size_cap_rejects_oversized() {
     let big = "x".repeat(MAX_BODY_BYTES + 1);
     assert!(check_body_size(&big).is_err());
