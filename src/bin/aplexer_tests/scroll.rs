@@ -540,6 +540,46 @@ fn workload_mouse_mode_keeps_clicks_but_routes_both_wheel_directions_to_the_pane
 }
 
 #[test]
+fn alternate_screen_workload_receives_its_wheel_reports() {
+    let mut ctx = status_ctx_for_test(true);
+    ctx.mouse_capture = true;
+    ctx.screen
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .feed(b"\x1b[?1049h\x1b[?1003h\x1b[?1006h");
+    *ctx.mouse_owned
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(false);
+    let mut input = ScrollInput::default();
+    let up = b"\x1b[<64;5;5M";
+    let down = b"\x1b[<65;5;5M";
+    let release = b"\x1b[<64;5;5m";
+    assert_eq!(input.route(&ctx, up), up);
+    assert_eq!(input.route(&ctx, down), down);
+    assert_eq!(input.route(&ctx, release), release);
+    assert_eq!(input.route(&ctx, b"\x1b[<68;5;5M"), b"\x1b[<68;5;5M");
+    assert!(!ctx.scroll.is_active());
+}
+
+#[test]
+fn alternate_screen_without_workload_mouse_still_uses_the_pager() {
+    let mut ctx = status_ctx_for_test(true);
+    let _null = StdoutToDevNull::new();
+    ctx.mouse_capture = true;
+    ctx.screen
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .feed(b"\x1b[?1049h");
+    *ctx.mouse_owned
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(true);
+    assert!(ScrollInput::default()
+        .route(&ctx, b"\x1b[<64;5;5M")
+        .is_empty());
+    assert!(ctx.scroll.is_active());
+}
+
+#[test]
 fn legacy_and_utf8_mouse_reports_are_split_safely_and_keep_clicks() {
     let mut ctx = status_ctx_for_test(true);
     let _null = StdoutToDevNull::new();

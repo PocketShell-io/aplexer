@@ -29,8 +29,9 @@ pub(crate) fn cmd_hotkeys() -> Result<()> {
     println!();
     println!("Scrolling back (aplexer's copy-mode, like tmux's Ctrl-b [):");
     println!();
-    println!("  the mouse wheel scrolls the pane, even when the workload uses the mouse.");
-    println!("  Clicks and motion still go to that workload while the pager is closed.");
+    println!("  The mouse wheel scrolls ordinary output in the pane.");
+    println!("  Full-screen apps that use the mouse receive wheel events themselves.");
+    println!("  Clicks and motion also go to those apps while the pager is closed.");
     println!();
     println!("  PgUp/PgDn  a screen at a time      Up/Down, k/j   a line at a time");
     println!("  Home / End top / back to live      g / G          the same");

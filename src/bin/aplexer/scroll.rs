@@ -549,8 +549,8 @@ pub(crate) fn apply_scroll_command(ctx: &StatusBarCtx, command: ScrollCommand) {
 
 /// Whether the attach client should set its own SGR mouse mode on the host.
 /// Live, a workload that requested mouse reporting keeps its protocol so
-/// clicks work; `ScrollInput` still intercepts its wheel reports. While the
-/// pager is up, the client uses SGR reporting for its own navigation.
+/// clicks work; `ScrollInput` sends it wheel reports on the alternate screen.
+/// While the pager is up, the client uses SGR reporting for its own navigation.
 pub(crate) fn client_should_own_mouse(ctx: &StatusBarCtx) -> bool {
     if !ctx.mouse_capture {
         return false;
