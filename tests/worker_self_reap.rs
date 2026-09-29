@@ -105,8 +105,21 @@ fn process_gone(pid: u32) -> bool {
 
 #[test]
 fn worker_self_reaps_when_its_durable_state_is_deleted_under_it() {
+    deleted_state_self_reaps(false);
+}
+
+#[test]
+fn pending_history_after_status_cannot_revive_deleted_state() {
+    deleted_state_self_reaps(true);
+}
+
+fn deleted_state_self_reaps(delay_status: bool) {
     let mut harness = Harness::new();
     let workspace = TempDir::new().unwrap();
+    if delay_status {
+        // Exercise terminal-record persistence, not only clean auto-removal.
+        fs::write(&harness.config, "keep_exited = true\n").unwrap();
+    }
     let start = harness.run(&[
         "--json",
         "start",
@@ -127,6 +140,9 @@ fn worker_self_reaps_when_its_durable_state_is_deleted_under_it() {
     let id = started["id"].as_str().unwrap().to_string();
     harness.id = Some(id.clone());
 
+    if delay_status {
+        thread::sleep(Duration::from_millis(350));
+    }
     let status = harness.run(&["status", &id, "--json"]);
     assert!(status.status.success(), "status RPC failed after start");
     let served: Value = serde_json::from_slice(&status.stdout).unwrap();
@@ -173,6 +189,7 @@ fn worker_self_reaps_when_its_durable_state_is_deleted_under_it() {
         fs::symlink_metadata(&runtime_session).is_err(),
         "runtime session dir survived the self-reap"
     );
+    assert!(!durable_session.exists(), "durable state was resurrected");
     let _ = harness.id.take();
 }
 

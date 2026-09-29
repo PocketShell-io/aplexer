@@ -163,15 +163,16 @@ pub(crate) const MESSAGE_EXAMPLES: &str = r#"Examples:
 
 pub(crate) const MESSAGE_SEND_EXAMPLES: &str = r#"Examples:
   a message send --to review "done, see api.md"     one session, by tag
+  a message send --workspace ../api --to review "please check"  another workspace
   a message send --all "standup in 5"               every sibling in this workspace
   a message send --to-engine codex "status?"        every codex sibling
-  a message send --to review --pane "git push"      inject as terminal input instead
+  a message send --to review --pane "git push"      also inject as terminal input
   a message send --to watcher --queue "anyone up?"  target need not exist yet
   a message send --to review "ctx" --kind handoff --data '{"branch":"feat"}'
 "#;
 
 pub(crate) const MESSAGE_REPLY_EXAMPLES: &str = r#"Examples:
-  a message reply <id> "on it"            the id comes from `a message inbox`
+  a message reply <id> "on it"            the id comes from an inbox or pane frame; replies may cross workspaces
   a message reply <id> --pane "approved"  deliver into the sender's terminal
 "#;
 

@@ -936,6 +936,49 @@ fn persisted_running_without_verified_ping_is_not_startup_success() {
     harness.assert_no_session_artifacts();
 }
 
+#[test]
+#[cfg(feature = "startup-test-hooks")]
+fn unsupported_record_exchange_refuses_before_workload_spawn() {
+    let harness = Harness::new();
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let marker_dir = TempDir::new().expect("marker tempdir");
+    let marker = marker_dir.path().join("workload-spawned");
+    let output = harness.run_with_env(
+        &[
+            "start",
+            "--workspace",
+            workspace.path().to_str().expect("UTF-8 workspace"),
+            "--tag",
+            "unsupported-exchange",
+            "--",
+            "/bin/sleep",
+            "30",
+        ],
+        &[
+            ("APLEXER_TEST_FAIL_RECORD_EXCHANGE", "1"),
+            (
+                "APLEXER_TEST_WORKER_STARTUP_MARKER",
+                marker.to_str().expect("UTF-8 marker"),
+            ),
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "unsupported exchange started a session"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("session state filesystem must support RENAME_EXCHANGE"),
+        "unexpected error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !marker.exists(),
+        "the workload spawned before the exchange probe"
+    );
+    harness.assert_no_session_artifacts();
+}
+
 /// Prove `pin_open_files` actually raises. On a normal runner the inherited
 /// soft limit is 1024, so both descriptor-budget tests only ever lower unless
 /// the helper first starves the child; a clamp-only `.min()` would then leave

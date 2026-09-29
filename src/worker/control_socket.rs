@@ -62,7 +62,7 @@ pub(super) fn control_socket_matches_identity(
 /// made by whoever removed the state; every other read failure (a busy
 /// mount, a vanished network filesystem) stays ambiguous, so only NotFound
 /// self-reaps and anything else keeps deferring.
-fn durable_record_vanished(runtime: &WorkerRuntime) -> bool {
+pub(super) fn durable_record_vanished(runtime: &WorkerRuntime) -> bool {
     matches!(
         fs::symlink_metadata(&runtime.record_path),
         Err(error) if error.kind() == io::ErrorKind::NotFound
@@ -172,6 +172,15 @@ pub(super) fn serve_control_socket(
     let mut accept_retry = ACCEPT_RETRY_INITIAL;
     let mut self_reap_requested = false;
     loop {
+        if !self_reap_requested && durable_record_vanished(&runtime) {
+            self_reap_requested = true;
+            log_best_effort(&format!(
+                "aplexer worker: durable record {} is gone; no client can list, status, \
+                 or kill this session any more -- terminating the workload and exiting",
+                runtime.record_path.display()
+            ));
+            request_termination();
+        }
         match poll_control_connection(&listener, CONTROL_SOCKET_CHECK_INTERVAL) {
             Ok(Some((stream, _))) => {
                 accept_retry = ACCEPT_RETRY_INITIAL;
@@ -193,15 +202,6 @@ pub(super) fn serve_control_socket(
                 }
             }
             Ok(None) => {
-                if !self_reap_requested && durable_record_vanished(&runtime) {
-                    self_reap_requested = true;
-                    log_best_effort(&format!(
-                        "aplexer worker: durable record {} is gone; no client can list, status, \
-                         or kill this session any more -- terminating the workload and exiting",
-                        runtime.record_path.display()
-                    ));
-                    request_termination();
-                }
                 if !self_reap_requested
                     && !control_socket_matches_identity(
                         &runtime.socket_path,

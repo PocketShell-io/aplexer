@@ -1,8 +1,10 @@
 use super::*;
 
 /// Byte-level routing of stdin while mouse capture or the pager is active.
-/// Wheel reports always go to the pane; other mouse reports reach a workload
-/// that requested them. Pager keys never reach the workload.
+/// Wheel reports page through ordinary output. An alternate-screen workload
+/// that requested mouse reporting gets its wheel reports instead: its own
+/// transcript lives in its repaintable viewport, not in terminal scrollback.
+/// Pager keys never reach the workload.
 ///
 /// Returns the bytes that may still be forwarded. In scroll mode that is
 /// empty except while type-through has handed the keyboard to the workload
@@ -157,8 +159,8 @@ impl ScrollInput {
         }
     }
 
-    /// Route the wheel to this pane even when a TUI requested mouse input.
-    /// Its clicks and motion reports continue to the TUI unchanged.
+    /// Route the wheel to the pane for ordinary output, or to a full-screen
+    /// workload that requested mouse input. Clicks and motion still reach it.
     fn route_live_mouse(
         &mut self,
         ctx: &StatusBarCtx,
@@ -176,12 +178,25 @@ impl ScrollInput {
             match parsed {
                 MouseParse::Complete(report, consumed) => {
                     if let Some(command) = wheel_direction(report.button) {
-                        if report.press {
-                            if matches!(command, ScrollCommand::Up(_)) {
-                                self.pending.drain(..at + consumed);
-                                enter_scroll_mode(ctx, command);
-                                return Routed::Rebased;
-                            }
+                        // Full-screen TUIs such as Codex and OpenCode keep
+                        // their transcript in application state and repaint
+                        // the alternate grid when they receive a wheel
+                        // event. The grid has no scrollback for our pager.
+                        // Only forward when the workload actually requested
+                        // mouse input and owns the host's mouse protocol;
+                        // otherwise the report was generated for us.
+                        let workload_scrolls = !client_mouse && {
+                            let screen = ctx.screen.lock().unwrap_or_else(PoisonError::into_inner);
+                            screen.alternate_screen() && screen.workload_wants_mouse()
+                        };
+                        if workload_scrolls {
+                            out.extend_from_slice(&rest[..consumed]);
+                            return Routed::Consumed(consumed);
+                        }
+                        if report.press && matches!(command, ScrollCommand::Up(_)) {
+                            self.pending.drain(..at + consumed);
+                            enter_scroll_mode(ctx, command);
+                            return Routed::Rebased;
                         }
                         // Down at the live bottom and wheel releases have
                         // nowhere to go; neither belongs to the workload.

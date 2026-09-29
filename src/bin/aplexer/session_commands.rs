@@ -409,18 +409,31 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
         data = parse_hex(&data)?;
     }
     if args.enter {
-        data.push(b'\n');
+        data.push(b'\r');
     }
     if data.is_empty() {
         bail!("no bytes to send");
     }
     let mut sent = 0usize;
-    for chunk in data.chunks(MAX_FRAME_BYTES) {
-        rpc_send(&record, chunk)?;
-        sent += chunk.len();
+    if args.enter {
+        let kind = if args.hex || args.stdin {
+            SubmissionKind::Raw
+        } else {
+            SubmissionKind::Text
+        };
+        rpc_send_submitted(&record, &data, kind)?;
+        sent = data.len();
+    } else {
+        for chunk in data.chunks(MAX_FRAME_BYTES) {
+            rpc_send(&record, chunk)?;
+            sent += chunk.len();
+        }
     }
     if json_output {
-        println!("{}", json!({"id":record.id,"bytes":sent}));
+        println!(
+            "{}",
+            json!({"id":record.id,"bytes":sent,"status":"pty_written"})
+        );
     }
     Ok(())
 }

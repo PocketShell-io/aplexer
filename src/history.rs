@@ -16,7 +16,14 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::persist::read_bounded_json;
-use crate::{atomic_write_bytes, atomic_write_json, MAX_FRAME_BYTES};
+use crate::persist::{
+    atomic_write_bytes_with_mode, atomic_write_json_in_existing_dir as atomic_write_json,
+};
+use crate::MAX_FRAME_BYTES;
+
+fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write_bytes_with_mode(path, bytes, 0o600)
+}
 
 pub const DEFAULT_HISTORY_BYTES: usize = 4 * 1024 * 1024;
 /// Global per-session raw-history ceiling. The ring is resident in every
@@ -78,6 +85,10 @@ pub struct History {
 impl History {
     pub fn open(path: PathBuf, cap: usize) -> Result<Self> {
         validate_history_bytes(cap)?;
+        // Creation belongs to initialization, never a later checkpoint.
+        if let Some(parent) = path.parent() {
+            crate::ensure_private_dir(parent)?;
+        }
         let (recovered, marker_present) = recover_v2_history(&path, cap)?;
         let had_v2 = recovered.is_some();
         // The v2 store is authoritative when present; only without it does

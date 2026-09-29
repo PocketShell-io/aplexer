@@ -5,10 +5,11 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::ffi::OsStr;
+use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -60,7 +61,7 @@ pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 pub fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = parent_dir(path)?;
     ensure_private_dir(parent)?;
-    write_atomically(parent, path, bytes, 0o600)
+    write_atomically(parent, path, bytes, 0o600, |from, to| fs::rename(from, to))
 }
 
 /// `atomic_write_bytes` with an explicit file mode, for files outside
@@ -68,7 +69,54 @@ pub fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
 /// parent directory must already exist and is left exactly as found: this
 /// never forces it private.
 pub fn atomic_write_bytes_with_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
-    write_atomically(parent_dir(path)?, path, bytes, mode)
+    write_atomically(parent_dir(path)?, path, bytes, mode, |from, to| {
+        fs::rename(from, to)
+    })
+}
+
+/// History checkpoints may create files, but never revive a deleted session directory.
+pub(crate) fn atomic_write_json_in_existing_dir<T: Serialize>(
+    path: &Path,
+    value: &T,
+) -> Result<()> {
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
+    atomic_write_bytes_with_mode(path, &bytes, 0o600)
+}
+
+/// Running workers may replace a record, never create one. EXCHANGE checks
+/// existence at publication, so deletion after serialization still wins.
+/// Startup uses `atomic_write_json` instead. Linux is the crate's platform;
+/// unsupported filesystems fail the write rather than use a racy fallback.
+pub(crate) fn replace_existing_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if !fs::symlink_metadata(path)?.file_type().is_file() {
+        bail!("record is not a regular file: {}", path.display());
+    }
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
+    write_atomically(parent_dir(path)?, path, &bytes, 0o600, exchange_existing)
+}
+
+fn exchange_existing(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(feature = "startup-test-hooks")]
+    if std::env::var_os("APLEXER_TEST_FAIL_RECORD_EXCHANGE").is_some() {
+        return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+    }
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn parent_dir(path: &Path) -> Result<&Path> {
@@ -76,7 +124,13 @@ fn parent_dir(path: &Path) -> Result<&Path> {
         .ok_or_else(|| anyhow!("{} has no parent", path.display()))
 }
 
-fn write_atomically(parent: &Path, path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+fn write_atomically(
+    parent: &Path,
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+    publish: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> Result<()> {
     let seq = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(
         ".{}.{}.{}.tmp",
@@ -102,7 +156,7 @@ fn write_atomically(parent: &Path, path: &Path, bytes: &[u8], mode: u32) -> Resu
     }
     file.write_all(bytes)?;
     file.sync_all()?;
-    fs::rename(&temp, path)
+    publish(&temp, path)
         .with_context(|| format!("rename {} to {}", temp.display(), path.display()))?;
     File::open(parent)?.sync_all()?;
     Ok(())
@@ -203,5 +257,37 @@ impl Drop for FileLock {
         unsafe {
             libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
         }
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+
+    #[test]
+    fn deletion_between_staging_and_publication_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("session.json");
+        fs::write(&record, b"old").unwrap();
+        let error = write_atomically(dir.path(), &record, b"new", 0o600, |temp, path| {
+            fs::remove_file(path)?;
+            exchange_existing(temp, path)
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn replacement_is_atomic_and_cleans_up_displaced_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("session.json");
+        fs::write(&record, b"old").unwrap();
+        replace_existing_json(&record, &"new").unwrap();
+        assert_eq!(fs::read_to_string(&record).unwrap(), "\"new\"\n");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }

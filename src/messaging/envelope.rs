@@ -8,6 +8,8 @@ pub struct MessageFrom {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
@@ -31,6 +33,7 @@ impl MessageFrom {
     pub fn anonymous() -> Self {
         Self {
             session_id: None,
+            workspace: None,
             tag: None,
             engine: None,
             profile: None,
@@ -125,7 +128,9 @@ pub(crate) fn serialized_envelope(envelope: &MessageEnvelope) -> Result<Vec<u8>>
 /// session's *current* tag plus its session id recorded at send time (when
 /// resolvable) -- so a renamed session keeps messages resolved to its id
 /// and stops matching its old tag string, and a reused tag is inherited by
-/// whatever session holds it now. Broadcast/engine-filtered forms exclude
+/// whatever session holds it now for same-workspace v1 messages. A message
+/// sent across workspaces uses only the resolved session id, so a reply
+/// cannot leak to a later holder of the tag. Broadcast/engine forms exclude
 /// the sender itself ("every session in the workspace except the sender").
 pub fn addressed_to(
     envelope: &MessageEnvelope,
@@ -134,9 +139,18 @@ pub fn addressed_to(
     consumer_engine: &str,
 ) -> bool {
     let is_sender = envelope.from.session_id == Some(consumer_id);
+    let crosses_workspace = envelope
+        .from
+        .workspace
+        .as_ref()
+        .is_some_and(|source| source != &envelope.workspace);
     match &envelope.to {
         Recipient::Tag { tag, session_id } => {
-            session_id.map(|sid| sid == consumer_id).unwrap_or(false) || tag == consumer_tag
+            if crosses_workspace {
+                *session_id == Some(consumer_id)
+            } else {
+                session_id.map(|sid| sid == consumer_id).unwrap_or(false) || tag == consumer_tag
+            }
         }
         Recipient::Broadcast { broadcast } => *broadcast && !is_sender,
         Recipient::Engine { engine } => engine == consumer_engine && !is_sender,
