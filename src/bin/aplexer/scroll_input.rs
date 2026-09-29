@@ -176,12 +176,10 @@ impl ScrollInput {
             match parsed {
                 MouseParse::Complete(report, consumed) => {
                     if let Some(command) = wheel_direction(report.button) {
-                        if report.press {
-                            if matches!(command, ScrollCommand::Up(_)) {
-                                self.pending.drain(..at + consumed);
-                                enter_scroll_mode(ctx, command);
-                                return Routed::Rebased;
-                            }
+                        if report.press && matches!(command, ScrollCommand::Up(_)) {
+                            self.pending.drain(..at + consumed);
+                            enter_scroll_mode(ctx, command);
+                            return Routed::Rebased;
                         }
                         // Down at the live bottom and wheel releases have
                         // nowhere to go; neither belongs to the workload.
