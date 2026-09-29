@@ -294,6 +294,10 @@ fn record_final_state(runtime: &WorkerRuntime, exit: &ExitInfo, state: &mut Loop
     let error = state.fatal.clone();
     let mut record_retry = HISTORY_RETRY_INITIAL;
     loop {
+        // External retirement is deliberate; there is no stale record to repair.
+        if control_socket::durable_record_vanished(runtime) {
+            return;
+        }
         let final_error = error.clone();
         match runtime.update_record(|r| {
             r.phase = if final_error.is_some() {
@@ -347,9 +351,13 @@ fn await_late_containment_proof(runtime: &WorkerRuntime, state: &LoopState) -> O
         }
         match runtime.workload_populated() {
             Ok(false) => {
-                if let Err(error) =
-                    runtime.update_record(|record| record.containment_empty = Some(true))
-                {
+                let persisted = match control_socket::durable_record_vanished(runtime) {
+                    true => Ok(()),
+                    false => runtime
+                        .update_record(|record| record.containment_empty = Some(true))
+                        .map(|_| ()),
+                };
+                if let Err(error) = persisted {
                     log_best_effort(&format!(
                         "aplexer worker: persist delayed containment proof: {error:#}"
                     ));

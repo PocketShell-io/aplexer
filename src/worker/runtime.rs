@@ -132,7 +132,7 @@ impl WorkerRuntime {
             let mut candidate = record.clone();
             update(&mut candidate);
             candidate.updated_at_ms = now_ms();
-            match atomic_write_json(&self.record_path, &candidate) {
+            match crate::persist::replace_existing_json(&self.record_path, &candidate) {
                 Ok(()) => {
                     *record = candidate.clone();
                     *lock(&self.record_persistence_error)? = None;
@@ -1048,6 +1048,9 @@ mod tests {
         let mut record = SessionRecord::fixture(dir.path(), "before");
         record.socket_path = dir.path().join("control.sock");
         record.history_path = dir.path().join("history.bin");
+        if !record_path.exists() {
+            atomic_write_json(&record_path, &record).unwrap();
+        }
         WorkerRuntime {
             id: record.id,
             paths: Paths {
@@ -1083,8 +1086,8 @@ mod tests {
     pub(super) fn failed_record_persistence_does_not_publish_and_idle_activity_retries() {
         let dir = tempfile::tempdir().unwrap();
         let record_path = dir.path().join("session.json");
-        // Atomic rename onto a directory deterministically fails after the
-        // candidate was serialized, exercising the publish boundary.
+        // A non-regular destination refuses persistence without publishing
+        // the candidate, exercising the retry/publish boundary.
         fs::create_dir(&record_path).unwrap();
         let runtime = test_runtime(&dir, record_path);
 
@@ -1104,10 +1107,41 @@ mod tests {
         // destination failure is removed, the unchanged timestamp must still
         // be retried and published by the next tick.
         fs::remove_dir(&runtime.record_path).unwrap();
+        atomic_write_json(&runtime.record_path, &runtime.record().unwrap()).unwrap();
         persist_activity_checkpoint(&runtime, &mut persisted_activity_ms).unwrap();
         assert_eq!(persisted_activity_ms, 123);
         assert_eq!(runtime.record().unwrap().last_activity_ms, Some(123));
         assert!(runtime.record_persistence_error.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn pending_checkpoint_cannot_recreate_deleted_durable_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime(&dir, dir.path().join("session.json"));
+        atomic_write_json(&runtime.record_path, &runtime.record().unwrap()).unwrap();
+        runtime.output.append(b"pending output").unwrap();
+        runtime.last_activity_ms.store(123, Ordering::Relaxed);
+        fs::remove_dir_all(dir.path()).unwrap();
+
+        let mut checkpoint = 0;
+        assert!(persist_activity_checkpoint(&runtime, &mut checkpoint).is_err());
+        let _ = runtime.output.flush_history(true);
+        assert_eq!(checkpoint, 0);
+        assert!(
+            !dir.path().exists(),
+            "pending writers recreated removed state"
+        );
+    }
+
+    #[test]
+    fn history_flush_cannot_recreate_its_removed_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session/history.bin");
+        let mut history = History::open(path.clone(), 1024).unwrap();
+        history.append(b"pending output").unwrap();
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        assert!(history.flush().is_err());
+        assert!(!path.parent().unwrap().exists());
     }
 
     /// The flush-loop tick must survive persistence failures: return, log
@@ -1120,8 +1154,7 @@ mod tests {
     pub(super) fn flush_tick_survives_and_defers_failed_persistence() {
         let dir = tempfile::tempdir().unwrap();
         let record_path = dir.path().join("session.json");
-        // Atomic rename onto a directory deterministically fails after the
-        // candidate was serialized (same trick as the test above).
+        // A non-regular destination deterministically refuses persistence.
         fs::create_dir(&record_path).unwrap();
         let runtime = test_runtime(&dir, record_path);
         runtime.output.append(b"history").unwrap();
@@ -1207,8 +1240,7 @@ mod tests {
     pub(super) fn failed_record_persistence_pushes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let record_path = dir.path().join("session.json");
-        // Atomic rename onto a directory deterministically fails after the
-        // candidate was serialized (same trick as the test above).
+        // A non-regular destination deterministically refuses persistence.
         fs::create_dir(&record_path).unwrap();
         let runtime = test_runtime(&dir, record_path);
         let (_, _, rx) = runtime
@@ -1306,8 +1338,11 @@ mod tests {
         );
         assert_eq!(runtime.record().unwrap().tag, "before");
         assert!(
-            !runtime.record_path.exists(),
-            "a refused rename wrote the record"
+            serde_json::from_slice::<SessionRecord>(&fs::read(&runtime.record_path).unwrap())
+                .unwrap()
+                .tag
+                == "before",
+            "a refused rename changed the record"
         );
     }
 }
