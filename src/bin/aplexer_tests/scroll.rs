@@ -497,6 +497,65 @@ fn a_split_mouse_report_is_buffered_not_leaked_to_the_workload() {
     assert!(ctx.scroll.is_active());
 }
 
+#[test]
+fn workload_mouse_mode_keeps_clicks_but_routes_both_wheel_directions_to_the_pane() {
+    let mut ctx = status_ctx_for_test(true);
+    let _null = StdoutToDevNull::new();
+    ctx.mouse_capture = true;
+    ctx.screen
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .feed(b"\x1b[?1000h\x1b[?1006h");
+    *ctx.mouse_owned
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(false);
+    let mut input = ScrollInput::default();
+    let click = b"\x1b[<0;5;5M";
+    assert_eq!(input.route(&ctx, click), click);
+    assert!(input.route(&ctx, b"\x1b[<65;5;5M").is_empty());
+    assert!(input.route(&ctx, b"\x1b[<64;5;5m").is_empty());
+    assert!(!ctx.scroll.is_active());
+    assert!(input.route(&ctx, b"\x1b[<68;5;5M").is_empty()); // Shift+wheel up
+    assert!(ctx.scroll.is_active());
+}
+
+#[test]
+fn legacy_and_utf8_mouse_reports_are_split_safely_and_keep_clicks() {
+    let mut ctx = status_ctx_for_test(true);
+    let _null = StdoutToDevNull::new();
+    ctx.mouse_capture = true;
+    ctx.screen
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .feed(b"\x1b[?1000h");
+    *ctx.mouse_owned
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(false);
+    let mut input = ScrollInput::default();
+    let click = b"\x1b[M !!";
+    assert!(input.route(&ctx, b"\x1b[M ").is_empty());
+    assert_eq!(input.route(&ctx, b"!!"), click);
+    assert!(input.route(&ctx, b"\x1b[Ma!!").is_empty()); // wheel down
+    assert!(input.route(&ctx, b"\x1b[M`!!").is_empty()); // wheel up
+    assert!(ctx.scroll.is_active());
+    assert!(input.route(&ctx, b"\x1b[M !q").is_empty());
+    assert!(ctx.scroll.is_active(), "a legacy mouse coordinate is not a q key");
+
+    assert_eq!(
+        parse_x10_mouse(b"\x1b[M \xc2\x80!", true),
+        MouseParse::Complete(
+            MouseReport {
+                button: 0,
+                press: true,
+                col: 96,
+                row: 1,
+            },
+            7,
+        )
+    );
+    assert_eq!(parse_x10_mouse(b"\x1b[M \xc2", true), MouseParse::Incomplete);
+}
+
 /// While the pager is up the wheel belongs to the pager, even if the
 /// workload has asked for the mouse. Handing it back mid-scroll is how a
 /// wheel roll that started the pager becomes cursor-up walking prompt

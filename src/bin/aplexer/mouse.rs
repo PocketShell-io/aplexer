@@ -1,3 +1,5 @@
+use super::*;
+
 /// One button press/release reported by xterm's SGR extended mouse mode
 /// (`CSI ?1006h`, paired with `CSI ?1000h` click tracking) --
 /// docs/clickable-status-bar-design.md section 2. `col`/`row` are 1-based,
@@ -106,5 +108,72 @@ pub(crate) fn parse_sgr_mouse(buf: &[u8]) -> MouseParse {
         MouseParse::NotMouse
     } else {
         MouseParse::Incomplete
+    }
+}
+
+/// X10 mouse reports use three values after `ESC [ M`. DECSET 1005 encodes
+/// each value as UTF-8; otherwise each is one byte. Keep the original bytes
+/// for non-wheel events, since the workload may expect either encoding.
+pub(crate) fn parse_x10_mouse(buf: &[u8], utf8: bool) -> MouseParse {
+    const PREFIX: &[u8] = b"\x1b[M";
+    if buf.len() < PREFIX.len() {
+        return if PREFIX.starts_with(buf) {
+            MouseParse::Incomplete
+        } else {
+            MouseParse::NotMouse
+        };
+    }
+    if !buf.starts_with(PREFIX) {
+        return MouseParse::NotMouse;
+    }
+    let mut at = PREFIX.len();
+    let mut values = [0u32; 3];
+    for value in &mut values {
+        if at == buf.len() {
+            return MouseParse::Incomplete;
+        }
+        if utf8 {
+            let first = buf[at];
+            let len = match first {
+                0x00..=0x7f => 1,
+                0xc2..=0xdf => 2,
+                0xe0..=0xef => 3,
+                0xf0..=0xf4 => 4,
+                _ => return MouseParse::NotMouse,
+            };
+            if buf.len() - at < len {
+                return MouseParse::Incomplete;
+            }
+            let Ok(s) = std::str::from_utf8(&buf[at..at + len]) else {
+                return MouseParse::NotMouse;
+            };
+            *value = s.chars().next().unwrap() as u32;
+            at += len;
+        } else {
+            *value = u32::from(buf[at]);
+            at += 1;
+        }
+        if *value < 32 {
+            return MouseParse::NotMouse;
+        }
+        *value -= 32;
+    }
+    MouseParse::Complete(
+        MouseReport {
+            button: values[0],
+            press: true,
+            col: u16::try_from(values[1]).unwrap_or(u16::MAX),
+            row: u16::try_from(values[2]).unwrap_or(u16::MAX),
+        },
+        at,
+    )
+}
+
+/// Shift/Ctrl/Alt add modifier bits to a wheel button number.
+pub(crate) fn wheel_direction(button: u32) -> Option<ScrollCommand> {
+    match button & !0x1c {
+        MOUSE_WHEEL_UP => Some(ScrollCommand::Up(WHEEL_LINES)),
+        MOUSE_WHEEL_DOWN => Some(ScrollCommand::Down(WHEEL_LINES)),
+        _ => None,
     }
 }

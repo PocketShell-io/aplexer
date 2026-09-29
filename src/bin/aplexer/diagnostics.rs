@@ -29,11 +29,8 @@ pub(crate) fn cmd_hotkeys() -> Result<()> {
     println!();
     println!("Scrolling back (aplexer's copy-mode, like tmux's Ctrl-b [):");
     println!();
-    println!("  the mouse wheel enters it on its own, with no prefix -- unless the");
-    println!("  workload has asked the terminal for the mouse itself, in which case");
-    println!("  the wheel belongs to the workload and Ctrl-b [ is the way in.");
-    println!("  While the pager is up the wheel stays with the pager, so a TUI that");
-    println!("  later enables the mouse cannot turn the next notch into prompt history.");
+    println!("  the mouse wheel scrolls the pane, even when the workload uses the mouse.");
+    println!("  Clicks and motion still go to that workload while the pager is closed.");
     println!();
     println!("  PgUp/PgDn  a screen at a time      Up/Down, k/j   a line at a time");
     println!("  Home / End top / back to live      g / G          the same");

@@ -335,11 +335,15 @@ impl ScreenTracker {
         out
     }
 
-    /// True while the workload has asked for mouse reporting of its own. The
-    /// wheel belongs to it then, exactly as a tmux pane's application owns
-    /// the mouse when it requested it.
+    /// True while the workload has asked for mouse reporting of its own.
+    /// The attach client preserves its click protocol and consumes wheel
+    /// reports before forwarding input to the workload.
     pub fn workload_wants_mouse(&self) -> bool {
         self.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+    }
+
+    pub fn mouse_protocol_encoding(&self) -> vt100::MouseProtocolEncoding {
+        self.parser.screen().mouse_protocol_encoding()
     }
 
     /// True while the alternate screen is the active grid. `vt100` gives the

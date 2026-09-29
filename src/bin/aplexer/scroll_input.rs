@@ -1,8 +1,8 @@
 use super::*;
 
-/// Byte-level routing of stdin while the client owns the mouse, the pager is
-/// up, or both -- the thing that guarantees a keystroke aimed at the pager
-/// can never reach the workload.
+/// Byte-level routing of stdin while mouse capture or the pager is active.
+/// Wheel reports always go to the pane; other mouse reports reach a workload
+/// that requested them. Pager keys never reach the workload.
 ///
 /// Returns the bytes that may still be forwarded. In scroll mode that is
 /// empty except while type-through has handed the keyboard to the workload
@@ -10,9 +10,9 @@ use super::*;
 ///
 /// `pending` exists because a mouse report can be split across two `read()`s
 /// exactly like the `Ctrl-b` prefix can. Outside scroll mode it is only ever
-/// allowed to hold a buffer that has already produced the full three-byte
-/// `\x1b[<` SGR introducer -- no keyboard emits that, so nothing a user
-/// types can be delayed by it. A bare `ESC` or `ESC [` at the end of a chunk
+/// allowed to hold a buffer that has already produced a full mouse
+/// introducer (`\x1b[<` or `\x1b[M`) -- no keyboard emits either, so nothing
+/// a user types can be delayed by it. A bare `ESC` or `ESC [` at the end of a chunk
 /// is forwarded immediately rather than held, because holding it would make
 /// the Escape key in the user's editor wait for the next keystroke.
 #[derive(Default)]
@@ -43,9 +43,8 @@ impl ScrollInput {
                 .unwrap_or_else(PoisonError::into_inner),
             Some(true)
         );
-        if !ctx.scroll.is_active() && !client_mouse {
-            // Neither the pager nor the wheel is in play: the workload's
-            // input path is exactly what it always was.
+        if !ctx.scroll.is_active() && !client_mouse && !ctx.mouse_capture {
+            // Mouse capture is disabled: leave the workload's input alone.
             let mut out = std::mem::take(&mut self.pending);
             out.extend_from_slice(bytes);
             return out;
@@ -62,7 +61,7 @@ impl ScrollInput {
             } else if ctx.scroll.is_active() {
                 self.route_pager(ctx, at)
             } else {
-                self.route_live_mouse(ctx, at, &mut out)
+                self.route_live_mouse(ctx, at, &mut out, client_mouse)
             };
             match routed {
                 Routed::Consumed(n) => at += n,
@@ -79,17 +78,21 @@ impl ScrollInput {
     }
 
     /// Type-through (`i`): the keyboard belongs to the workload now, so
-    /// bytes forward verbatim. Two things are still decoded, because neither
-    /// is text the user could mean to type: an SGR mouse report (the client
-    /// borrowed the mouse; the workload never asked for it), and a lone-ESC
-    /// chunk, which takes the keyboard back for the pager. Anything else
-    /// starting with ESC -- arrows, Home, a sequence split across reads --
+    /// bytes forward verbatim. Mouse reports are swallowed while the pager
+    /// owns the host mouse, and a lone-ESC chunk takes the keyboard back.
+    /// Anything else starting with ESC -- arrows, Home, a sequence split across reads --
     /// is somebody's key, not text, and forwards whole.
     fn route_typing(&mut self, ctx: &StatusBarCtx, at: usize, out: &mut Vec<u8>) -> Routed {
         let rest = &self.pending[at..];
         if rest[0] == 0x1b {
             if rest.starts_with(b"\x1b[<") {
                 match parse_sgr_mouse(rest) {
+                    MouseParse::Complete(_, consumed) => return Routed::Consumed(consumed),
+                    MouseParse::Incomplete => return Routed::Wait,
+                    MouseParse::NotMouse => {}
+                }
+            } else if rest.starts_with(b"\x1b[M") {
+                match parse_x10_mouse(rest, self.workload_mouse_uses_utf8(ctx)) {
                     MouseParse::Complete(_, consumed) => return Routed::Consumed(consumed),
                     MouseParse::Incomplete => return Routed::Wait,
                     MouseParse::NotMouse => {}
@@ -109,6 +112,24 @@ impl ScrollInput {
     /// The pager has the keyboard: every byte is a navigation key or is
     /// swallowed, and nothing reaches the workload.
     fn route_pager(&mut self, ctx: &StatusBarCtx, at: usize) -> Routed {
+        if self.pending[at..].starts_with(b"\x1b[M") {
+            match parse_x10_mouse(&self.pending[at..], self.workload_mouse_uses_utf8(ctx)) {
+                MouseParse::Complete(report, consumed) => {
+                    if let Some(command) = wheel_direction(report.button) {
+                        self.pending.drain(..at + consumed);
+                        apply_scroll_command(ctx, command);
+                        return if ctx.scroll.is_active() {
+                            Routed::Rebased
+                        } else {
+                            Routed::Discard
+                        };
+                    }
+                    return Routed::Consumed(consumed);
+                }
+                MouseParse::Incomplete => return Routed::Wait,
+                MouseParse::NotMouse => {}
+            }
+        }
         match scroll_keys(&self.pending[at..]) {
             ScrollKey::Command(command, n) => {
                 // The buffer is advanced *before* the command runs, so an
@@ -136,18 +157,44 @@ impl ScrollInput {
         }
     }
 
-    /// Live, with the client holding the mouse: swallow mouse reports (the
-    /// workload never asked for them, so forwarding would type escape
-    /// sequences into it) and let a wheel roll up open the pager, which is
-    /// the gesture the user already has in their fingers from tmux.
-    fn route_live_mouse(&mut self, ctx: &StatusBarCtx, at: usize, out: &mut Vec<u8>) -> Routed {
-        if self.pending[at..].starts_with(b"\x1b[<") {
-            match parse_sgr_mouse(&self.pending[at..]) {
+    /// Route the wheel to this pane even when a TUI requested mouse input.
+    /// Its clicks and motion reports continue to the TUI unchanged.
+    fn route_live_mouse(
+        &mut self,
+        ctx: &StatusBarCtx,
+        at: usize,
+        out: &mut Vec<u8>,
+        client_mouse: bool,
+    ) -> Routed {
+        let rest = &self.pending[at..];
+        if rest.starts_with(b"\x1b[<") || rest.starts_with(b"\x1b[M") {
+            let parsed = if rest.starts_with(b"\x1b[<") {
+                parse_sgr_mouse(rest)
+            } else {
+                parse_x10_mouse(rest, self.workload_mouse_uses_utf8(ctx))
+            };
+            match parsed {
                 MouseParse::Complete(report, consumed) => {
-                    if report.button == MOUSE_WHEEL_UP && report.press {
-                        self.pending.drain(..at + consumed);
-                        enter_scroll_mode(ctx, ScrollCommand::Up(WHEEL_LINES));
-                        return Routed::Rebased;
+                    if let Some(command) = wheel_direction(report.button) {
+                        if report.press {
+                            if matches!(command, ScrollCommand::Up(_)) {
+                                self.pending.drain(..at + consumed);
+                                enter_scroll_mode(ctx, command);
+                                return Routed::Rebased;
+                            }
+                        }
+                        // Down at the live bottom and wheel releases have
+                        // nowhere to go; neither belongs to the workload.
+                        return Routed::Consumed(consumed);
+                    }
+                    if !client_mouse
+                        && ctx
+                            .screen
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .workload_wants_mouse()
+                    {
+                        out.extend_from_slice(&rest[..consumed]);
                     }
                     return Routed::Consumed(consumed);
                 }
@@ -157,5 +204,13 @@ impl ScrollInput {
         }
         out.push(self.pending[at]);
         Routed::Consumed(1)
+    }
+
+    fn workload_mouse_uses_utf8(&self, ctx: &StatusBarCtx) -> bool {
+        ctx.screen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .workload_mouse_encoding()
+            == vt100::MouseProtocolEncoding::Utf8
     }
 }

@@ -547,16 +547,10 @@ pub(crate) fn apply_scroll_command(ctx: &StatusBarCtx, command: ScrollCommand) {
     }
 }
 
-/// Whether the attach client should be the one receiving wheel events.
-///
-/// Live, the workload wins: a TUI that asked for mouse reporting has panes
-/// of its own to scroll, and tmux's answer -- the pane's application gets
-/// the mouse when it requested it -- is the right one. **The pager is the
-/// exception.** While the user is reading history the wheel has to keep
-/// driving the pager; handing it back mid-scroll lets a terminal with
-/// `alternateScroll` turn the next notch into cursor-up/down and type
-/// those into the agent's prompt. `Ctrl-b [` is the way in only when the
-/// pager is down and the workload holds the mouse.
+/// Whether the attach client should set its own SGR mouse mode on the host.
+/// Live, a workload that requested mouse reporting keeps its protocol so
+/// clicks work; `ScrollInput` still intercepts its wheel reports. While the
+/// pager is up, the client uses SGR reporting for its own navigation.
 pub(crate) fn client_should_own_mouse(ctx: &StatusBarCtx) -> bool {
     if !ctx.mouse_capture {
         return false;

@@ -165,8 +165,8 @@ pub(crate) fn attach(
     }
     feed_and_write(&stdout, &workload_screen, b"", &handshake.initial, None)?;
     // After the snapshot, because the snapshot is what tells the model which
-    // mouse modes the workload itself wants -- and the workload's wishes
-    // decide whether the client may borrow the mouse at all.
+    // mouse modes the workload itself wants. Live clicks retain that protocol;
+    // the input router still reserves wheel reports for the pane.
     if status_enabled {
         sync_client_mouse(&status_ctx);
         // The attach hint goes through the status-bar flash channel, not an

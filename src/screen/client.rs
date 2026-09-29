@@ -275,6 +275,11 @@ impl ClientScreen {
         self.screen.workload_wants_mouse()
     }
 
+    /// Encoding used by mouse reports sent to the workload's terminal.
+    pub fn workload_mouse_encoding(&self) -> vt100::MouseProtocolEncoding {
+        self.screen.mouse_protocol_encoding()
+    }
+
     /// True while the workload is on the alternate screen -- where, exactly
     /// as in tmux, there is no retained history to page through because the
     /// application owns the whole screen.

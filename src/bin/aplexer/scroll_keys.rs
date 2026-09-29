@@ -91,13 +91,12 @@ pub(crate) fn scroll_keys(buf: &[u8]) -> ScrollKey {
                         // report a terminal may pair with them is swallowed
                         // by the `Ignored` arm below, so one notch moves
                         // WHEEL_LINES exactly once.
-                        match (report.button, report.press) {
-                            (MOUSE_WHEEL_UP, true) => ScrollKey::Command(Up(WHEEL_LINES), consumed),
-                            (MOUSE_WHEEL_DOWN, true) => {
-                                ScrollKey::Command(Down(WHEEL_LINES), consumed)
+                        if report.press {
+                            if let Some(command) = wheel_direction(report.button) {
+                                return ScrollKey::Command(command, consumed);
                             }
-                            _ => ScrollKey::Ignored(consumed),
                         }
+                        ScrollKey::Ignored(consumed)
                     }
                     MouseParse::Incomplete => ScrollKey::Incomplete,
                     MouseParse::NotMouse => ScrollKey::Ignored(1),
