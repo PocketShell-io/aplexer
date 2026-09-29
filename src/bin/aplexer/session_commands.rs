@@ -416,7 +416,12 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
     }
     let mut sent = 0usize;
     if args.enter {
-        rpc_send_submitted(&record, &data, !args.hex && !args.stdin)?;
+        let kind = if args.hex || args.stdin {
+            SubmissionKind::Raw
+        } else {
+            SubmissionKind::Text
+        };
+        rpc_send_submitted(&record, &data, kind)?;
         sent = data.len();
     } else {
         for chunk in data.chunks(MAX_FRAME_BYTES) {

@@ -1496,6 +1496,89 @@ os.write(1, b"INPUT:" + data.hex().encode() + b"\n")
     let _ = harness.run(&["kill", &id, "--signal", "KILL"], Duration::from_secs(5));
 }
 
+fn shell_pane_probe(advertise_paste: bool, raw: bool) -> String {
+    let harness = Harness::new();
+    let root = TempDir::new().expect("workspace root");
+    let workspace = root.path().join("shell-pane-probe");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let script = r#"
+import os, tty
+tty.setraw(0)
+if os.environ.get("PASTE_MODE") == "on": os.write(1, b"\x1b[?2004h")
+os.write(1, b"READY\n")
+data = b""
+while not data.endswith(b"\r"):
+    data += os.read(0, 1)
+os.write(1, b"INPUT:" + data.hex().encode() + b"\n")
+"#;
+    let id = start_session_with_command(
+        &harness,
+        &workspace,
+        "shell-pane-probe",
+        &[
+            "env",
+            if advertise_paste {
+                "PASTE_MODE=on"
+            } else {
+                "PASTE_MODE=off"
+            },
+            "python3",
+            "-u",
+            "-c",
+            script,
+        ],
+    );
+    let mut client = PtyClient::spawn_no_status(&harness, &id, 24, 80);
+    client.wait_for(b"READY", 0, "shell probe to advertise its terminal mode");
+    let mut args = vec![
+        "message",
+        "send",
+        "--from",
+        "shell-pane-probe",
+        "--to",
+        "shell-pane-probe",
+        "--pane",
+    ];
+    if raw {
+        args.push("--raw");
+    }
+    args.push("probe-body");
+    let mut command = harness.command();
+    command.env("APLEXER_WORKSPACE", &workspace).args(&args);
+    let output = run_with_timeout(command, Duration::from_secs(5));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    client.wait_for(b"INPUT:", 0, "pane submission to reach the workload");
+    let output = String::from_utf8_lossy(&client.output()).into_owned();
+    client.wait_exit();
+    output
+        .split("INPUT:")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn framed_pane_uses_shell_workloads_live_bracketed_paste_mode() {
+    let framed = shell_pane_probe(true, false);
+    assert!(framed.starts_with("1b5b3230307e"), "{framed}");
+    assert!(framed.ends_with("1b5b3230317e0d"), "{framed}");
+    let plain = shell_pane_probe(false, false);
+    assert!(
+        plain.starts_with("5b61706c65786572206d657373616765"),
+        "{plain}"
+    );
+    assert!(plain.ends_with("0d"), "{plain}");
+    assert!(!plain.contains("1b5b3230307e"), "{plain}");
+    assert_eq!(shell_pane_probe(true, true), "70726f62652d626f64790d");
+}
+
 #[test]
 fn no_status_is_plain_relay_without_chrome_and_forwards_raw_input() {
     let harness = Harness::new();

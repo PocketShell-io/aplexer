@@ -56,19 +56,33 @@ pub(crate) fn rpc_send(record: &SessionRecord, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+pub(crate) enum SubmissionKind {
+    Raw,
+    Text,
+    FramedMessage,
+}
+
 /// Submit agent input as text, then a distinct Enter event. Codex accepts an
 /// explicit bracketed paste as one event and clears its paste-burst Enter
 /// suppression state; plain text may still be draining through its key-event
-/// queue after our wall-clock delay. Other engines keep their raw text input.
+/// queue after our wall-clock delay. Framed pane mail also honors a live
+/// workload's advertised paste mode, even if the session engine is `shell`.
 pub(crate) fn rpc_send_submitted(
     record: &SessionRecord,
     data: &[u8],
-    text_input: bool,
+    kind: SubmissionKind,
 ) -> Result<()> {
     let Some((&b'\r', text)) = data.split_last() else {
         bail!("submitted input must end with carriage return");
     };
-    let explicit_paste = text_input && aplexer::engine_family(&record.engine) == "codex";
+    let explicit_paste = match kind {
+        SubmissionKind::Raw => false,
+        SubmissionKind::Text => aplexer::engine_family(&record.engine) == "codex",
+        SubmissionKind::FramedMessage => {
+            aplexer::engine_family(&record.engine) == "codex"
+                || terminal_accepts_bracketed_paste(record)?
+        }
+    };
     if explicit_paste && !text.is_empty() {
         rpc_send(record, b"\x1b[200~")?;
     }
@@ -82,6 +96,13 @@ pub(crate) fn rpc_send_submitted(
         thread::sleep(Duration::from_millis(300));
     }
     rpc_send(record, b"\r")
+}
+
+fn terminal_accepts_bracketed_paste(record: &SessionRecord) -> Result<bool> {
+    let snapshot = rpc_capture_screen(record, false)?;
+    let mut parser = vt100::Parser::new(24, 80, 0);
+    parser.process(&snapshot);
+    Ok(parser.screen().bracketed_paste())
 }
 pub(crate) fn rpc_capture(record: &SessionRecord, max: Option<usize>) -> Result<Vec<u8>> {
     let (mut stream, _) = rpc_call(record, Operation::Capture { max_bytes: max }, None)?;

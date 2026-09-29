@@ -36,7 +36,12 @@ pub(crate) fn deliver_pane(
         return rpc_send(record, &input)
             .with_context(|| format!("inject into session {tag:?}'s PTY"));
     }
-    rpc_send_submitted(record, &input, !raw)
+    let kind = if raw {
+        SubmissionKind::Raw
+    } else {
+        SubmissionKind::FramedMessage
+    };
+    rpc_send_submitted(record, &input, kind)
         .with_context(|| format!("submit message in session {tag:?}'s PTY"))
 }
 

@@ -411,8 +411,10 @@ primitive:
   identity resolution — not a raw selector the sender must construct.
 - **Framed for an agent recipient.** The injected text includes the durable
   message id, sender session and workspace, and a reply command. Text and
-  Enter are separate PTY writes. Codex-family sessions receive the text as an
-  explicit bracketed paste before Enter; this clears Codex's paste-burst
+  Enter are separate PTY writes. A framed pane message uses an explicit
+  bracketed paste when the live terminal has enabled bracketed paste mode,
+  including Codex launched by a shell; Codex-family sessions retain this
+  behavior if the mode cannot yet be observed. This clears Codex's paste-burst
   suppression state even when its event queue drains after the PTY write.
   `--raw` suppresses the frame and paste wrapper; `--no-enter` suppresses
   submission.
@@ -532,9 +534,9 @@ identity; `log` and `send` degrade gracefully per §2.1).
     temp files, and legacy/stable merge failures) belongs in doctor's checks.
 11. **Pane-mode framing details.** Whether multi-line bodies are allowed in
     pane mode or rejected in favor of a pointer into the inbox, and how to
-    confirm a recipient's composer is ready before a pane attempt. Codex-family
-    text submission now uses bracketed paste followed by CR; raw byte modes
-    retain their exact payload.
+    confirm a recipient's composer is ready before a pane attempt. Framed pane
+    text uses bracketed paste followed by CR when the terminal advertises that
+    mode; raw byte modes retain their exact payload.
 12. **`--when-waiting` delivery.** Whether deferred pane delivery (§6.3)
     should live in the sender CLI (poll target state, then inject) or in the
     target's worker (accept-and-hold RPC) — the latter adds held state to the
