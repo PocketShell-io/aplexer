@@ -2,6 +2,12 @@
 mod ack;
 #[path = "messaging_hook_notice/busy.rs"]
 mod busy;
+#[path = "messaging_hook_notice/dedupe.rs"]
+mod dedupe;
+#[path = "messaging_hook_notice/envelopes.rs"]
+mod envelopes;
+#[path = "messaging_hook_notice/state.rs"]
+mod state;
 #[path = "support/messaging.rs"]
 mod support;
 
@@ -82,89 +88,6 @@ fn context(output: &Output) -> String {
 }
 
 #[test]
-fn both_engines_emit_bounded_ids_only_and_preserve_ack_and_pty() {
-    for engine in ["claude", "codex"] {
-        let harness = Harness::new();
-        let workspace = TempDir::new().unwrap();
-        let sender = harness.record(Phase::Exited, None, b"");
-        let recipient = engine_record(&harness, workspace.path(), engine);
-        let ids: Vec<String> = (0..6)
-            .map(|_| {
-                send(&harness, &sender, &recipient)["id"]
-                    .as_str()
-                    .unwrap()
-                    .to_owned()
-            })
-            .collect();
-        let mp = message_paths(&harness.paths(), &recipient.workspace);
-        let cursor = mp.cursors_dir.join(format!("{}.json", recipient.id));
-        assert!(!cursor.exists());
-        let before_history = std::fs::read(&recipient.history_path).unwrap();
-        let text = context(&notice(&harness, &recipient, engine, &hook_input(false)));
-        assert!(text.contains("6 unread"), "{text}");
-        assert_eq!(
-            ids.iter().filter(|id| text.contains(id.as_str())).count(),
-            5
-        );
-        assert!(!text.contains(&ids[5]));
-        assert!(!text.contains(BODY) && !text.contains(SECRET));
-        assert!(!cursor.exists());
-        let state =
-            std::fs::read_to_string(mp.cursors_dir.join(format!("{}.notice", recipient.id)))
-                .unwrap();
-        assert!(!state.contains(BODY) && !state.contains(SECRET));
-        assert_eq!(
-            std::fs::read(&recipient.history_path).unwrap(),
-            before_history
-        );
-    }
-}
-
-#[test]
-fn concurrent_claims_dedupe_and_cooldown_retries() {
-    let harness = Harness::new();
-    let sender = harness.record(Phase::Exited, None, b"");
-    let recipient = engine_record(&harness, sender.workspace.as_path(), "codex");
-    let sent = send(&harness, &sender, &recipient);
-    let children: Vec<_> = (0..8)
-        .map(|_| {
-            let mut command = harness.command();
-            command.env("APLEXER_SESSION_ID", recipient.id.to_string());
-            std::thread::spawn(move || run_hook(command, "codex", &hook_input(false)))
-        })
-        .collect();
-    let outputs: Vec<Output> = children
-        .into_iter()
-        .map(|child| child.join().unwrap())
-        .collect();
-    assert_eq!(
-        outputs.iter().filter(|out| !out.stdout.is_empty()).count(),
-        1
-    );
-    assert!(outputs
-        .iter()
-        .all(|out| out.status.success() && out.stderr.is_empty()));
-    let repeat = notice(&harness, &recipient, "codex", &hook_input(false));
-    assert!(repeat.stdout.is_empty());
-    let mp = message_paths(&harness.paths(), &recipient.workspace);
-    let path = mp.cursors_dir.join(format!("{}.notice", recipient.id));
-    let old = aplexer::messaging::now_secs() - 601;
-    atomic_write_json(
-        &path,
-        &json!({"claimed_at": {sent["id"].as_str().unwrap(): old}}),
-    )
-    .unwrap();
-    assert!(
-        context(&notice(&harness, &recipient, "codex", &hook_input(false)))
-            .contains(sent["id"].as_str().unwrap())
-    );
-    assert!(!mp
-        .cursors_dir
-        .join(format!("{}.json", recipient.id))
-        .exists());
-}
-
-#[test]
 fn subagent_and_unbound_calls_are_quiet_without_notice_mutation() {
     let harness = Harness::new();
     let sender = harness.record(Phase::Exited, None, b"");
@@ -222,51 +145,4 @@ fn shell_launched_codex_gets_notice_then_explicit_cross_workspace_reply() {
         std::fs::read(&recipient.history_path).unwrap(),
         b"human-draft"
     );
-}
-
-#[test]
-fn legacy_cursor_is_interpreted_without_ack_write_and_stale_claims_are_pruned() {
-    let harness = Harness::new();
-    let sender = harness.record(Phase::Exited, None, b"");
-    let recipient = engine_record(&harness, sender.workspace.as_path(), "claude");
-    let first = send(&harness, &sender, &recipient);
-    let second = send(&harness, &sender, &recipient);
-    let mp = message_paths(&harness.paths(), &recipient.workspace);
-    let cursor = mp.cursors_dir.join(format!("{}.json", recipient.id));
-    let original = serde_json::to_vec(&json!({"acked_through": first["id"]})).unwrap();
-    std::fs::write(&cursor, &original).unwrap();
-    let text = context(&notice(&harness, &recipient, "claude", &hook_input(false)));
-    assert!(!text.contains(first["id"].as_str().unwrap()));
-    assert!(text.contains(second["id"].as_str().unwrap()));
-    assert_eq!(std::fs::read(&cursor).unwrap(), original);
-    let third = send(&harness, &sender, &recipient);
-    let second_path = mp
-        .msgs_dir
-        .join(format!("{}.json", second["id"].as_str().unwrap()));
-    std::fs::remove_file(second_path).unwrap();
-    let text = context(&notice(&harness, &recipient, "claude", &hook_input(false)));
-    assert!(text.contains(third["id"].as_str().unwrap()));
-    let state: Value = serde_json::from_slice(
-        &std::fs::read(mp.cursors_dir.join(format!("{}.notice", recipient.id))).unwrap(),
-    )
-    .unwrap();
-    assert!(state["claimed_at"]
-        .get(second["id"].as_str().unwrap())
-        .is_none());
-    assert_eq!(std::fs::read(&cursor).unwrap(), original);
-    let ack = harness
-        .command()
-        .env("APLEXER_SESSION_ID", recipient.id.to_string())
-        .args(["message", "ack", third["id"].as_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(ack.status.success(), "{ack:?}");
-    assert!(notice(&harness, &recipient, "claude", &hook_input(false))
-        .stdout
-        .is_empty());
-    let state: Value = serde_json::from_slice(
-        &std::fs::read(mp.cursors_dir.join(format!("{}.notice", recipient.id))).unwrap(),
-    )
-    .unwrap();
-    assert!(state["claimed_at"].as_object().unwrap().is_empty());
 }
