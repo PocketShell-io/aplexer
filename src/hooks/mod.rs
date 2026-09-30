@@ -88,6 +88,7 @@ mod codex_notify;
 mod drivers;
 mod files;
 mod nested;
+mod notice;
 #[cfg(test)]
 mod tests;
 
@@ -112,17 +113,19 @@ pub const HOOK_ENGINES: [&str; 5] = ["claude", "codex", "grok", "gemini", "openc
 /// a fresh lie mid-turn, and `idle` is the one push with no follow-up hook
 /// to correct it (see `watch::fresh_reported_state`). The main turn's
 /// `Stop` alone marks the rest.
-pub const CLAUDE_EVENTS: [(&str, &str); 4] = [
+pub const CLAUDE_EVENTS: [(&str, &str); 5] = [
     ("Stop", "idle"),
     ("Notification", "waiting"),
     ("UserPromptSubmit", "working"),
     ("SessionStart", "working"),
+    ("PostToolUse", "notice:claude"),
 ];
 /// Codex's `hooks.json` uses Claude-style event names for these three.
-pub const CODEX_EVENTS: [(&str, &str); 3] = [
+pub const CODEX_EVENTS: [(&str, &str); 4] = [
     ("Stop", "idle"),
     ("UserPromptSubmit", "working"),
     ("SessionStart", "working"),
+    ("PostToolUse", "notice:codex"),
 ];
 /// Grok's personal-hooks dir speaks the Claude-compatible nested format.
 pub const GROK_EVENTS: [(&str, &str); 4] = [
@@ -177,6 +180,9 @@ pub fn is_state_report_command(command: &str) -> bool {
 /// after `state-report`: a binary path that happens to contain "idle"
 /// does not make every hook an idle hook.
 fn reports_state(command: &str, state: &str) -> bool {
+    if let Some(engine) = state.strip_prefix("notice:") {
+        return reports_notice(command, engine);
+    }
     let words: Vec<&str> = command.split_whitespace().collect();
     words
         .windows(2)
@@ -282,3 +288,4 @@ pub use codex_notify::*;
 pub use drivers::*;
 pub(crate) use files::*;
 pub use nested::*;
+use notice::*;

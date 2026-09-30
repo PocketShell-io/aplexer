@@ -1,6 +1,6 @@
 # Inter-agent messaging: a per-workspace communication channel
 
-Status: implemented (v1 scope plus local cross-workspace targeted send/reply -- see `a message --help`); event-stream push notification, `--when-waiting` deferred pane delivery, and cross-host bridging remain design-only, see section 8's open questions
+Status: implemented (v1 scope, local cross-workspace targeted send/reply, and Claude/Codex PostToolUse inbox notices); event-stream push notification, `--when-waiting` deferred pane delivery, and cross-host bridging remain design-only, see section 8's open questions
 Scope: messaging between aplexer sessions on the same host, including targeted messages across workspace paths
 Related spec sections: 5.1 (no shared PTY owner), 14 (runtime storage), 18 (machine API), 19 (event stream), 26 (security), 32 (recovery)
 
@@ -232,10 +232,35 @@ active or older client is skipped rather than raced.
 
 ### 3.3 Notification: how a recipient learns there's mail
 
-The mailbox is pull-based and that is the v1 contract: `a message inbox` is a
+The mailbox remains pull-based: `a message inbox` is a
 directory listing plus a cursor comparison — well within the spec §30
 "milliseconds" budget, cheap enough for agents to call at every natural
 checkpoint and for clients to poll.
+
+`a init` installs a synchronous `PostToolUse` command hook for Claude and
+Codex. It calls the hidden `a message hook-notice --engine claude|codex`.
+When an actual aplexer session record binds the main agent to one recipient,
+the hook emits `hookSpecificOutput.additionalContext` with the total unread
+count and up to five exact IDs. It never emits bodies or hook input. The
+context reaches the next model request at a tool boundary; it does not
+interrupt an idle agent or submit a pending composer draft. Claude's and
+Codex's subagent hook calls are ignored, so they cannot claim the main
+agent's notice. Existing sessions may need their harness to load and trust
+updated hooks before they run; hook installation alone does not prove that.
+
+The managed synchronous hook has a five-second timeout, and its mailbox claim
+uses a nonblocking lock. Contention or timeout leaves the message unread for a
+later boundary.
+
+Notice claims live in separate, bounded per-consumer state under the mailbox
+lock. A claim suppresses the same unread ID for ten minutes, then permits a
+retry. Acknowledged or pruned IDs are removed from notice state on the next
+hook call. Claims do not change the explicit read/ACK cursor. A crash after
+claiming but before stdout reaches the harness can delay the next notice until
+the cooldown expires. A notice is neither guaranteed delivery nor proof that
+the agent read or processed a message. Invalid input, missing or ambiguous
+binding, and storage failures yield no notice without blocking the tool. This
+bookkeeping writes state when a notice is claimed or stale IDs are pruned.
 
 Two push layers can be added later without changing the transport:
 

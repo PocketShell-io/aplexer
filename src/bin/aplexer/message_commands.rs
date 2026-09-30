@@ -90,6 +90,20 @@ pub(crate) fn cmd_message(paths: &Paths, args: MessageArgs, json_output: bool) -
         MessageCommand::Show(a) => cmd_message_show(paths, a, json_output),
         MessageCommand::Ack(a) => cmd_message_ack(paths, a, json_output),
         MessageCommand::Gc(a) => cmd_message_gc(paths, a, json_output),
+        MessageCommand::HookNotice(a) => {
+            cmd_message_hook_notice(paths, a);
+            Ok(())
+        }
+    }
+}
+
+fn cmd_message_hook_notice(paths: &Paths, args: MessageHookNoticeArgs) {
+    let engine = match args.engine {
+        NoticeEngine::Claude => "claude",
+        NoticeEngine::Codex => "codex",
+    };
+    if let Ok(Some(output)) = hook_notice(paths, engine, io::stdin().lock()) {
+        println!("{output}");
     }
 }
 
