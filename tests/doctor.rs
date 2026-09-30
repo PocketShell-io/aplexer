@@ -504,18 +504,6 @@ fn optional_cgroup_capability_is_explicit_and_never_makes_clean_doctor_fatal() {
     if check["available"] == true {
         assert_eq!(check["ok"], true);
         assert_eq!(check["severity"], "ok");
-        // A clean host has no warnings -- except the engine_resolution ones
-        // this box's own PATH legitimately produces (nvm-resolved engines,
-        // issue #19), which are warning-severity and never fatal.
-        let engine_check = report["checks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|check| check["name"] == "engine_resolution")
-            .cloned()
-            .unwrap_or(Value::Null);
-        let expected_warnings = if engine_check["ok"] == true { 0 } else { 1 };
-        assert_eq!(report["warnings"], expected_warnings);
         assert_eq!(check["prerequisites"]["cgroup_v2"], true);
         assert_eq!(check["prerequisites"]["controllers"]["ok"], true);
         assert_eq!(

@@ -190,7 +190,7 @@ fn doctor_reports_launch_placement_as_an_advisory_check() {
     if expected.vulnerable_to_user_manager_exit() {
         assert_eq!(check["severity"], "warning");
         assert_eq!(check["ok"], false);
-        assert!(check["advice"].is_null(), "vulnerable placement advises");
+        assert_eq!(check["advice"].as_str(), expected.advice());
     } else {
         assert_eq!(check["ok"], true);
     }
