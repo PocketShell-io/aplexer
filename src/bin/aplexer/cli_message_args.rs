@@ -18,6 +18,8 @@ pub(crate) enum MessageCommand {
     /// Reply to a received message (threads via reply_to).
     #[command(after_help = MESSAGE_REPLY_EXAMPLES)]
     Reply(MessageReplyArgs),
+    /// Submit an existing inbox message after inspecting a fresh, empty prompt.
+    Deliver(MessageDeliverArgs),
     /// List unread messages addressed to the calling session.
     #[command(after_help = MESSAGE_INBOX_EXAMPLES)]
     Inbox(MessageInboxArgs),
@@ -36,6 +38,16 @@ pub(crate) enum MessageCommand {
     /// Internal PostToolUse mailbox notice callback.
     #[command(hide = true)]
     HookNotice(MessageHookNoticeArgs),
+}
+
+#[derive(Args)]
+pub(crate) struct MessageDeliverArgs {
+    /// Original durable message ID; delivery never creates another envelope.
+    #[arg(value_name = "MESSAGE_ID")]
+    pub(crate) message_id: Uuid,
+    /// Destination mailbox (defaults to the calling session workspace).
+    #[arg(long, value_name = "PATH")]
+    pub(crate) workspace: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
