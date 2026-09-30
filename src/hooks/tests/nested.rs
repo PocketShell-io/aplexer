@@ -21,6 +21,31 @@ fn merge_is_idempotent() {
 }
 
 #[test]
+fn post_tool_notice_merges_and_unmerges_without_touching_foreign_hooks() {
+    for (engine, events) in [("claude", &CLAUDE_EVENTS[..]), ("codex", &CODEX_EVENTS[..])] {
+        let foreign = json!({"hooks": {"PostToolUse": [{"hooks": [
+            {"type": "command", "command": "foreign-post-tool"},
+            {"type": "command", "command": format!("echo message hook-notice --engine {engine}")}
+        ]}]}});
+        let mut doc = merged(events, foreign.clone());
+        let groups = doc["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert!(groups
+            .iter()
+            .any(|group| group_reports(group, &format!("notice:{engine}"))));
+        let notice = groups
+            .iter()
+            .find(|group| group_reports(group, &format!("notice:{engine}")))
+            .unwrap();
+        assert_eq!(notice["hooks"][0]["timeout"], 5);
+        assert_eq!(merge_nested_hooks(&mut doc, events, A_BIN).unwrap(), 0);
+        assert!(missing_nested_hooks(&doc, events).is_empty());
+        assert!(unmerge_nested_hooks(&mut doc));
+        assert_eq!(doc["hooks"]["PostToolUse"], foreign["hooks"]["PostToolUse"]);
+    }
+}
+
+#[test]
 fn merge_preserves_existing_hooks_and_keys() {
     let start = json!({
         "permissions": {"deny": ["AskUserQuestion"]},

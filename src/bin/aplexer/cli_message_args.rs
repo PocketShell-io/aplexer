@@ -1,6 +1,6 @@
 use super::cli_examples::*;
 use super::completions::{engine_completions, session_tag_completions};
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -33,6 +33,21 @@ pub(crate) enum MessageCommand {
     /// Prune expired/over-cap messages from a workspace mailbox.
     #[command(after_help = MESSAGE_GC_EXAMPLES)]
     Gc(MessageGcArgs),
+    /// Internal PostToolUse mailbox notice callback.
+    #[command(hide = true)]
+    HookNotice(MessageHookNoticeArgs),
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub(crate) enum NoticeEngine {
+    Claude,
+    Codex,
+}
+
+#[derive(Args)]
+pub(crate) struct MessageHookNoticeArgs {
+    #[arg(long, value_enum)]
+    pub(crate) engine: NoticeEngine,
 }
 
 /// Flags shared by `send` and `reply` for choosing/framing pane delivery

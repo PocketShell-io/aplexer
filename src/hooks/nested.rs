@@ -9,8 +9,12 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// One hook group in the nested format.
-fn our_group(command: String) -> Value {
-    serde_json::json!({"hooks": [{"type": "command", "command": command}]})
+fn our_group(command: String, is_notice: bool) -> Value {
+    let mut hook = serde_json::json!({"type": "command", "command": command});
+    if is_notice {
+        hook["timeout"] = serde_json::json!(5);
+    }
+    serde_json::json!({"hooks": [hook]})
 }
 
 /// Does a hook group already contain a state-report entry for `state`?
@@ -60,7 +64,12 @@ pub fn merge_nested_hooks(doc: &mut Value, events: &[(&str, &str)], a_bin: &str)
             }
         };
         if !groups.iter().any(|g| group_reports(g, state)) {
-            groups.push(our_group(state_report_command(a_bin, state)));
+            let command = if let Some(engine) = state.strip_prefix("notice:") {
+                notice_command(a_bin, engine)
+            } else {
+                state_report_command(a_bin, state)
+            };
+            groups.push(our_group(command, state.starts_with("notice:")));
             changed += 1;
         }
     }
@@ -97,7 +106,7 @@ pub fn unmerge_nested_hooks(doc: &mut Value) -> bool {
                             inner.retain(|h| {
                                 h.get("command")
                                     .and_then(Value::as_str)
-                                    .map(|c| !is_state_report_command(c))
+                                    .map(|c| !is_managed_hook_command(c))
                                     .unwrap_or(true)
                             });
                             if inner.len() != inner_before {

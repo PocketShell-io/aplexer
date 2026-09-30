@@ -18,6 +18,7 @@ mod gc;
 mod identity;
 mod layout;
 mod migrate;
+mod notice;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -74,4 +75,5 @@ pub use gc::*;
 pub use identity::*;
 pub use layout::*;
 pub(crate) use migrate::*;
+pub use notice::*;
 pub use store::*;
