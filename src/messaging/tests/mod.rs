@@ -7,6 +7,7 @@ mod gc;
 mod layout;
 mod migrate;
 mod store;
+mod submission;
 
 use super::*;
 

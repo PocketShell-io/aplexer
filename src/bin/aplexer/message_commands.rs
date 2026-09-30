@@ -85,6 +85,7 @@ pub(crate) fn cmd_message(paths: &Paths, args: MessageArgs, json_output: bool) -
     match args.command {
         MessageCommand::Send(a) => cmd_message_send(paths, a, json_output),
         MessageCommand::Reply(a) => cmd_message_reply(paths, a, json_output),
+        MessageCommand::Deliver(a) => cmd_message_deliver(paths, a, json_output),
         MessageCommand::Inbox(a) => cmd_message_inbox(paths, a, json_output),
         MessageCommand::Log(a) => cmd_message_log(paths, a, json_output),
         MessageCommand::Show(a) => cmd_message_show(paths, a, json_output),

@@ -46,13 +46,7 @@ fn mailbox_entries(
 
 /// Unlinks one mailbox message; false when it was already gone.
 fn remove_mailbox_entry(entry: &MailboxEntry) -> Result<bool> {
-    match fs::remove_file(&entry.path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => {
-            Err(error).with_context(|| format!("remove mailbox message {}", entry.path.display()))
-        }
-    }
+    submission::remove_message_and_attempt(&entry.path)
 }
 
 /// Applies TTL and hard caps while the caller holds `MAILBOX_LOCK_FILE`.

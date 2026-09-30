@@ -20,6 +20,7 @@ mod layout;
 mod migrate;
 mod notice;
 mod store;
+mod submission;
 #[cfg(test)]
 mod tests;
 
@@ -77,3 +78,4 @@ pub use layout::*;
 pub(crate) use migrate::*;
 pub use notice::*;
 pub use store::*;
+pub use submission::*;

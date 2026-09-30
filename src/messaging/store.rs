@@ -25,6 +25,13 @@ pub fn write_message_in(mp: &MessagePaths, envelope: &MessageEnvelope) -> Result
 /// replyable inbox entry rather than a pane frame pointing at missing mail.
 pub fn mark_pane_delivered_in(mp: &MessagePaths, envelope: &MessageEnvelope) -> Result<()> {
     let _mailbox = FileLock::exclusive(&mailbox_lock_path(mp), false)?;
+    mark_pane_delivered_locked(mp, envelope)
+}
+
+pub(crate) fn mark_pane_delivered_locked(
+    mp: &MessagePaths,
+    envelope: &MessageEnvelope,
+) -> Result<()> {
     let path = mp.msgs_dir.join(format!("{}.json", envelope.id));
     let current = load_message_file(&path, &envelope.workspace)?;
     if current.id != envelope.id || current.delivery != Delivery::Inbox {

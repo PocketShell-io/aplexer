@@ -566,3 +566,42 @@ identity; `log` and `send` degrade gracefully per §2.1).
     should live in the sender CLI (poll target state, then inject) or in the
     target's worker (accept-and-hold RPC) — the latter adds held state to the
     worker, which spec §5.2 resists.
+
+## Explicit delivery of an existing inbox message (#27)
+
+`aplexer message deliver MESSAGE_ID --workspace /destination --json` submits the
+original envelope. It keeps its ID, sender, body, timestamp and reply linkage;
+it does not append a second message or acknowledge the recipient's inbox.
+Only the recorded sender or recipient session may invoke it. The recorded
+recipient UUID is mandatory, including for same-workspace messages; a later
+session reusing the tag never receives this delivery.
+
+Before invoking it, inspect the recipient's fresh state and rendered composer.
+The command requires a live, freshly reported idle/waiting state. That state
+cannot prove the composer is empty: do not invoke it over a human draft.
+This command does not schedule delivery or change idle hooks.
+
+| Outcome | Meaning |
+|---|---|
+| `submitted` | The framed input and separate Enter RPC completed. This is transport evidence, not proof the agent processed the message. |
+| `already-submitted` | The durable envelope already records pane delivery; no input was written. A prior `--no-enter` send can also have this record. |
+| `recipient-acked` | The original recipient already acknowledged the message; no input was written. |
+| `not-ready` | Preflight failed before input submission; the message remains queued. |
+| `delivery-uncertain` | An attempt may have written input. Inspect the recipient and obtain an acknowledgement; the command will not retry it. |
+
+`not-ready` and `delivery-uncertain` return nonzero after printing their outcome.
+Authorization and malformed/missing-message errors also return nonzero without
+writing to the recipient.
+
+Initial pane sends and deferred delivery share a durable reservation. A small
+`msgs/MESSAGE_ID.attempt` file is synced before transport starts. The existing
+mailbox lock serializes the bounded submission and prevents GC/ack races; using
+one existing lock also avoids orphaned per-message lock files. A crash or lost
+response keeps the reservation, so another invocation cannot duplicate input.
+GC removes the reservation when it removes its message. Successful deferred
+submission leaves acknowledgement to the recipient.
+
+Legacy clients did not record attempted pane writes. Only defer a legacy inbox
+message when it is known to have been sent inbox-only. After an older client's
+ambiguous pane failure, inspect the recipient before taking any action; the new
+command cannot reconstruct transport history that was never recorded.

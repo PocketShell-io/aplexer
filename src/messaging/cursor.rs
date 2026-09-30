@@ -58,6 +58,10 @@ pub fn read_cursor(paths: &Paths, canonical_workspace: &Path, consumer_id: Uuid)
 /// `read_cursor` from an already-ensured mailbox.
 pub fn read_cursor_in(mp: &MessagePaths, consumer_id: Uuid) -> Result<Cursor> {
     let _mailbox = FileLock::exclusive(&mailbox_lock_path(mp), false)?;
+    read_cursor_locked(mp, consumer_id)
+}
+
+pub(crate) fn read_cursor_locked(mp: &MessagePaths, consumer_id: Uuid) -> Result<Cursor> {
     let path = mp.cursors_dir.join(format!("{consumer_id}.json"));
     let _cursor = FileLock::exclusive(&cursor_lock_path(&mp.cursors_dir, consumer_id), false)?;
     let mut value = read_cursor_file(&path)?;
