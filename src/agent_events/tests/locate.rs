@@ -105,7 +105,11 @@ fn live_fd_binds_the_single_open_rollout_and_records_the_engine() {
         &dir.path().join("proj").display().to_string(),
         "mid-insert",
     );
-    let proc_root = fake_proc(&dir.path().join("proc"), 4242, std::slice::from_ref(&rollout));
+    let proc_root = fake_proc(
+        &dir.path().join("proc"),
+        4242,
+        std::slice::from_ref(&rollout),
+    );
     let record = shell_session_in(dir.path(), &codex_home);
     let bind_path = dir.path().join("transcript.json");
 
@@ -125,7 +129,11 @@ fn live_fd_binds_the_single_open_rollout_and_records_the_engine() {
     assert_eq!(resolution.engine.as_deref(), Some("codex"));
     assert_eq!(resolution.engine_session_id.as_deref(), Some("thread"));
     let bind = resolution.bind.as_ref().unwrap();
-    assert!(bind.wrote, "bind write should succeed: {:?}", bind.write_error);
+    assert!(
+        bind.wrote,
+        "bind write should succeed: {:?}",
+        bind.write_error
+    );
     let saved: TranscriptBind =
         serde_json::from_slice(&std::fs::read(&bind_path).unwrap()).unwrap();
     assert_eq!(saved.engine.as_deref(), Some("codex"));
@@ -140,7 +148,12 @@ fn live_fd_with_two_plausible_rollouts_refuses_and_binds_nothing() {
     let codex_home = dir.path().join("zcodex-home");
     let cwd_str = dir.path().join("proj").display().to_string();
     let top = codex_rollout(&codex_home.join("sessions"), "top.jsonl", &cwd_str, "top");
-    let nested = codex_rollout(&codex_home.join("sessions"), "nested.jsonl", &cwd_str, "nested");
+    let nested = codex_rollout(
+        &codex_home.join("sessions"),
+        "nested.jsonl",
+        &cwd_str,
+        "nested",
+    );
     let proc_root = fake_proc(&dir.path().join("proc"), 4242, &[top, nested]);
     let record = shell_session_in(dir.path(), &codex_home);
     let bind_path = dir.path().join("transcript.json");
@@ -158,7 +171,10 @@ fn live_fd_with_two_plausible_rollouts_refuses_and_binds_nothing() {
     assert!(resolution.path.is_none());
     let error = resolution.error.as_deref().unwrap();
     assert!(error.contains("refusing to guess"), "{error}");
-    assert!(error.contains("top.jsonl") && error.contains("nested.jsonl"), "{error}");
+    assert!(
+        error.contains("top.jsonl") && error.contains("nested.jsonl"),
+        "{error}"
+    );
     assert_eq!(resolution.candidates.len(), 2);
     // A wrong automatic bind is worse than no bind: nothing was written.
     assert!(!bind_path.exists());
@@ -189,7 +205,8 @@ fn bound_log_stays_usable_after_the_agent_exits() {
     // No live agent: the sidecar is the only evidence left, and it must
     // still resolve -- with the engine it vouches for, not the record's
     // transcript-less `shell`.
-    let resolution = resolve_transcript_detailed(&record, &bind_path, &dir.path().join("proc"), None);
+    let resolution =
+        resolve_transcript_detailed(&record, &bind_path, &dir.path().join("proc"), None);
 
     assert_eq!(resolution.source, "bind");
     assert_eq!(resolution.path.as_deref(), Some(rollout.as_path()));
@@ -228,7 +245,8 @@ fn stale_bind_falls_through_to_rediscovery_and_names_the_old_path() {
     )
     .unwrap();
 
-    let resolution = resolve_transcript_detailed(&record, &bind_path, &dir.path().join("proc"), None);
+    let resolution =
+        resolve_transcript_detailed(&record, &bind_path, &dir.path().join("proc"), None);
 
     assert_eq!(resolution.path.as_deref(), Some(rollout.as_path()));
     assert_eq!(resolution.source, "heuristic");
@@ -253,12 +271,16 @@ fn heuristic_ambiguity_names_candidates_and_binds_nothing() {
         .insert("CODEX_HOME".into(), codex_home.display().to_string());
     let bind_path = dir.path().join("transcript.json");
 
-    let resolution = resolve_transcript_detailed(&record, &bind_path, &dir.path().join("proc"), None);
+    let resolution =
+        resolve_transcript_detailed(&record, &bind_path, &dir.path().join("proc"), None);
 
     assert!(resolution.path.is_none());
     let error = resolution.error.as_deref().unwrap();
     assert!(error.contains("refusing to guess"), "{error}");
-    assert!(error.contains("--engine") && error.contains("--path"), "{error}");
+    assert!(
+        error.contains("--engine") && error.contains("--path"),
+        "{error}"
+    );
     assert_eq!(resolution.candidates, vec![first, second]);
     assert!(!bind_path.exists());
 }

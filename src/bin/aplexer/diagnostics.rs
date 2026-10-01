@@ -135,9 +135,7 @@ pub(crate) fn resolve_transcript_target_record(
     paths: &Paths,
     target: &TargetArgs,
 ) -> Result<SessionRecord> {
-    let targeted = target.selector.is_some()
-        || target.workspace.is_some()
-        || target.tag.is_some();
+    let targeted = target.selector.is_some() || target.workspace.is_some() || target.tag.is_some();
     if !targeted {
         if let Some(id) = discover_session_id() {
             return read_record(&paths.record(id)).with_context(|| {

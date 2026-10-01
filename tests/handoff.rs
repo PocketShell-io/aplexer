@@ -95,7 +95,11 @@ fn write_dead_session(h: &Harness, id: &str, cwd: &Path) -> PathBuf {
         .join(id)
         .join("control.sock");
     let history_path = session_dir.join("history.bin");
-    fs::write(&history_path, "weekly limit hit mid-insert\nSIGKILL'ed mid-redraw\n").unwrap();
+    fs::write(
+        &history_path,
+        "weekly limit hit mid-insert\nSIGKILL'ed mid-redraw\n",
+    )
+    .unwrap();
     let record = json!({
         "schema_version": 1,
         "id": id,
@@ -198,7 +202,10 @@ fn explicit_source_bundle_survives_an_unwritable_state_dir() {
     assert_eq!(transcript["engine"], "codex");
     assert_eq!(transcript["native_session_id"], "thread");
     assert_eq!(transcript["last_user_message"], "insert the figures");
-    assert_eq!(transcript["last_assistant_message"], "weekly limit hit mid-insert");
+    assert_eq!(
+        transcript["last_assistant_message"],
+        "weekly limit hit mid-insert"
+    );
     // Explicit sources never touch the bind sidecar -- here provably,
     // because the session dir could not have accepted a write.
     assert!(!session_dir.join("transcript.json").exists());
@@ -278,7 +285,10 @@ fn missing_transcript_is_an_actionable_gap_not_a_failure() {
     let transcript = &bundle["transcript"];
     assert_eq!(transcript["discovered"], json!(false));
     let error = transcript["error"].as_str().unwrap();
-    assert!(error.contains("--engine") && error.contains("--path"), "{error}");
+    assert!(
+        error.contains("--engine") && error.contains("--path"),
+        "{error}"
+    );
     let gaps = bundle["gaps"].as_array().unwrap();
     assert_eq!(gap(gaps, "transcript")["ok"], json!(false));
     // No worker: its gap says so instead of pretending liveness.
@@ -303,5 +313,8 @@ fn human_bundle_prints_sections_and_gaps() {
     assert!(text.contains("transcript"), "{text}");
     assert!(text.contains("pty tail"), "{text}");
     assert!(text.contains("gaps"), "{text}");
-    assert!(text.contains("[gap] worker") || text.contains("[gap] "), "{text}");
+    assert!(
+        text.contains("[gap] worker") || text.contains("[gap] "),
+        "{text}"
+    );
 }

@@ -56,7 +56,15 @@ pub(crate) fn cmd_handoff(paths: &Paths, args: HandoffArgs, json_output: bool) -
     if json_output {
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        print_human_handoff(&current, &status, &transcript, &pty_tail, &screen, &workspace, &gaps);
+        print_human_handoff(
+            &current,
+            &status,
+            &transcript,
+            &pty_tail,
+            &screen,
+            &workspace,
+            &gaps,
+        );
     }
     Ok(())
 }
@@ -181,8 +189,7 @@ fn transcript_section(
             Ok((path, engine)) => {
                 // The log's own session id is part of "which log is this":
                 // quote it even though no bind is read or written.
-                let engine_session_id =
-                    aplexer::agent_events::peek_continuation(&engine, &path);
+                let engine_session_id = aplexer::agent_events::peek_continuation(&engine, &path);
                 aplexer::agent_events::TranscriptResolution {
                     path: Some(path),
                     engine: Some(engine),
@@ -199,7 +206,12 @@ fn transcript_section(
         }
     } else {
         let bind_path = paths.state_session(record.id).join("transcript.json");
-        aplexer::agent_events::resolve_transcript_detailed(record, &bind_path, Path::new(aplexer::agent_kind::DEFAULT_PROC_ROOT), live_agent)
+        aplexer::agent_events::resolve_transcript_detailed(
+            record,
+            &bind_path,
+            Path::new(aplexer::agent_kind::DEFAULT_PROC_ROOT),
+            live_agent,
+        )
     };
     let source = if resolution.source.is_empty() {
         "none"
@@ -216,9 +228,11 @@ fn transcript_section(
         None => Value::Null,
     };
     if !resolution.candidates.is_empty() {
-        value["candidates"] = json!(
-            resolution.candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
-        );
+        value["candidates"] = json!(resolution
+            .candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>());
     }
     let Some(path) = resolution.path else {
         return Section {
@@ -230,7 +244,10 @@ fn transcript_section(
                 .unwrap_or_else(|| "transcript not found".into()),
         };
     };
-    let engine = resolution.engine.clone().unwrap_or_else(|| record.engine.clone());
+    let engine = resolution
+        .engine
+        .clone()
+        .unwrap_or_else(|| record.engine.clone());
     value["discovered"] = json!(true);
     value["engine"] = json!(engine);
     value["path"] = json!(path.display().to_string());
@@ -293,7 +310,11 @@ fn transcript_section(
             ));
         }
     }
-    Section { value, ok: true, detail }
+    Section {
+        value,
+        ok: true,
+        detail,
+    }
 }
 
 /// `a handoff --engine/--path`: the same validation `a transcript` applies
@@ -308,7 +329,10 @@ fn explicit_source(
     let path = fs::canonicalize(explicit)
         .with_context(|| format!("transcript path {} is unavailable", explicit.display()))?;
     if !path.is_file() {
-        bail!("transcript path {} is not a regular file", explicit.display());
+        bail!(
+            "transcript path {} is not a regular file",
+            explicit.display()
+        );
     }
     fs::File::open(&path)
         .with_context(|| format!("cannot read transcript path {}", explicit.display()))?;
@@ -429,7 +453,12 @@ fn pty_tail_section(record: &SessionRecord, status: &StatusData, cap: usize) -> 
 /// worker wrote at exit -- the same fallback `a capture --screen --plain`
 /// uses. Unavailable (not stale-substituted) while the worker is merely
 /// unreachable.
-fn screen_section(paths: &Paths, record: &SessionRecord, status: &StatusData, cap: usize) -> Section {
+fn screen_section(
+    paths: &Paths,
+    record: &SessionRecord,
+    status: &StatusData,
+    cap: usize,
+) -> Section {
     let mut value = json!({"window_bytes": cap});
     let worker_gone =
         matches!(record.phase, Phase::Exited | Phase::Failed) || !record.worker_alive();
@@ -457,7 +486,10 @@ fn screen_section(paths: &Paths, record: &SessionRecord, status: &StatusData, ca
                 value["text"] = json!(text);
                 (
                     true,
-                    format!("persisted screen.txt, {} bytes (as of worker exit)", data.len()),
+                    format!(
+                        "persisted screen.txt, {} bytes (as of worker exit)",
+                        data.len()
+                    ),
                 )
             }
             Err(error) => {
@@ -525,8 +557,10 @@ fn git_section(cwd: &Path) -> Value {
                 Ok(status) => {
                     let entries: Vec<String> = status.lines().map(str::to_string).collect();
                     let truncated = entries.len() > GIT_ENTRY_LIMIT;
-                    value["changed_paths"] =
-                        json!(entries.into_iter().take(GIT_ENTRY_LIMIT).collect::<Vec<_>>());
+                    value["changed_paths"] = json!(entries
+                        .into_iter()
+                        .take(GIT_ENTRY_LIMIT)
+                        .collect::<Vec<_>>());
                     value["truncated"] = json!(truncated);
                 }
                 Err(error) => value["status_error"] = json!(format!("{error:#}")),
@@ -633,15 +667,13 @@ fn gaps_section(
     gaps.push(gap(
         "staleness",
         staleness_detail.is_none(),
-        staleness_detail
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                if status.worker_reachable {
-                    "live evidence is current".to_string()
-                } else {
-                    "worker is gone; persisted evidence is the last durable state".to_string()
-                }
-            }),
+        staleness_detail.map(str::to_string).unwrap_or_else(|| {
+            if status.worker_reachable {
+                "live evidence is current".to_string()
+            } else {
+                "worker is gone; persisted evidence is the last durable state".to_string()
+            }
+        }),
     ));
     gaps
 }
@@ -682,15 +714,22 @@ fn print_human_handoff(
     } else if transcript.value["last_user_message"].get("text").is_some() {
         println!(
             "    last user: {} (clipped)",
-            transcript.value["last_user_message"]["text"].as_str().unwrap_or("")
+            transcript.value["last_user_message"]["text"]
+                .as_str()
+                .unwrap_or("")
         );
     }
     if let Some(text) = transcript.value["last_assistant_message"].as_str() {
         println!("    last assistant: {}", text.lines().next().unwrap_or(""));
-    } else if transcript.value["last_assistant_message"].get("text").is_some() {
+    } else if transcript.value["last_assistant_message"]
+        .get("text")
+        .is_some()
+    {
         println!(
             "    last assistant: {} (clipped)",
-            transcript.value["last_assistant_message"]["text"].as_str().unwrap_or("")
+            transcript.value["last_assistant_message"]["text"]
+                .as_str()
+                .unwrap_or("")
         );
     }
     println!("  pty tail   {}", pty_tail.detail);
@@ -717,7 +756,11 @@ fn print_human_handoff(
     for gap in gaps {
         println!(
             "    [{}] {}: {}",
-            if gap["ok"].as_bool().unwrap_or(false) { "ok " } else { "gap" },
+            if gap["ok"].as_bool().unwrap_or(false) {
+                "ok "
+            } else {
+                "gap"
+            },
             gap["source"].as_str().unwrap_or("?"),
             gap["detail"].as_str().unwrap_or("")
         );
