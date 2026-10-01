@@ -108,6 +108,13 @@ const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCEPT_RETRY_INITIAL: Duration = Duration::from_millis(25);
 const ACCEPT_RETRY_MAX: Duration = Duration::from_secs(1);
 const CONTROL_SOCKET_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+/// How often the lifecycle loop re-checks, while it would otherwise block
+/// indefinitely on the workload, that this worker's session still exists on
+/// disk (`session_vanished`, issue #22). One second lands detection well
+/// inside the ~2 s the report asks for, and costs an idle worker at most
+/// one timed wake per interval -- within the idle budget
+/// `tests/worker_idle_wakeups.rs` pins for the lifecycle thread.
+const RUNTIME_DIR_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 const HISTORY_RETRY_INITIAL: Duration = Duration::from_millis(500);
 const HISTORY_RETRY_MAX: Duration = Duration::from_secs(30);
 const DESCENDANT_POLL_INTERVAL: Duration = Duration::from_millis(25);
