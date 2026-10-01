@@ -214,6 +214,17 @@ pub(crate) const TRANSCRIPT_EXAMPLES: &str = r#"Examples:
   a transcript review --before 12 --last 20  page backward through history
 "#;
 
+pub(crate) const HANDOFF_EXAMPLES: &str = r#"Examples:
+  a handoff review --json         one machine-readable recovery bundle
+  a handoff 8002ff0c              identity, transcript window, PTY tail,
+                                  screen, workspace pointers, gap report
+  a handoff review --engine zcodex --path ~/.zcodex/sessions/rollout.jsonl
+                                  read a chosen native log even when the
+                                  state dir cannot record the binding
+  a handoff review --last 50 --max-bytes 32768
+                                  widen the embedded windows
+"#;
+
 pub(crate) const COMPLETIONS_EXAMPLES: &str = r#"Examples:
   source <(COMPLETE=bash a)             bash: completes live sessions/engines too
   a completions bash > \

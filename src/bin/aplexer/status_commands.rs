@@ -18,7 +18,10 @@ pub(crate) struct StatusData {
 }
 
 impl StatusData {
-    fn load(record: SessionRecord) -> Self {
+    /// One status round-trip against the worker (or the persisted record
+    /// when it will not answer). Shared by `a status` and `a handoff`, so
+    /// both surfaces can never disagree about liveness or persistence.
+    pub(crate) fn load(record: SessionRecord) -> Self {
         // Process existence and control-plane reachability are separate facts:
         // a wedged worker can still have a live pid, while a successfully
         // reached worker is stronger evidence than a stale persisted pid.

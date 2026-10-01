@@ -72,6 +72,7 @@ pub(crate) fn run() -> Result<()> {
         Commands::Message(args) => cmd_message(&paths, args, cli.json),
         Commands::Watch(args) => cmd_watch(&paths, args),
         Commands::Transcript(args) => cmd_transcript(&paths, args, cli.json),
+        Commands::Handoff(args) => cmd_handoff(&paths, args, cli.json),
         Commands::Completions(args) => cmd_completions(args),
         Commands::Hotkeys => cmd_hotkeys(),
         Commands::QuickAttach(args) => cmd_quick_attach(&paths, args),

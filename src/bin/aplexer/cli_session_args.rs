@@ -326,6 +326,50 @@ pub(crate) struct WatchArgs {
     pub(crate) workspace: Option<PathBuf>,
 }
 
+/// `a handoff` defaults: how much conversation and how many raw PTY bytes
+/// the bundle embeds. Fixed per-item caps (event text clip, git entries,
+/// mailbox messages) live in `handoff_commands.rs`; these two are the knobs
+/// a consumer overrides with `--last`/`--max-bytes`.
+pub(crate) const DEFAULT_HANDOFF_TRANSCRIPT_EVENTS: usize = 20;
+pub(crate) const DEFAULT_HANDOFF_TAIL_BYTES: usize = 8 * 1024;
+/// Hard line cap for any single native-JSONL row the handoff parses: past
+/// it the row becomes a truncation marker (the transcript reader's own
+/// sentinel), so one huge tool_result cannot balloon the report.
+pub(crate) const DEFAULT_HANDOFF_MAX_LINE_BYTES: usize = 64 * 1024;
+
+/// `a handoff [SESSION] [--engine ENGINE --path FILE]` -- one compact,
+/// read-only recovery bundle (issue #20): session identity, the live or
+/// last-verified agent, a bounded recent conversation with the full-log
+/// path and byte cursor, the bounded PTY tail, the rendered screen, git +
+/// mailbox pointers, and an explicit completeness/gap report for every
+/// evidence source. Another agent (or a human) runs it against a session
+/// that died mid-task and recovers without guessing.
+#[derive(Args)]
+pub(crate) struct HandoffArgs {
+    #[command(flatten)]
+    pub(crate) target: TargetArgs,
+    /// Parse FILE as the session's native conversation log instead of
+    /// discovering one. Pair with --engine when the session's declared
+    /// engine has no transcript family (a shell-hosted zcodex, say). The
+    /// same validation `a transcript --path` applies, and like it this
+    /// never reads or writes the bind sidecar -- it must work even when
+    /// aplexer's state dir is not writable.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) path: Option<PathBuf>,
+    /// Native log format to use with --path (for example, zcodex inside a
+    /// shell session). Defaults to the session's declared engine.
+    #[arg(long, requires = "path", value_name = "ENGINE")]
+    pub(crate) engine: Option<String>,
+    /// How many recent transcript events the bundle embeds. The rest of the
+    /// log stays at the reported path, pageable with `a transcript`.
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_HANDOFF_TRANSCRIPT_EVENTS)]
+    pub(crate) last: usize,
+    /// Byte cap for the embedded PTY tail and screen text (each capped
+    /// separately).
+    #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_HANDOFF_TAIL_BYTES)]
+    pub(crate) max_bytes: usize,
+}
+
 /// `a transcript` -- parse a session's native engine conversation log into
 /// heru UnifiedEvent JSONL for PocketShell (and `a transcript --follow`).
 /// See src/agent_events.rs.
