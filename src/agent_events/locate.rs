@@ -106,14 +106,17 @@ pub fn resolve_transcript(record: &SessionRecord, bind_path: &Path) -> Result<Lo
         None,
     );
     let Some(path) = resolution.path else {
-        bail!("{}", resolution.error.unwrap_or_else(|| "transcript not found".into()))
+        bail!(
+            "{}",
+            resolution
+                .error
+                .unwrap_or_else(|| "transcript not found".into())
+        )
     };
     Ok(LocatedTranscript {
         path,
         engine_session_id: resolution.engine_session_id,
-        engine: resolution
-            .engine
-            .unwrap_or_else(|| record.engine.clone()),
+        engine: resolution.engine.unwrap_or_else(|| record.engine.clone()),
     })
 }
 
@@ -281,7 +284,11 @@ fn bind_resolution(
 /// Several candidates survived validation: refuse to guess. The error names
 /// every candidate and the explicit way out, and nothing is bound -- a wrong
 /// automatic bind is worse than no bind (issue #20).
-fn ambiguity(record: &SessionRecord, engine: &str, candidates: Vec<PathBuf>) -> TranscriptResolution {
+fn ambiguity(
+    record: &SessionRecord,
+    engine: &str,
+    candidates: Vec<PathBuf>,
+) -> TranscriptResolution {
     let listed = candidates
         .iter()
         .map(|path| path.display().to_string())
@@ -343,9 +350,10 @@ fn candidate_matches_session(family: &str, path: &Path, cwd: &Path, since_ms: u6
     }
     let cwd_str = cwd.display().to_string();
     match family {
-        "claude" => path.parent().and_then(|dir| dir.file_name()).is_some_and(|dir| {
-            dir == std::ffi::OsStr::new(&encode_claude_cwd(&cwd_str))
-        }),
+        "claude" => path
+            .parent()
+            .and_then(|dir| dir.file_name())
+            .is_some_and(|dir| dir == std::ffi::OsStr::new(&encode_claude_cwd(&cwd_str))),
         "codex" => rollout_cwd(path).is_none_or(|rollout_cwd| rollout_cwd == cwd_str),
         "grok" => {
             path.file_name().is_some_and(|name| name == "updates.jsonl")
@@ -365,7 +373,9 @@ pub fn locate_transcript(
     created_at_ms: u64,
     env: &BTreeMap<String, String>,
 ) -> Option<PathBuf> {
-    transcript_candidates(engine, cwd, created_at_ms, env).into_iter().next()
+    transcript_candidates(engine, cwd, created_at_ms, env)
+        .into_iter()
+        .next()
 }
 
 /// Every validated candidate for `engine`'s family at `cwd`, newest-mtime
@@ -419,7 +429,9 @@ pub fn locate_claude_transcript(
     created_at_ms: u64,
     env: &BTreeMap<String, String>,
 ) -> Option<PathBuf> {
-    claude_transcript_candidates(cwd, created_at_ms, env).into_iter().next()
+    claude_transcript_candidates(cwd, created_at_ms, env)
+        .into_iter()
+        .next()
 }
 
 /// Every claude candidate: direct children of the cwd's project directory
@@ -466,7 +478,9 @@ pub fn locate_codex_transcript(
     created_at_ms: u64,
     env: &BTreeMap<String, String>,
 ) -> Option<PathBuf> {
-    codex_transcript_candidates(cwd, created_at_ms, env).into_iter().next()
+    codex_transcript_candidates(cwd, created_at_ms, env)
+        .into_iter()
+        .next()
 }
 
 /// Every codex candidate under the sessions root, newest first: recent
@@ -519,7 +533,9 @@ pub fn locate_grok_transcript(
     created_at_ms: u64,
     env: &BTreeMap<String, String>,
 ) -> Option<PathBuf> {
-    grok_transcript_candidates(cwd, created_at_ms, env).into_iter().next()
+    grok_transcript_candidates(cwd, created_at_ms, env)
+        .into_iter()
+        .next()
 }
 
 /// Every grok candidate: `updates.jsonl` files under the cwd's encoded
