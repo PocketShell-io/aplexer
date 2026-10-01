@@ -5,7 +5,10 @@
 //! means. PtyEof/ChildExit/output exhaustion feed the same loop; the loop
 //! kills the containment domain, writes the terminal record (or keeps it as
 //! evidence when finalization cannot be proven), drains attached clients,
-//! and exits the process -- in that order, under the kill gate.
+//! and exits the process -- in that order, under the kill gate. A session
+//! whose files are deleted out from under it (issue #22) dies the same way:
+//! the loop's bounded wait wakes to find the runtime session dir and the
+//! durable record gone, and everything after is the ordinary death path.
 
 use super::*;
 
@@ -72,34 +75,51 @@ pub(super) fn cleanup_after_lifecycle_failure(runtime: &WorkerRuntime) -> Result
 pub(super) enum LifecycleWake {
     Event(LifeEvent),
     CleanupPoll,
+    /// The bounded wait behind the workload-running branch of
+    /// `wait_for_lifecycle_wake` timed out: time to check that this
+    /// worker's session still exists on disk (issue #22).
+    RuntimeDirPoll,
     Disconnected,
 }
 
-/// Block indefinitely while the tracked child is still running (or while a
-/// post-exit PTY is still held open by a descendant). Timed containment scans
-/// are needed only after both the leader exit and PTY EOF are known: at that
-/// point an adopted descendant can exit without producing another LifeEvent.
+/// Block while the tracked child is still running (or while a post-exit PTY
+/// is still held open by a descendant). Two cadences:
+///
+/// * post-exit (`cleanup_polling`), the 25 ms containment scans are needed:
+///   at that point an adopted descendant can exit without producing another
+///   LifeEvent.
+/// * while the workload runs, the loop used to block in `recv` with no timer
+///   at all -- which is exactly why a worker orphaned by a dropped `TempDir`
+///   (issue #22) never noticed: no event ever comes, so nothing re-checked
+///   the filesystem. This branch now wakes on `RUNTIME_DIR_POLL_INTERVAL`
+///   instead, and the loop turns each wake into a `session_vanished` check.
+///   One timed wait per second is not a busy loop, and it is what keeps the
+///   idle-worker budget in `tests/worker_idle_wakeups.rs` honest.
 pub(super) fn wait_for_lifecycle_wake(
     rx: &mpsc::Receiver<LifeEvent>,
     cleanup_polling: bool,
 ) -> LifecycleWake {
-    if !cleanup_polling {
-        return match rx.recv() {
-            Ok(event) => LifecycleWake::Event(event),
-            Err(_) => LifecycleWake::Disconnected,
-        };
-    }
-    match rx.recv_timeout(DESCENDANT_POLL_INTERVAL) {
+    let timeout = if cleanup_polling {
+        DESCENDANT_POLL_INTERVAL
+    } else {
+        RUNTIME_DIR_POLL_INTERVAL
+    };
+    match rx.recv_timeout(timeout) {
         Ok(event) => LifecycleWake::Event(event),
-        Err(mpsc::RecvTimeoutError::Timeout) => LifecycleWake::CleanupPoll,
+        Err(mpsc::RecvTimeoutError::Timeout) if cleanup_polling => LifecycleWake::CleanupPoll,
+        Err(mpsc::RecvTimeoutError::Timeout) => LifecycleWake::RuntimeDirPoll,
         // Once both producer threads have ended the channel remains
         // permanently disconnected, so recv_timeout returns immediately.
         // Retain the intended cleanup cadence instead of turning that state
-        // into a busy loop while adopted descendants drain.
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
+        // into a busy loop while adopted descendants drain -- the loop's
+        // only normal exit is an observed-empty domain, not a disconnected
+        // channel. (Before the workload has exited a disconnect is a real
+        // fault: the caller ends the loop on that wake.)
+        Err(mpsc::RecvTimeoutError::Disconnected) if cleanup_polling => {
             thread::sleep(DESCENDANT_POLL_INTERVAL);
             LifecycleWake::CleanupPoll
         }
+        Err(mpsc::RecvTimeoutError::Disconnected) => LifecycleWake::Disconnected,
     }
 }
 
@@ -248,9 +268,32 @@ fn poll_post_exit_descendants(runtime: &WorkerRuntime, state: &mut LoopState) ->
     }
 }
 
+/// Whether this worker's session has vanished from the filesystem in the
+/// orphan shape of issue #22: the runtime session dir (socket, worker lock)
+/// AND the durable record are both gone.
+///
+/// Each absence alone already has its own answer. A missing runtime dir
+/// alone is the socket recovery path's cue to recreate it
+/// (`recover_control_socket`): cleanup software passing through the runtime
+/// dir must not end a session its durable record still lists. A missing
+/// record alone is the accept loop's self-reap (issue #21). But both gone
+/// together -- an integration test's `TempDir` dropped, `a forget`, a
+/// superseding start -- means no client can ever list, attach, or kill this
+/// session again, and while the workload runs this loop used to block in
+/// `recv` waiting for an exit that might never come. NotFound-only, like
+/// `durable_record_vanished`: a busy mount or any other read failure stays
+/// ambiguous, and an ambiguous filesystem never reaps a live session.
+pub(super) fn session_vanished(runtime: &WorkerRuntime) -> bool {
+    matches!(
+        fs::symlink_metadata(&runtime.runtime_session_dir),
+        Err(error) if error.kind() == io::ErrorKind::NotFound
+    ) && control_socket::durable_record_vanished(runtime)
+}
+
 /// The event loop: fold LifeEvents and descendant polls into LoopState
 /// until the containment domain is observed empty, a waiter failure ends
-/// ownership, or the channel disconnects.
+/// ownership, the channel disconnects, or the session vanishes from the
+/// filesystem (issue #22).
 fn observe_lifecycle(runtime: &WorkerRuntime, rx: &mpsc::Receiver<LifeEvent>) -> LoopState {
     let mut state = LoopState::new();
     loop {
@@ -262,6 +305,21 @@ fn observe_lifecycle(runtime: &WorkerRuntime, rx: &mpsc::Receiver<LifeEvent>) ->
                 }
             }
             LifecycleWake::CleanupPoll => {}
+            LifecycleWake::RuntimeDirPoll => {
+                if session_vanished(runtime) {
+                    log_best_effort(&format!(
+                        "aplexer worker: session dir {} and durable record are gone; \
+                         no client can list, attach, or kill this session any more -- \
+                         finalizing and exiting",
+                        runtime.runtime_session_dir.display()
+                    ));
+                    state.fatal = Some(format!(
+                        "session dir {} vanished",
+                        runtime.runtime_session_dir.display()
+                    ));
+                    break;
+                }
+            }
             LifecycleWake::Disconnected => {
                 state.fatal = Some("workload lifecycle channel disconnected".into());
                 break;
@@ -527,6 +585,32 @@ mod tests {
         assert!(done_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("lifecycle event did not wake waiter"));
+        waiter.join().unwrap();
+    }
+
+    /// While the workload runs the wait is bounded, not indefinite: with no
+    /// event coming, the loop must still wake to run the vanished-session
+    /// check (issue #22). This is the property whose absence let an orphaned
+    /// worker block in `recv` forever.
+    #[test]
+    pub(super) fn workload_running_wait_wakes_for_the_vanished_session_check() {
+        let (_life_tx, life_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let woke = matches!(
+                wait_for_lifecycle_wake(&life_rx, false),
+                LifecycleWake::RuntimeDirPoll
+            );
+            done_tx.send(woke).unwrap();
+        });
+        started_rx.recv().unwrap();
+
+        let woke_for_dir_check = done_rx
+            .recv_timeout(RUNTIME_DIR_POLL_INTERVAL + Duration::from_secs(2))
+            .expect("workload-running wait never returned");
+        assert!(woke_for_dir_check, "wait woke as something other than the dir poll");
         waiter.join().unwrap();
     }
 }
