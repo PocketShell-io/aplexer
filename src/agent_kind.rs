@@ -38,7 +38,7 @@ mod rules;
 #[cfg(test)]
 mod tests;
 
-pub use detect::{detect_agent, detect_agent_detailed};
+pub use detect::{detect_agent, detect_agent_detailed, detect_agent_process, AgentProcess};
 pub use profile::{profile_variants, ProfileVariants};
 pub use rules::classify_token;
 

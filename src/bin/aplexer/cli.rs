@@ -133,6 +133,10 @@ pub(crate) enum Commands {
     /// Read/follow a session's conversation transcript.
     #[command(after_help = TRANSCRIPT_EXAMPLES)]
     Transcript(TranscriptArgs),
+    /// Print one compact, read-only recovery bundle for a session
+    /// (identity, transcript, PTY tail, screen, workspace, gaps).
+    #[command(after_help = HANDOFF_EXAMPLES)]
+    Handoff(HandoffArgs),
     /// Print a shell completion script for `a` to stdout.
     #[command(after_help = COMPLETIONS_EXAMPLES)]
     Completions(CompletionsArgs),

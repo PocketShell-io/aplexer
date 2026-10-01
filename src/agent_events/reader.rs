@@ -254,6 +254,29 @@ pub fn read_transcript_events(engine: &str, path: &Path) -> Result<Vec<UnifiedEv
     reader.read_available(&dummy, true)
 }
 
+/// The last `last` events of a native log, streaming (never the whole file
+/// in memory), with oversized lines replaced by truncation markers so one
+/// huge tool_result cannot balloon a bounded report. The bounded window a
+/// handoff report embeds; the full log stays at `path` for `a transcript`
+/// paging.
+pub fn read_transcript_tail(
+    engine: &str,
+    path: &Path,
+    last: usize,
+    max_line_bytes: Option<usize>,
+) -> Result<Vec<UnifiedEvent>> {
+    let dummy = dummy_record(engine);
+    let mut reader = NativeLogReader::open(engine, path, max_line_bytes)?;
+    snapshot_page(
+        &mut reader,
+        &dummy,
+        &TranscriptQuery {
+            last: Some(last),
+            ..Default::default()
+        },
+    )
+}
+
 pub(crate) fn dummy_record(engine: &str) -> SessionRecord {
     SessionRecord {
         parent_session: None,
