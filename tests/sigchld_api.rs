@@ -144,10 +144,7 @@ fn exercise_successful_worker_reaping() {
     for index in 0..8 {
         let ready = start_session(
             &paths,
-            &successful_start_request(
-                workspace.path().to_path_buf(),
-                &format!("reaping-{index}"),
-            ),
+            &successful_start_request(workspace.path().to_path_buf(), &format!("reaping-{index}")),
         )
         .expect("start short-lived worker through in-process API");
         kill_guard.ids.push(ready.id);
