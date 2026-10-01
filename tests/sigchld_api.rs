@@ -89,6 +89,37 @@ fn successful_start_request(workspace: PathBuf, tag: &str) -> StartRequest {
     }
 }
 
+// Issue #22: workers started through the in-process API are children of
+// this test process, so an assertion unwind between start and the reaping
+// wait would orphan them to init when the process exits. Kill every started
+// session on the way out; the kills no-op once the reaping wait succeeded.
+struct ReapKillGuard {
+    runtime_root: PathBuf,
+    state_root: PathBuf,
+    config_file: PathBuf,
+    ids: Vec<Uuid>,
+}
+
+impl Drop for ReapKillGuard {
+    fn drop(&mut self) {
+        for id in &self.ids {
+            let _ = Command::new(env!("CARGO_BIN_EXE_aplexer"))
+                .env("APLEXER_RUNTIME_DIR", &self.runtime_root)
+                .env("APLEXER_STATE_DIR", &self.state_root)
+                .env("APLEXER_CONFIG", &self.config_file)
+                .args([
+                    "kill",
+                    &id.to_string(),
+                    "--signal",
+                    "KILL",
+                    "--grace-ms",
+                    "0",
+                ])
+                .output();
+        }
+    }
+}
+
 fn exercise_successful_worker_reaping() {
     install_sigchld(custom_sigchld_handler as *const () as libc::sighandler_t, 0);
     let before = sigchld_action();
@@ -104,17 +135,23 @@ fn exercise_successful_worker_reaping() {
     env::set_var("APLEXER_WORKER", env!("CARGO_BIN_EXE_aplexer"));
     let threads_before = std::fs::read_dir("/proc/self/task").unwrap().count();
     let mut sessions = Vec::new();
+    let mut kill_guard = ReapKillGuard {
+        runtime_root: runtime.path().to_path_buf(),
+        state_root: state.path().to_path_buf(),
+        config_file: paths.config_file.clone(),
+        ids: Vec::new(),
+    };
     for index in 0..8 {
-        sessions.push(
-            start_session(
-                &paths,
-                &successful_start_request(
-                    workspace.path().to_path_buf(),
-                    &format!("reaping-{index}"),
-                ),
-            )
-            .expect("start short-lived worker through in-process API"),
-        );
+        let ready = start_session(
+            &paths,
+            &successful_start_request(
+                workspace.path().to_path_buf(),
+                &format!("reaping-{index}"),
+            ),
+        )
+        .expect("start short-lived worker through in-process API");
+        kill_guard.ids.push(ready.id);
+        sessions.push(ready);
     }
     let threads_after = std::fs::read_dir("/proc/self/task").unwrap().count();
     assert!(
