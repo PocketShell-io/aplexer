@@ -138,7 +138,17 @@ fn codex_rollout_stream_keeps_function_calls_and_results_in_order() {
     let kinds: Vec<&str> = events.iter().map(|e| e.kind).collect();
     // The event_msg progress row mirrors response_item content and is
     // deliberately not re-emitted; the session_meta row is metadata.
-    assert_eq!(kinds, ["message", "message", "tool_call", "tool_result", "tool_call", "tool_result"]);
+    assert_eq!(
+        kinds,
+        [
+            "message",
+            "message",
+            "tool_call",
+            "tool_result",
+            "tool_call",
+            "tool_result"
+        ]
+    );
     assert_eq!(events[0].role.as_deref(), Some("user"));
     assert_eq!(events[1].content, "Working on it.");
     assert_eq!(events[2].tool_name.as_deref(), Some("exec_command"));
