@@ -269,6 +269,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Message(_) => "message",
         Commands::Watch(_) => "watch",
         Commands::Transcript(_) => "transcript",
+        Commands::Handoff(_) => "handoff",
         Commands::Completions(_) => "completions",
         Commands::Hotkeys => "hotkeys",
         Commands::QuickAttach(_) => "quick-attach",

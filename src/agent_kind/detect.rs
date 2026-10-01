@@ -139,6 +139,26 @@ pub fn detect_agent_detailed(
     workload_pid: u32,
     variants: &ProfileVariants,
 ) -> Option<DetectedAgent> {
+    detect_agent_process(proc_root, workload_pid, variants).map(|agent| agent.detected)
+}
+
+/// The process an agent was detected in, not just what it is: the pid is the
+/// identity-backed anchor for reading the agent's own open native-log file
+/// descriptors (issue #20's exact automatic binding) -- the top-level
+/// agent's pid, deliberately, so a nested agent's rollout can never be
+/// mistaken for the session's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentProcess {
+    pub pid: u32,
+    pub detected: DetectedAgent,
+}
+
+/// `detect_agent_detailed` plus the pid the answer was classified from.
+pub fn detect_agent_process(
+    proc_root: &Path,
+    workload_pid: u32,
+    variants: &ProfileVariants,
+) -> Option<AgentProcess> {
     let mut pending = VecDeque::from([workload_pid]);
     let mut seen = HashSet::from([workload_pid]);
     let mut scanned = 0usize;
@@ -148,9 +168,12 @@ pub fn detect_agent_detailed(
             return None;
         }
         if let Some((kind, variant)) = classify_pid(proc_root, pid, variants) {
-            return Some(DetectedAgent {
-                kind,
-                profile: resolve_profile(proc_root, pid, kind, variant.as_deref()),
+            return Some(AgentProcess {
+                pid,
+                detected: DetectedAgent {
+                    kind,
+                    profile: resolve_profile(proc_root, pid, kind, variant.as_deref()),
+                },
             });
         }
         // A read error here is "this pid told us nothing", never a failure:

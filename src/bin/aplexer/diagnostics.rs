@@ -93,7 +93,13 @@ pub(crate) fn cmd_transcript(paths: &Paths, args: TranscriptArgs, json_output: b
         path
     } else {
         let bind_path = paths.state_session(record.id).join("transcript.json");
-        aplexer::agent_events::resolve_transcript(&record, &bind_path)?.path
+        // A live-discovered bind vouches for the engine as well as the path
+        // (issue #20): parse the log with the engine the bind recorded -- a
+        // shell session's codex-family log keeps reading as codex after the
+        // agent exits -- not with the record's declared one.
+        let located = aplexer::agent_events::resolve_transcript(&record, &bind_path)?;
+        record.engine = located.engine;
+        located.path
     };
     if !json_output && !args.follow {
         println!("transcript: {} (engine {})", path.display(), record.engine);
@@ -119,9 +125,19 @@ pub(crate) fn resolve_transcript_target(
     paths: &Paths,
     args: &TranscriptArgs,
 ) -> Result<SessionRecord> {
-    let targeted = args.target.selector.is_some()
-        || args.target.workspace.is_some()
-        || args.target.tag.is_some();
+    resolve_transcript_target_record(paths, &args.target)
+}
+
+/// The same resolution for commands whose args are a bare `TargetArgs`
+/// (`a handoff`): an explicit selector wins, else the ambient
+/// `APLEXER_SESSION_ID`.
+pub(crate) fn resolve_transcript_target_record(
+    paths: &Paths,
+    target: &TargetArgs,
+) -> Result<SessionRecord> {
+    let targeted = target.selector.is_some()
+        || target.workspace.is_some()
+        || target.tag.is_some();
     if !targeted {
         if let Some(id) = discover_session_id() {
             return read_record(&paths.record(id)).with_context(|| {
@@ -129,7 +145,7 @@ pub(crate) fn resolve_transcript_target(
             });
         }
     }
-    resolve(paths, &args.target)
+    resolve(paths, target)
 }
 
 pub(crate) fn path_check(name: &str, path: &Path) -> Value {

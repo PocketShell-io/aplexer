@@ -55,6 +55,8 @@ mod completions;
 mod diagnostics;
 #[path = "doctor.rs"]
 mod doctor;
+#[path = "handoff_commands.rs"]
+mod handoff_commands;
 #[path = "input_scanner.rs"]
 mod input_scanner;
 #[path = "key_overlay.rs"]
@@ -127,6 +129,7 @@ pub(crate) use commands::*;
 pub(crate) use completions::*;
 pub(crate) use diagnostics::*;
 pub(crate) use doctor::*;
+pub(crate) use handoff_commands::*;
 pub(crate) use input_scanner::*;
 pub(crate) use key_overlay::*;
 pub(crate) use launch_commands::*;
