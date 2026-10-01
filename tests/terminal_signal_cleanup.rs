@@ -124,7 +124,10 @@ fn termination_signals_restore_real_pty_termios_and_terminal_ui() {
         let mut child = command.spawn().unwrap();
 
         let mut bytes = Vec::new();
-        read_until(&mut master, &mut bytes, b"attached to");
+        // The status bar's help segment is the attach's chrome-is-up signal
+        // (there is no "attached to" hint flash anymore); raw mode is set
+        // before the bar's first draw.
+        read_until(&mut master, &mut bytes, b"^b ?");
         let raw = termios(slave.as_raw_fd());
         assert_eq!(raw.c_lflag & (libc::ICANON | libc::ECHO), 0);
 

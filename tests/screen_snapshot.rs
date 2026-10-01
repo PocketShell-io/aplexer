@@ -1211,10 +1211,12 @@ fn two_real_attach_clients_see_each_others_changes() {
     std::fs::create_dir_all(&workspace).unwrap();
 
     let id = start_session(&harness, &workspace, "two-real-clients");
+    // No attach-hint flash anymore: the real status bar (whose help segment
+    // ends in `^b ?`, text nothing else draws) is the chrome-is-up signal.
     let mut device_a = PtyClient::spawn(&harness, &id, 30, 100);
-    device_a.wait_for(b"attached to", 0, "device A to attach");
+    device_a.wait_for(b"^b ?", 0, "device A to land on the status bar");
     let mut device_b = PtyClient::spawn(&harness, &id, 20, 70);
-    device_b.wait_for(b"attached to", 0, "device B to attach");
+    device_b.wait_for(b"^b ?", 0, "device B to land on the status bar");
 
     let a_mark = device_a.mark();
     let b_mark = device_b.mark();
@@ -1316,7 +1318,7 @@ fn a_client_larger_than_the_shared_screen_is_repainted_at_the_new_size() {
     let id = start_session(&harness, &workspace, "viewport-padding");
     let (rows, cols) = (30u16, 100u16);
     let mut desktop = PtyClient::spawn(&harness, &id, rows, cols);
-    desktop.wait_for(b"attached to", 0, "the desktop client to attach");
+    desktop.wait_for(b"^b ?", 0, "the desktop client to land on the status bar");
 
     // Fill the client's whole model (29 of its rows are the workload's) with
     // identifiable lines, so a repaint that did not reflow would leave the
