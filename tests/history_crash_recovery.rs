@@ -142,3 +142,34 @@ fn worker_crash_recovers_the_latest_committed_byte_exact_tail() {
         libc::kill(workload_pid, libc::SIGKILL);
     }
 }
+
+// Issue #22: a started worker detaches from this test process, so an
+// assertion unwind used to leave it orphaned to init once its TempDirs
+// dropped. Sweep whatever sessions this harness can still reach and kill
+// them; best-effort only, never unwrap inside Drop.
+impl Drop for Harness {
+    fn drop(&mut self) {
+        let command = |args: &[&str]| {
+            Command::new(env!("CARGO_BIN_EXE_aplexer"))
+                .env("APLEXER_RUNTIME_DIR", self.runtime.path())
+                .env("APLEXER_STATE_DIR", self.state.path())
+                .env("APLEXER_CONFIG", &self.config)
+                .args(args)
+                .output()
+        };
+        let Ok(output) = command(&["list", "--json"]) else {
+            return;
+        };
+        let Ok(sessions) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+            return;
+        };
+        let Some(sessions) = sessions.as_array() else {
+            return;
+        };
+        for session in sessions {
+            if let Some(id) = session["id"].as_str() {
+                let _ = command(&["kill", id, "--signal", "KILL", "--grace-ms", "0"]);
+            }
+        }
+    }
+}

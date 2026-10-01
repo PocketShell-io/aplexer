@@ -1,6 +1,7 @@
 use serde_json::Value;
 use std::io;
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -49,6 +50,10 @@ fn inherited_signal_state_is_normalized_for_workload() {
     let runtime = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();
     let workspace = TempDir::new().unwrap();
+    let _guard = SessionGuard {
+        runtime: runtime.path().to_path_buf(),
+        state: state.path().to_path_buf(),
+    };
     let probe = std::env::current_exe().unwrap();
     let mut start = command(&runtime, &state);
     start.args([
@@ -173,4 +178,44 @@ fn workload_signal_probe() {
     // its line; this timeout only bounds the process if the parent died
     // first.
     thread::sleep(PROBE_LINGER);
+}
+
+// Issue #22: the worker detaches from this test process, so kill it even if
+// an assertion unwinds before the explicit kill at the end of the test.
+struct SessionGuard {
+    runtime: PathBuf,
+    state: PathBuf,
+}
+
+impl SessionGuard {
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_aplexer"));
+        command
+            .env("APLEXER_RUNTIME_DIR", &self.runtime)
+            .env("APLEXER_STATE_DIR", &self.state)
+            .env("APLEXER_CONFIG", self.runtime.join("config.toml"));
+        command
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        let Ok(output) = self.command().args(["list", "--json"]).output() else {
+            return;
+        };
+        let Ok(sessions) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+            return;
+        };
+        let Some(sessions) = sessions.as_array() else {
+            return;
+        };
+        for session in sessions {
+            if let Some(id) = session["id"].as_str() {
+                let _ = self
+                    .command()
+                    .args(["kill", id, "--signal", "KILL", "--grace-ms", "0"])
+                    .output();
+            }
+        }
+    }
 }

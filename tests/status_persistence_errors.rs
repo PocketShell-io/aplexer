@@ -59,6 +59,48 @@ fn command(runtime: &TempDir, state: &TempDir, config: &Path) -> Command {
     command
 }
 
+// Issue #22: the started worker detaches from this test process, so sweep
+// and kill whatever sessions the test started even if an assertion unwinds
+// before the explicit kill at the end.
+struct SessionGuard {
+    runtime: PathBuf,
+    state: PathBuf,
+    config: PathBuf,
+}
+
+impl SessionGuard {
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_aplexer"));
+        command
+            .env("APLEXER_RUNTIME_DIR", &self.runtime)
+            .env("APLEXER_STATE_DIR", &self.state)
+            .env("APLEXER_CONFIG", &self.config);
+        command
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        let Ok(output) = self.command().args(["list", "--json"]).output() else {
+            return;
+        };
+        let Ok(sessions) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+            return;
+        };
+        let Some(sessions) = sessions.as_array() else {
+            return;
+        };
+        for session in sessions {
+            if let Some(id) = session["id"].as_str() {
+                let _ = self
+                    .command()
+                    .args(["kill", id, "--signal", "KILL", "--grace-ms", "0"])
+                    .output();
+            }
+        }
+    }
+}
+
 #[test]
 fn status_preserves_both_live_persistence_errors() {
     let runtime = TempDir::new().unwrap();
@@ -117,6 +159,11 @@ fn live_history_degradation_is_visible_without_stopping_the_workload() {
     let state = TempDir::new().unwrap();
     let workspace = TempDir::new().unwrap();
     let config = runtime.path().join("config.toml");
+    let _guard = SessionGuard {
+        runtime: runtime.path().to_path_buf(),
+        state: state.path().to_path_buf(),
+        config: config.clone(),
+    };
     let mut start = command(&runtime, &state, &config);
     start.args([
         "--json",

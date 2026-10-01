@@ -291,3 +291,29 @@ fn system_scope_opt_in_escapes_or_degrades_with_a_warning() {
 
     harness.kill(&id);
 }
+
+// Issue #22: a started worker detaches from this test process, so an
+// assertion unwind used to leave it orphaned to init once its TempDirs
+// dropped. Sweep whatever sessions this harness can still reach and kill
+// them, on success paths and unwind paths alike.
+impl Drop for Harness {
+    fn drop(&mut self) {
+        let Ok(output) = self.command().args(["list", "--json"]).output() else {
+            return;
+        };
+        let Ok(sessions) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+            return;
+        };
+        let Some(sessions) = sessions.as_array() else {
+            return;
+        };
+        for session in sessions {
+            if let Some(id) = session["id"].as_str() {
+                let _ = self
+                    .command()
+                    .args(["kill", id, "--signal", "KILL", "--grace-ms", "0"])
+                    .output();
+            }
+        }
+    }
+}
