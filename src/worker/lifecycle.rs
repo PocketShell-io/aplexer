@@ -610,7 +610,10 @@ mod tests {
         let woke_for_dir_check = done_rx
             .recv_timeout(RUNTIME_DIR_POLL_INTERVAL + Duration::from_secs(2))
             .expect("workload-running wait never returned");
-        assert!(woke_for_dir_check, "wait woke as something other than the dir poll");
+        assert!(
+            woke_for_dir_check,
+            "wait woke as something other than the dir poll"
+        );
         waiter.join().unwrap();
     }
 }

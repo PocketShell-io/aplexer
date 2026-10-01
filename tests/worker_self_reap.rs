@@ -15,7 +15,11 @@
 //!   its contained workload, drain, and exit on its own -- within seconds,
 //!   with no `a kill` (there is no record left to resolve one anyway);
 //! * deleting only the runtime dir keeps the worker alive (recovery), so
-//!   this is a durable-state check, not a filesystem flinch.
+//!   this is a durable-state check, not a filesystem flinch;
+//! * deleting both, in the order a `TempDir`-scoped harness drops them
+//!   (runtime field first, state second -- issue #22's orphan shape), still
+//!   ends the worker: recovery republishes from the record while it lasts,
+//!   and the record's own disappearance then ends the worker cleanly.
 
 use std::fs;
 use std::path::PathBuf;
@@ -239,4 +243,76 @@ fn deleting_only_the_runtime_dir_does_not_self_reap_the_worker() {
         "worker self-reaped over a runtime-dir-only deletion; \
          only a vanished durable record may end it"
     );
+}
+
+/// Issue #22's orphan shape: the TempDir drop that orphans a test's worker
+/// removes the runtime session dir first and the durable state second
+/// (harness struct fields drop in declaration order). In between, recovery
+/// legitimately republishes the socket from the still-present record -- so
+/// this is not a contradiction of the sibling test above, but its sequel:
+/// once the record goes too, the worker must still notice on an idle tick,
+/// kill its contained workload, finalize, and exit, leaving neither process
+/// nor session directory behind.
+#[test]
+fn worker_self_reaps_when_its_whole_footprint_is_deleted_in_tempdir_drop_order() {
+    let mut harness = Harness::new();
+    let workspace = TempDir::new().unwrap();
+    let start = harness.run(&[
+        "--json",
+        "start",
+        "--workspace",
+        workspace.path().to_str().unwrap(),
+        "--tag",
+        "tempdir-drop-order",
+        "--",
+        "/bin/bash",
+        "--norc",
+    ]);
+    assert!(
+        start.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let started: Value = serde_json::from_slice(&start.stdout).unwrap();
+    let id = started["id"].as_str().unwrap().to_string();
+    harness.id = Some(id.clone());
+
+    let status = harness.run(&["status", &id, "--json"]);
+    assert!(status.status.success(), "status RPC failed after start");
+    let served: Value = serde_json::from_slice(&status.stdout).unwrap();
+    let worker_pid = served["worker_pid"].as_u64().expect("worker_pid in status");
+    let workload_pid = served["workload_pid"]
+        .as_u64()
+        .expect("workload_pid in status");
+    let socket = PathBuf::from(served["socket_path"].as_str().unwrap());
+    let runtime_session = socket.parent().unwrap().to_path_buf();
+    let durable_session = harness.state.path().join("sessions").join(&id);
+    assert!(!process_gone(worker_pid as u32), "worker must be live");
+    assert!(!process_gone(workload_pid as u32), "workload must be live");
+
+    fs::remove_dir_all(&runtime_session).unwrap();
+    fs::remove_dir_all(&durable_session).unwrap();
+
+    // Same observation limits as the durable-state test above: no CLI
+    // surface can address the session any more, so the only honest
+    // observations are the process tree and the filesystem.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if process_gone(worker_pid as u32)
+            && process_gone(workload_pid as u32)
+            && fs::symlink_metadata(&runtime_session).is_err()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "worker {worker_pid} did not self-reap after its runtime session dir and \
+             durable state were both deleted (workload gone: {}, runtime dir gone: {})",
+            process_gone(workload_pid as u32),
+            fs::symlink_metadata(&runtime_session).is_err()
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!durable_session.exists(), "durable state was resurrected");
+    let _ = harness.id.take();
 }
