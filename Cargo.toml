@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.85"
 description = "Daemonless, durable PTY session workers for Linux"
 license = "Apache-2.0"
-repository = "https://github.com/alexeygrigorev/aplexer"
+repository = "https://github.com/PocketShell-io/aplexer"
 
 [lib]
 name = "aplexer"

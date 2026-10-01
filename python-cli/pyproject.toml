@@ -46,10 +46,10 @@ available, and `Ctrl-b d` detaches without terminating the workload.
 
 ## Links
 
-- [Documentation and usage guide](https://github.com/alexeygrigorev/aplexer#readme)
-- [Source repository](https://github.com/alexeygrigorev/aplexer)
-- [Issue tracker](https://github.com/alexeygrigorev/aplexer/issues)
-- [Release notes](https://github.com/alexeygrigorev/aplexer/releases)
+- [Documentation and usage guide](https://github.com/PocketShell-io/aplexer#readme)
+- [Source repository](https://github.com/PocketShell-io/aplexer)
+- [Issue tracker](https://github.com/PocketShell-io/aplexer/issues)
+- [Release notes](https://github.com/PocketShell-io/aplexer/releases)
 - [Python client bindings](https://pypi.org/project/aplexer-client/)
 ''', content-type = "text/markdown" }
 requires-python = ">=3.11"
@@ -80,11 +80,11 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/alexeygrigorev/aplexer"
-Repository = "https://github.com/alexeygrigorev/aplexer"
-Documentation = "https://github.com/alexeygrigorev/aplexer#readme"
-Issues = "https://github.com/alexeygrigorev/aplexer/issues"
-Changelog = "https://github.com/alexeygrigorev/aplexer/releases"
+Homepage = "https://github.com/PocketShell-io/aplexer"
+Repository = "https://github.com/PocketShell-io/aplexer"
+Documentation = "https://github.com/PocketShell-io/aplexer#readme"
+Issues = "https://github.com/PocketShell-io/aplexer/issues"
+Changelog = "https://github.com/PocketShell-io/aplexer/releases"
 
 [project.scripts]
 aplexer = "aplexer_cli._main:main_aplexer"
