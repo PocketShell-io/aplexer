@@ -14,6 +14,8 @@ addressable by *project* and *name* from any terminal.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-fcc624?logo=linux&logoColor=black)](#requirements)
 
+![a list: sessions grouped by workspace, with each session's engine, state, age, and live process/CPU usage](docs/screenshots/list.png)
+
 </div>
 
 aplexer is a Linux-native, agent-aware alternative to tmux. Instead of
@@ -143,15 +145,17 @@ a new --engine codex --tag refactor
 `a list` looks like this:
 
 ```text
-[3] ~/git/dtc-website (◐ running 3/5)
-├──  1  main           claude           ● running
-├──  2  illustrations  codex            ● running
-├──  3  make-run       shell            ● running
-├──  4  layout         shell            ✗ broken
-└──  5  clean-code     shell            ○ exited
+[1] ~/git/demo-api  ← here  3 active · 1 needs you · 90% cpu
+├─  1  build   shell        ● running         9m ago  2p
+├─  2  review  claude       ! waiting   !     just now  2p
+└─  3  main    codex        ● running         3m ago  4p 90%
 ```
 
 Those bracketed numbers on the left are what `a 3` and `a 3 review` refer to.
+Rows carry the session's live process count and recent CPU (`4p 90%` - yellow
+once the tree burns a whole core), and a workspace burning more than half a
+core gets `· 90% cpu` in its header. `! waiting` means the agent said it is
+blocked and needs you.
 
 ## While attached
 
@@ -168,6 +172,11 @@ actually use:
 | `Ctrl-b` `n` | create another session in this workspace |
 | `Ctrl-b` `R` | rename this session's tag |
 | `Ctrl-b` `?` | show the full key reference on screen |
+
+While attached, aplexer draws its own status bar at the bottom of the
+terminal:
+
+![attached to a session: the session's shell prompt with its tag indicator, and aplexer's status bar with detach and help hints](docs/screenshots/attach.png)
 
 The mouse wheel scrolls back through ordinary output. In full-screen apps that
 handle mouse input, such as Codex and OpenCode, the wheel scrolls the app's own
@@ -246,7 +255,7 @@ a capture review --screen
 # stream a file into a session
 a send review --stdin < patch.diff
 
-# phase, exit info, liveness
+# phase, exit info, live processes, cpu, liveness
 a status review
 ```
 
@@ -447,7 +456,7 @@ print(a.capture("api:review").decode(errors="replace"))
 | `a attach` / `open` | attach to a session's live PTY |
 | `a send` | type into a session without attaching |
 | `a capture` | print captured output or the rendered screen |
-| `a status` / `show` | phase, exit info, liveness |
+| `a status` / `show` | phase, exit info, liveness, live process/CPU usage |
 | `a kill` | signal a session's workload and clean up |
 | `a forget` | drop a dead session's records |
 | `a prune` | remove all dead, unreclaimable records and their history |
