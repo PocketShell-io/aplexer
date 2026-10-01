@@ -230,7 +230,9 @@ fn ctrl_b_d_says_detached() {
     let selector = harness.selector(&id);
 
     let mut attach = PtyAttach::spawn(&harness, &id, true);
-    attach.wait_for(b"attached to", "attach hint");
+    // The status bar (its identity segment carries the tag) is the attach's
+    // "chrome is up" signal now that there is no attach-hint flash.
+    attach.wait_for(b"chord-bye", "status bar");
     attach.send(&[0x02, b'd']);
     let status = attach.wait_exit();
     assert!(status.success(), "attach failed after Ctrl-b d: {status}");
@@ -253,7 +255,7 @@ fn worker_killed_under_attach_says_connection_lost() {
         .expect("worker_pid") as i32;
 
     let mut attach = PtyAttach::spawn(&harness, &id, true);
-    attach.wait_for(b"attached to", "attach hint");
+    attach.wait_for(b"lost-bye", "status bar");
     assert_eq!(unsafe { libc::kill(worker_pid, libc::SIGKILL) }, 0);
 
     let status = attach.wait_exit();

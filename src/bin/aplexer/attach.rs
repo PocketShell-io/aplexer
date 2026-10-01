@@ -169,19 +169,13 @@ pub(crate) fn attach(
     // alternate-screen workloads that requested mouse input get wheel reports.
     if status_enabled {
         sync_client_mouse(&status_ctx);
-        // The attach hint goes through the status-bar flash channel, not an
-        // eprintln'd banner: a banner written before/around the snapshot is
-        // what once corrupted a live TUI's input box (docs/terminal-state-
-        // design.md section 6.3 step 6 / section 10.1 item c). The flash is
-        // drawn after the snapshot (whose ED2 blanked the bar row) and
-        // disappears on its own after FLASH_DURATION.
-        flash_status(
-            &status_ctx,
-            format!(
-                "attached to {} · Ctrl-b ? help · Ctrl-b d detach",
-                record.tag
-            ),
-        );
+        // The snapshot's ED2 blanked the bar row, and the initial layout
+        // deliberately skipped painting it (the snapshot would have replaced
+        // it) -- so this draw is the bar's first, and the landing view is the
+        // real status bar. No attach-hint flash on top of it: the bar itself
+        // already ends in `^b ?`, and transient flashes stay reserved for
+        // events (help, switch failures, renames), not the ordinary attach.
+        draw_status_bar(&status_ctx, true);
     }
     // The explicit post-connect Resize control send is unnecessary when the
     // Attach already carried geometry and a new-enough worker honored it

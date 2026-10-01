@@ -98,8 +98,8 @@ pub(crate) struct StatusBarCtx {
 
 type LastDrawnStatus = Option<(String, u16, u16, Option<(u16, u16)>)>;
 
-/// How long a transient status-bar message (switch failure, attach hint,
-/// `Ctrl-b ?` help) stays visible before the normal text resumes
+/// How long a transient status-bar message (switch failure, `Ctrl-b ?`
+/// help) stays visible before the normal text resumes
 /// (docs/fast-session-switching-design.md section 6.1). Three seconds
 /// rather than two: help text has to be readable, not merely noticed.
 pub(crate) const FLASH_DURATION: Duration = Duration::from_secs(3);
@@ -208,7 +208,7 @@ pub(crate) fn attach_key_help() -> String {
 }
 
 /// Shows a transient message on the status bar and redraws immediately --
-/// the single channel for attach hints, help, and switch failures, so
+/// the single channel for help, switch failures, and rename confirmations, so
 /// nothing is ever printed into the workload's output stream (the original
 /// attach banner's corruption failure mode, docs/terminal-state-design.md
 /// section 6.3 step 6).
