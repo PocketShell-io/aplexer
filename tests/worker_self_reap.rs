@@ -20,6 +20,11 @@
 //!   (runtime field first, state second -- issue #22's orphan shape), still
 //!   ends the worker: recovery republishes from the record while it lasts,
 //!   and the record's own disappearance then ends the worker cleanly.
+//! * deleting the durable state while the worker is still *starting* (the
+//!   window before the vanished-record check is armed) must abort the
+//!   start: the startup record writes are replacements, so they fail rather
+//!   than resurrect the record, and the rollback leaves nothing behind
+//!   (issue #22, the startup half of the same orphan shape).
 
 use std::fs;
 use std::path::PathBuf;
@@ -315,4 +320,183 @@ fn worker_self_reaps_when_its_whole_footprint_is_deleted_in_tempdir_drop_order()
     }
     assert!(!durable_session.exists(), "durable state was resurrected");
     let _ = harness.id.take();
+}
+
+/// Last-resort cleanup so a failing run cannot leak the processes it
+/// started: the paused/aborted startup's worker and workload pids, plus the
+/// `a start` client itself. Everything here is already gone on the green
+/// path, so the kills are no-ops.
+#[cfg(feature = "startup-test-hooks")]
+struct StartupTestCleanup {
+    pids: Vec<u32>,
+    client: Option<std::process::Child>,
+}
+
+impl Drop for StartupTestCleanup {
+    fn drop(&mut self) {
+        if let Some(client) = &mut self.client {
+            let _ = client.kill();
+            let _ = client.wait();
+        }
+        for pid in self.pids.drain(..) {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+}
+
+/// The startup half of the same contract (issue #22): the vanished-record
+/// check is armed only once the serve loop begins, while bring-up -- the
+/// workload spawn, placement, and history open between the worker-lock read
+/// and the Running commit -- takes real time. A durable state deleted inside
+/// that window used to be written back into existence by the startup's own
+/// record writes (`atomic_write_json` recreates parent directories), and the
+/// worker committed Running over a session whose state tree was gone: a
+/// detached orphan serving a socket no client could ever address again.
+///
+/// Now every startup record write is a replacement of the launcher's record,
+/// so the deletion fails the very next write; the start aborts, the worker
+/// kills and reaps the workload it had already spawned, takes its runtime
+/// artifacts back out, and exits -- without resurrecting the record, without
+/// the rollback's `Failed` record, without the runtime dir.
+///
+/// The pause/resume startup hooks land the deletion squarely inside the
+/// bring-up window instead of racing it; the launcher-side hook keeps the
+/// `a start` client waiting for the worker's exit instead of readiness-
+/// polling (and eventually TERM-ing) a paused worker.
+#[cfg(feature = "startup-test-hooks")]
+#[test]
+fn deleted_durable_state_during_startup_aborts_the_worker_without_resurrection() {
+    let harness = Harness::new();
+    let workspace = TempDir::new().unwrap();
+    let startup_marker = harness.runtime.path().join("workload-spawned.marker");
+    let resume_marker = harness.runtime.path().join("resume-startup.marker");
+
+    let mut start = harness.command();
+    start.args([
+        "--json",
+        "start",
+        "--workspace",
+        workspace.path().to_str().unwrap(),
+        "--tag",
+        "startup-self-reap",
+        "--",
+        "/bin/bash",
+        "--norc",
+    ]);
+    start.env(
+        "APLEXER_TEST_PAUSE_WORKER_STARTUP_AT",
+        "after_workload_spawn",
+    );
+    start.env("APLEXER_TEST_WORKER_STARTUP_MARKER", &startup_marker);
+    start.env("APLEXER_TEST_RESUME_WORKER_STARTUP_FILE", &resume_marker);
+    start.env("APLEXER_TEST_AWAIT_WORKER_EXIT_BEFORE_READINESS_POLL", "1");
+    let client = start
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut cleanup = StartupTestCleanup {
+        pids: Vec::new(),
+        client: Some(client),
+    };
+
+    // The marker is written after the workload spawn and just before the
+    // pause, so its existence pins the worker inside the bring-up window
+    // with both durable registrations already written.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !startup_marker.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "worker never reached the after_workload_spawn pause point"
+        );
+        assert!(
+            cleanup
+                .client
+                .as_mut()
+                .expect("client held until the end")
+                .try_wait()
+                .unwrap()
+                .is_none(),
+            "start client exited before the worker paused"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let workload_pid: u32 = fs::read_to_string(&startup_marker)
+        .unwrap()
+        .trim()
+        .parse()
+        .expect("startup marker carries the workload pid");
+
+    // The worker registered itself durably before spawning the workload; its
+    // identity file names the process that is paused mid-startup here.
+    let state_sessions = harness.state.path().join("sessions");
+    let session_dir = fs::read_dir(&state_sessions)
+        .unwrap()
+        .next()
+        .expect("one starting session under the state root")
+        .unwrap()
+        .path();
+    let identity: Value = serde_json::from_str(
+        &fs::read_to_string(session_dir.join("worker.identity.json")).unwrap(),
+    )
+    .unwrap();
+    let worker_pid = identity["pid"].as_u64().expect("worker pid") as u32;
+    cleanup.pids = vec![worker_pid, workload_pid];
+
+    // The TempDir-drop shape, landed inside bring-up: the whole durable
+    // state for this session disappears while the worker is still starting.
+    fs::remove_dir_all(&session_dir).unwrap();
+    fs::write(&resume_marker, b"resume").unwrap();
+
+    // The next startup record write is a replacement and must fail: the
+    // worker kills the workload it already spawned, takes its runtime
+    // artifacts back out, and exits. It used to commit Running over the
+    // resurrected record and live on as an orphan instead.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if process_gone(worker_pid) && process_gone(workload_pid) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "worker {worker_pid} stayed up after its durable state was deleted \
+             mid-startup (workload gone: {})",
+            process_gone(workload_pid)
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    // Nothing of the session may come back: not the durable record the
+    // startup writes used to resurrect, not the Failed record the rollback
+    // used to persist over the deletion, not the runtime dir.
+    assert!(
+        fs::symlink_metadata(&session_dir).is_err(),
+        "worker resurrected durable state deleted during startup"
+    );
+    let runtime_session = harness
+        .runtime
+        .path()
+        .join("sessions")
+        .join(session_dir.file_name().unwrap());
+    assert!(
+        fs::symlink_metadata(&runtime_session).is_err(),
+        "runtime session dir survived the aborted startup"
+    );
+
+    // Wait the client out so it is reaped by this test, not leaked: with the
+    // worker gone before readiness it reports the abort and exits on its own.
+    let mut client = cleanup.client.take().expect("client held until the end");
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        match client.try_wait().unwrap() {
+            Some(_) => break,
+            None => assert!(
+                Instant::now() < deadline,
+                "start client did not exit after the worker aborted startup"
+            ),
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let _ = client.wait_with_output();
 }

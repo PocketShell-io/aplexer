@@ -63,8 +63,16 @@ pub(super) fn control_socket_matches_identity(
 /// mount, a vanished network filesystem) stays ambiguous, so only NotFound
 /// self-reaps and anything else keeps deferring.
 pub(super) fn durable_record_vanished(runtime: &WorkerRuntime) -> bool {
+    durable_record_vanished_at(&runtime.record_path)
+}
+
+/// The path-level form of the same predicate, shared with the startup path:
+/// a record deleted while the worker is still bringing up means the same
+/// thing it means for a running worker, and startup must fail rather than
+/// write the record back into existence (issue #22).
+pub(super) fn durable_record_vanished_at(record_path: &std::path::Path) -> bool {
     matches!(
-        fs::symlink_metadata(&runtime.record_path),
+        fs::symlink_metadata(record_path),
         Err(error) if error.kind() == io::ErrorKind::NotFound
     )
 }

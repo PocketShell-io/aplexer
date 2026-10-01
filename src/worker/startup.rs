@@ -9,6 +9,33 @@
 
 use super::*;
 use crate::persist::replace_existing_json;
+use serde::Serialize;
+
+/// Replace the session's durable record without ever creating it.
+///
+/// The launcher wrote the record before exec, and this worker read it under
+/// the worker lock, so from here on every write is a replacement -- the same
+/// invariant a running worker's `update_record` already keeps. It is also
+/// the issue #22 startup fence: bring-up takes real time (workload spawn,
+/// cgroup placement, history open), and a durable state deleted inside that
+/// window must fail the very next write -- and with it the start -- rather
+/// than be written back into existence. `atomic_write_json` recreates parent
+/// directories, so a creating write here would resurrect the record, the
+/// worker would commit `Running` over a session whose state tree is gone,
+/// and the 500 ms vanished-record check in `serve_control_socket` would find
+/// a record to keep it alive forever: a detached orphan serving a socket no
+/// client can address, invisible to `a list` and unkillable.
+///
+/// `persist_worker_identity_once` rides along exactly as it does in
+/// `atomic_write_json`, so the first registration still pins this process's
+/// identity; it is a no-replace publication and fails the same way when the
+/// state directory is gone.
+fn replace_worker_record<T: Serialize>(path: &std::path::Path, record: &T) -> Result<()> {
+    let value = serde_json::to_value(record)
+        .with_context(|| format!("serialize record {}", path.display()))?;
+    persist_worker_identity_once(path, &value)?;
+    replace_existing_json(path, record)
+}
 
 pub(super) fn startup_checkpoint(point: &str) -> Result<()> {
     if TERMINATION_REQUESTED.load(Ordering::SeqCst) {
@@ -55,7 +82,22 @@ pub(super) fn after_workload_spawn_checkpoint(pid: u32) -> Result<()> {
     }
     #[cfg(feature = "startup-test-hooks")]
     if env::var("APLEXER_TEST_PAUSE_WORKER_STARTUP_AT").as_deref() == Ok("after_workload_spawn") {
-        wait_for_termination_request()?;
+        // With a resume file set, pause until the test creates it, so a test
+        // can mutate the world mid-bring-up (issue #22: delete the durable
+        // state under a still-starting worker) and then let startup run on
+        // deterministically. Without one, the original contract holds: pause
+        // until a termination request, which cancels startup below.
+        if let Some(resume) = env::var_os("APLEXER_TEST_RESUME_WORKER_STARTUP_FILE") {
+            let resume = std::path::PathBuf::from(resume);
+            while !resume.exists() && !TERMINATION_REQUESTED.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(5));
+            }
+            if TERMINATION_REQUESTED.load(Ordering::SeqCst) {
+                wait_for_termination_request()?;
+            }
+        } else {
+            wait_for_termination_request()?;
+        }
     }
     #[cfg(not(feature = "startup-test-hooks"))]
     let _ = pid;
@@ -157,6 +199,39 @@ impl StartupGuard {
             )
         });
         self.failure_record.updated_at_ms = now_ms();
+        // The containment work above ran either way. But a durable record
+        // deleted while bring-up ran (issue #22: the spawner died and its
+        // TempDirs dropped mid-startup) must stay deleted: the startup
+        // writes above refused to recreate it, and writing the `Failed`
+        // record here with a creating write would resurrect the one file
+        // whose absence means "this session no longer exists" -- leaving a
+        // record no client can list or kill, the durable litter that pairs
+        // with the orphan-worker shape. Take the runtime artifacts back out
+        // (nothing can address them without the record either) and remove
+        // any state files this startup managed to write, under the worker
+        // lock every destroyer fences through.
+        if durable_record_vanished_at(&self.record_path) {
+            log_best_effort(&format!(
+                "aplexer worker: durable record {} vanished during startup; \
+                 not resurrecting the failed-session record",
+                self.record_path.display()
+            ));
+            if let Some(cgroup) = self.cgroup.take() {
+                cgroup.cleanup();
+            }
+            let _ = fs::remove_file(&self.socket_path);
+            let _ = fs::remove_dir_all(&self.runtime_session_dir);
+            if let Some(state_session) = self.record_path.parent() {
+                match fs::remove_dir_all(state_session) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => log_best_effort(&format!(
+                        "aplexer worker: remove state abandoned by vanished record: {error:#}"
+                    )),
+                }
+            }
+            return;
+        }
         match atomic_write_json(&self.record_path, &self.failure_record) {
             Ok(()) if self.failure_record.containment_empty == Some(true) => {
                 if let Some(cgroup) = self.cgroup.take() {
@@ -293,10 +368,13 @@ pub(super) fn bring_up(
         record.worker_cgroup = crate::placement::read_process_cgroup(std::process::id());
         record.updated_at_ms = now_ms();
         startup.failure_record = record.clone();
-        atomic_write_json(&record_path, &record)?;
-        // Probe replacement on this session's actual filesystem before any
-        // socket or workload exists. Running workers require this operation.
-        replace_existing_json(&record_path, &record)
+        // Publish this worker's registration by replacement, and probe
+        // replacement on the session's actual filesystem in the same
+        // operation, before any socket or workload exists: a running worker
+        // requires it (every later record write is an exchange), and the
+        // startup must never create a record back into existence (issue #22
+        // -- the startup window of the deleted-durable-state orphan).
+        replace_worker_record(&record_path, &record)
             .context("session state filesystem must support RENAME_EXCHANGE")?;
         startup_checkpoint("after_worker_record")?;
 
@@ -377,7 +455,7 @@ pub(super) fn bring_up(
         // Publish the leader and cgroup locator before any injected or real
         // post-spawn failure. The launcher must never have to infer a
         // containment domain from an unpersisted in-memory PID.
-        atomic_write_json(&record_path, &record)?;
+        replace_worker_record(&record_path, &record).context("publish workload registration")?;
         after_workload_spawn_checkpoint(pid)?;
 
         startup_checkpoint("before_history_open")?;
@@ -419,7 +497,7 @@ pub(super) fn bring_up(
             master_read,
             Arc::clone(&child_slot),
             || {
-                atomic_write_json(&record_path, &record)?;
+                replace_worker_record(&record_path, &record).context("commit running record")?;
                 startup_checkpoint("after_running_record")
             },
         )?;
