@@ -1060,6 +1060,55 @@ JSON capture is lossless for arbitrary PTY bytes. Its payload shape is
 `utf8` field is present only when the bytes are valid UTF-8; consumers must
 decode `data` according to `encoding` for the byte-authoritative result.
 
+### 16.7 Handoff
+
+```bash
+a handoff [SESSION] [--json]
+a handoff [SESSION] --engine ENGINE --path FILE
+a handoff [SESSION] --last N --max-bytes BYTES
+```
+
+`a handoff` prints one compact, read-only recovery bundle for an agent or
+operator taking over an interrupted session: session identity (id,
+workspace, tag, engine/profile), the observable recovery reason (lifecycle
+phase, worker reachability, persistence errors such as ENOSPC), a bounded
+recent conversation, the raw PTY tail, the rendered screen, workspace
+pointers (git branch/head/changed paths and unread mailbox messages, never
+diffs), and an explicit per-source completeness report. It never interacts
+with the workload, and its only state-directory write is the best-effort
+transcript bind described below; `--json` carries the same bundle as one
+JSON object.
+
+The conversation window embeds the session's tool work alongside its
+message turns: each tool-call row carries the tool name, its arguments,
+and the pairing call id; each tool-result row its output, in file order.
+Text fields are clipped to fixed bounds with an explicit clipped flag. The
+full log stays at the reported path with its byte size, pageable with
+`a transcript --after/--before`. Every embedded window reports its cap, and
+evidence that may be stale (worker alive but its control socket
+unanswered) is reported unavailable rather than substituted from the
+persisted copy.
+
+Native-log discovery follows the same rules for `a transcript` and
+`a handoff`:
+
+- An explicit `--path` (with `--engine` when the session's declared engine
+  has no transcript family, e.g. a shell-hosted zcodex whose logs live
+  outside `~/.codex`) is authoritative for one invocation and never reads
+  or writes the bind sidecar, so it works when the state directory is not
+  writable.
+- A previously recorded bind (`<state>/sessions/<id>/transcript.json`)
+  wins while its file still exists, and a bind written by live discovery
+  also records the engine the log parses as, so a shell session's codex
+  log keeps reading as codex after the agent exits.
+- With a detected live agent, the rollout files that agent process itself
+  holds open are identity-backed candidates, validated against the session
+  (recency, and the engine's own cwd evidence). Exactly one surviving
+  candidate binds; several are an actionable ambiguity error naming the
+  candidates, never a silent newest-mtime pick. Bind persistence is
+  best-effort: a failed write is reported as a gap and never hides a
+  readable transcript.
+
 ---
 
 ## 17. Terminal history

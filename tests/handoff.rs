@@ -95,7 +95,11 @@ fn write_dead_session(h: &Harness, id: &str, cwd: &Path) -> PathBuf {
         .join(id)
         .join("control.sock");
     let history_path = session_dir.join("history.bin");
-    fs::write(&history_path, "weekly limit hit mid-insert\nSIGKILL'ed mid-redraw\n").unwrap();
+    fs::write(
+        &history_path,
+        "weekly limit hit mid-insert\nSIGKILL'ed mid-redraw\n",
+    )
+    .unwrap();
     let record = json!({
         "schema_version": 1,
         "id": id,
@@ -142,6 +146,40 @@ fn write_rollout(path: &Path, cwd: &Path, answer: &str) {
         ),
     )
     .unwrap();
+}
+
+/// A codex rollout with the zoom shape (issue #20 acceptance): messages
+/// plus `response_item` `function_call`/`function_call_output` rows -- in a
+/// real rollout those hold most of the agent's work (787/762 against 44
+/// message rows), so a bundle without them looks readable while omitting
+/// the commands run and their results.
+fn write_function_rollout(path: &Path, cwd: &Path) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let rows = [
+        json!({"type": "session_meta", "payload": {"id": "thread-tools", "cwd": cwd}}),
+        json!({"type": "response_item", "payload": {
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "insert the figures"}]
+        }}),
+        json!({"type": "response_item", "payload": {
+            "type": "function_call", "name": "exec_command", "call_id": "call-1",
+            "arguments": "{\"command\":[\"ls\",\"figures\"]}"
+        }}),
+        json!({"type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "call-1",
+            "output": "fig1.png\nfig2.png"
+        }}),
+        json!({"type": "response_item", "payload": {
+            "type": "message", "role": "assistant",
+            "content": [{"type": "output_text", "text": "figures inserted"}]
+        }}),
+    ];
+    let body = rows
+        .iter()
+        .map(|row| row.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(path, body + "\n").unwrap();
 }
 
 /// Restores read-permissions on drop so TempDir cleanup cannot fail.
@@ -198,7 +236,10 @@ fn explicit_source_bundle_survives_an_unwritable_state_dir() {
     assert_eq!(transcript["engine"], "codex");
     assert_eq!(transcript["native_session_id"], "thread");
     assert_eq!(transcript["last_user_message"], "insert the figures");
-    assert_eq!(transcript["last_assistant_message"], "weekly limit hit mid-insert");
+    assert_eq!(
+        transcript["last_assistant_message"],
+        "weekly limit hit mid-insert"
+    );
     // Explicit sources never touch the bind sidecar -- here provably,
     // because the session dir could not have accepted a write.
     assert!(!session_dir.join("transcript.json").exists());
@@ -278,7 +319,10 @@ fn missing_transcript_is_an_actionable_gap_not_a_failure() {
     let transcript = &bundle["transcript"];
     assert_eq!(transcript["discovered"], json!(false));
     let error = transcript["error"].as_str().unwrap();
-    assert!(error.contains("--engine") && error.contains("--path"), "{error}");
+    assert!(
+        error.contains("--engine") && error.contains("--path"),
+        "{error}"
+    );
     let gaps = bundle["gaps"].as_array().unwrap();
     assert_eq!(gap(gaps, "transcript")["ok"], json!(false));
     // No worker: its gap says so instead of pretending liveness.
@@ -286,6 +330,73 @@ fn missing_transcript_is_an_actionable_gap_not_a_failure() {
     // The persisted tail the dead worker left is still readable evidence.
     assert_eq!(gap(gaps, "pty_tail")["ok"], json!(true));
     assert_eq!(bundle["pty_tail"]["source"], "persisted");
+}
+
+#[test]
+fn bundle_carries_the_commands_and_their_results() {
+    let h = Harness::new();
+    let cwd = h.home.path().join("recap");
+    fs::create_dir_all(&cwd).unwrap();
+    let id = "00000000-0000-0000-0000-000000000005";
+    write_dead_session(&h, id, &cwd);
+    let rollout = h.runtime_dir.path().join("rollout.jsonl");
+    write_function_rollout(&rollout, &cwd);
+
+    let output = h.run_ok(&[
+        "handoff",
+        id,
+        "--engine",
+        "codex",
+        "--path",
+        rollout.to_str().unwrap(),
+        "--json",
+    ]);
+    let bundle: Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    let events = bundle["transcript"]["events"].as_array().unwrap();
+    let calls: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["kind"] == "tool_call")
+        .collect();
+    let results: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["kind"] == "tool_result")
+        .collect();
+    assert_eq!(calls.len(), 1, "{events:?}");
+    assert_eq!(results.len(), 1, "{events:?}");
+    // The command itself, not merely the tool's name...
+    assert_eq!(calls[0]["tool_name"], "exec_command");
+    assert_eq!(calls[0]["tool_input"], r#"{"command":["ls","figures"]}"#);
+    assert_eq!(calls[0]["tool_call_id"], "call-1");
+    // ...and its result, paired by call id, after the call in file order.
+    assert_eq!(results[0]["tool_output"], "fig1.png\nfig2.png");
+    assert_eq!(results[0]["tool_call_id"], "call-1");
+    assert!(results[0]["sequence"].as_u64().unwrap() > calls[0]["sequence"].as_u64().unwrap());
+    // The conversation turns still read as messages around the tool work.
+    assert_eq!(
+        bundle["transcript"]["last_user_message"],
+        "insert the figures"
+    );
+    assert_eq!(
+        bundle["transcript"]["last_assistant_message"],
+        "figures inserted"
+    );
+
+    // The human bundle names the tool work at a glance; the full evidence
+    // lives in the JSON events above.
+    let human = h.run_ok(&[
+        "handoff",
+        id,
+        "--engine",
+        "codex",
+        "--path",
+        rollout.to_str().unwrap(),
+    ]);
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        text.contains("tool calls in window: 1 (latest: exec_command)"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -303,5 +414,8 @@ fn human_bundle_prints_sections_and_gaps() {
     assert!(text.contains("transcript"), "{text}");
     assert!(text.contains("pty tail"), "{text}");
     assert!(text.contains("gaps"), "{text}");
-    assert!(text.contains("[gap] worker") || text.contains("[gap] "), "{text}");
+    assert!(
+        text.contains("[gap] worker") || text.contains("[gap] "),
+        "{text}"
+    );
 }

@@ -56,7 +56,15 @@ pub(crate) fn cmd_handoff(paths: &Paths, args: HandoffArgs, json_output: bool) -
     if json_output {
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        print_human_handoff(&current, &status, &transcript, &pty_tail, &screen, &workspace, &gaps);
+        print_human_handoff(
+            &current,
+            &status,
+            &transcript,
+            &pty_tail,
+            &screen,
+            &workspace,
+            &gaps,
+        );
     }
     Ok(())
 }
@@ -181,8 +189,7 @@ fn transcript_section(
             Ok((path, engine)) => {
                 // The log's own session id is part of "which log is this":
                 // quote it even though no bind is read or written.
-                let engine_session_id =
-                    aplexer::agent_events::peek_continuation(&engine, &path);
+                let engine_session_id = aplexer::agent_events::peek_continuation(&engine, &path);
                 aplexer::agent_events::TranscriptResolution {
                     path: Some(path),
                     engine: Some(engine),
@@ -199,7 +206,12 @@ fn transcript_section(
         }
     } else {
         let bind_path = paths.state_session(record.id).join("transcript.json");
-        aplexer::agent_events::resolve_transcript_detailed(record, &bind_path, Path::new(aplexer::agent_kind::DEFAULT_PROC_ROOT), live_agent)
+        aplexer::agent_events::resolve_transcript_detailed(
+            record,
+            &bind_path,
+            Path::new(aplexer::agent_kind::DEFAULT_PROC_ROOT),
+            live_agent,
+        )
     };
     let source = if resolution.source.is_empty() {
         "none"
@@ -216,9 +228,11 @@ fn transcript_section(
         None => Value::Null,
     };
     if !resolution.candidates.is_empty() {
-        value["candidates"] = json!(
-            resolution.candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
-        );
+        value["candidates"] = json!(resolution
+            .candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>());
     }
     let Some(path) = resolution.path else {
         return Section {
@@ -230,7 +244,10 @@ fn transcript_section(
                 .unwrap_or_else(|| "transcript not found".into()),
         };
     };
-    let engine = resolution.engine.clone().unwrap_or_else(|| record.engine.clone());
+    let engine = resolution
+        .engine
+        .clone()
+        .unwrap_or_else(|| record.engine.clone());
     value["discovered"] = json!(true);
     value["engine"] = json!(engine);
     value["path"] = json!(path.display().to_string());
@@ -293,7 +310,11 @@ fn transcript_section(
             ));
         }
     }
-    Section { value, ok: true, detail }
+    Section {
+        value,
+        ok: true,
+        detail,
+    }
 }
 
 /// `a handoff --engine/--path`: the same validation `a transcript` applies
@@ -308,16 +329,26 @@ fn explicit_source(
     let path = fs::canonicalize(explicit)
         .with_context(|| format!("transcript path {} is unavailable", explicit.display()))?;
     if !path.is_file() {
-        bail!("transcript path {} is not a regular file", explicit.display());
+        bail!(
+            "transcript path {} is not a regular file",
+            explicit.display()
+        );
     }
     fs::File::open(&path)
         .with_context(|| format!("cannot read transcript path {}", explicit.display()))?;
     Ok((path, engine))
 }
 
+/// One transcript event as the bundle embeds it: the identifying fields
+/// always, and the tool evidence whenever the event carries it -- a
+/// `function_call` row without its command arguments, or a result without
+/// its output, would leave the bundle looking readable while omitting the
+/// agent's actual work (issue #20: the zoom rollout held 787 function-call
+/// rows against 44 message rows). Tool fields ride only on tool rows so a
+/// plain conversation window stays compact.
 fn slim_event(event: &aplexer::watch::UnifiedEvent, clip: usize) -> Value {
     let (content, clipped) = clip_text(&event.content, clip);
-    json!({
+    let mut value = json!({
         "kind": event.kind,
         "sequence": event.sequence,
         "timestamp": event.timestamp,
@@ -326,7 +357,25 @@ fn slim_event(event: &aplexer::watch::UnifiedEvent, clip: usize) -> Value {
         "content_clipped": clipped,
         "tool_name": event.tool_name,
         "error": event.error,
-    })
+    });
+    if let Some(input) = &event.tool_input {
+        let (text, clipped) = clip_text(input, clip);
+        value["tool_input"] = json!(text);
+        if clipped {
+            value["tool_input_clipped"] = json!(true);
+        }
+    }
+    if let Some(output) = &event.tool_output {
+        let (text, clipped) = clip_text(output, clip);
+        value["tool_output"] = json!(text);
+        if clipped {
+            value["tool_output_clipped"] = json!(true);
+        }
+    }
+    if let Some(call_id) = event.metadata.get("tool_call_id").and_then(Value::as_str) {
+        value["tool_call_id"] = json!(call_id);
+    }
+    value
 }
 
 /// A string clipped to `max` bytes on a char boundary, with an honest flag
@@ -429,7 +478,12 @@ fn pty_tail_section(record: &SessionRecord, status: &StatusData, cap: usize) -> 
 /// worker wrote at exit -- the same fallback `a capture --screen --plain`
 /// uses. Unavailable (not stale-substituted) while the worker is merely
 /// unreachable.
-fn screen_section(paths: &Paths, record: &SessionRecord, status: &StatusData, cap: usize) -> Section {
+fn screen_section(
+    paths: &Paths,
+    record: &SessionRecord,
+    status: &StatusData,
+    cap: usize,
+) -> Section {
     let mut value = json!({"window_bytes": cap});
     let worker_gone =
         matches!(record.phase, Phase::Exited | Phase::Failed) || !record.worker_alive();
@@ -457,7 +511,10 @@ fn screen_section(paths: &Paths, record: &SessionRecord, status: &StatusData, ca
                 value["text"] = json!(text);
                 (
                     true,
-                    format!("persisted screen.txt, {} bytes (as of worker exit)", data.len()),
+                    format!(
+                        "persisted screen.txt, {} bytes (as of worker exit)",
+                        data.len()
+                    ),
                 )
             }
             Err(error) => {
@@ -525,8 +582,10 @@ fn git_section(cwd: &Path) -> Value {
                 Ok(status) => {
                     let entries: Vec<String> = status.lines().map(str::to_string).collect();
                     let truncated = entries.len() > GIT_ENTRY_LIMIT;
-                    value["changed_paths"] =
-                        json!(entries.into_iter().take(GIT_ENTRY_LIMIT).collect::<Vec<_>>());
+                    value["changed_paths"] = json!(entries
+                        .into_iter()
+                        .take(GIT_ENTRY_LIMIT)
+                        .collect::<Vec<_>>());
                     value["truncated"] = json!(truncated);
                 }
                 Err(error) => value["status_error"] = json!(format!("{error:#}")),
@@ -633,15 +692,13 @@ fn gaps_section(
     gaps.push(gap(
         "staleness",
         staleness_detail.is_none(),
-        staleness_detail
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                if status.worker_reachable {
-                    "live evidence is current".to_string()
-                } else {
-                    "worker is gone; persisted evidence is the last durable state".to_string()
-                }
-            }),
+        staleness_detail.map(str::to_string).unwrap_or_else(|| {
+            if status.worker_reachable {
+                "live evidence is current".to_string()
+            } else {
+                "worker is gone; persisted evidence is the last durable state".to_string()
+            }
+        }),
     ));
     gaps
 }
@@ -682,15 +739,41 @@ fn print_human_handoff(
     } else if transcript.value["last_user_message"].get("text").is_some() {
         println!(
             "    last user: {} (clipped)",
-            transcript.value["last_user_message"]["text"].as_str().unwrap_or("")
+            transcript.value["last_user_message"]["text"]
+                .as_str()
+                .unwrap_or("")
         );
     }
     if let Some(text) = transcript.value["last_assistant_message"].as_str() {
         println!("    last assistant: {}", text.lines().next().unwrap_or(""));
-    } else if transcript.value["last_assistant_message"].get("text").is_some() {
+    } else if transcript.value["last_assistant_message"]
+        .get("text")
+        .is_some()
+    {
         println!(
             "    last assistant: {} (clipped)",
-            transcript.value["last_assistant_message"]["text"].as_str().unwrap_or("")
+            transcript.value["last_assistant_message"]["text"]
+                .as_str()
+                .unwrap_or("")
+        );
+    }
+    // The window's tool work at a glance -- the commands run are the part a
+    // transcript of only messages hides (issue #20); every call, with its
+    // arguments and result, is in the JSON events.
+    let tool_calls: Vec<&Value> = transcript.value["events"]
+        .as_array()
+        .map(|events| {
+            events
+                .iter()
+                .filter(|event| event["kind"] == "tool_call")
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(latest) = tool_calls.last() {
+        println!(
+            "    tool calls in window: {} (latest: {})",
+            tool_calls.len(),
+            latest["tool_name"].as_str().unwrap_or("?")
         );
     }
     println!("  pty tail   {}", pty_tail.detail);
@@ -717,7 +800,11 @@ fn print_human_handoff(
     for gap in gaps {
         println!(
             "    [{}] {}: {}",
-            if gap["ok"].as_bool().unwrap_or(false) { "ok " } else { "gap" },
+            if gap["ok"].as_bool().unwrap_or(false) {
+                "ok "
+            } else {
+                "gap"
+            },
             gap["source"].as_str().unwrap_or("?"),
             gap["detail"].as_str().unwrap_or("")
         );
