@@ -41,7 +41,7 @@ pub type ProfileVariants = BTreeMap<String, (AgentKind, String)>;
 /// the engine by the script path, or a profile).
 const INTERPRETER_BASENAMES: &[&str] = &[
     "sh", "bash", "dash", "ash", "zsh", "ksh", "node", "nodejs", "python", "python3", "perl",
-    "ruby",
+    "ruby", "uv", "bun", "deno",
 ];
 
 /// One variant entry, unless the token is empty or already canonical (the

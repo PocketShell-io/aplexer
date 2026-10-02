@@ -118,10 +118,13 @@ pub fn reported_state_rejection(record: &SessionRecord, now: u64) -> Option<&'st
 }
 
 fn idle_was_contradicted(record: &SessionRecord, at: u64) -> bool {
-    // Antigravity's TUI keeps producing output while idle. Its native
-    // PreInvocation hook reports working before the next model call, so
-    // terminal redraws cannot override the Stop hook's semantic rest.
-    if record.engine == "antigravity" {
+    // Antigravity's TUI keeps producing output while idle.
+    // Hook-gated exemption: only when native lifecycle hooks are installed
+    // (PreInvocation -> working, Stop -> idle) do terminal redraws not override
+    // the Stop hook's semantic rest, because PreInvocation will report working
+    // when active execution resumes. If hooks are missing, PTY output retracts idle
+    // to prevent unhooked sessions from being stuck in false-idle.
+    if record.engine == "antigravity" && crate::hooks::antigravity_has_lifecycle_hooks() {
         return false;
     }
     // Idle has no clock TTL: only PTY activity beyond the render grace

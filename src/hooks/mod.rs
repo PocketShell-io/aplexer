@@ -316,3 +316,13 @@ pub use drivers::*;
 pub(crate) use files::*;
 pub use nested::*;
 use notice::*;
+
+pub fn antigravity_has_lifecycle_hooks() -> bool {
+    resolve_targets_from_env(&[])
+        .map(|t| files::check_antigravity_lifecycle_file(&t.antigravity_hooks))
+        .unwrap_or(false)
+}
+
+pub fn antigravity_has_lifecycle_hooks_at(path: &std::path::Path) -> bool {
+    files::check_antigravity_lifecycle_file(path)
+}

@@ -189,6 +189,36 @@ fn an_engine_wrapped_in_an_interpreter_claims_no_interpreter_token() {
 }
 
 #[test]
+fn uv_bun_deno_launchers_claim_no_interpreter_tokens() {
+    let mut config = Config::default();
+    config.engines.insert(
+        "codex".to_owned(),
+        EngineConfig {
+            command: vec!["uv".to_owned(), "run".to_owned(), "codex".to_owned()],
+            ..EngineConfig::default()
+        },
+    );
+    config.engines.insert(
+        "claude".to_owned(),
+        EngineConfig {
+            command: vec!["bun".to_owned(), "run".to_owned(), "claude".to_owned()],
+            ..EngineConfig::default()
+        },
+    );
+    config.engines.insert(
+        "grok".to_owned(),
+        EngineConfig {
+            command: vec!["deno".to_owned(), "run".to_owned(), "grok".to_owned()],
+            ..EngineConfig::default()
+        },
+    );
+    let variants = profile_variants(&config);
+    assert!(!variants.contains_key("uv"));
+    assert!(!variants.contains_key("bun"));
+    assert!(!variants.contains_key("deno"));
+}
+
+#[test]
 fn zcodex_binary_names_the_zcodex_profile_without_any_env() {
     // The usual hand-launched shape: the variant engine's binary and
     // no profile env at all. The config-derived token names the

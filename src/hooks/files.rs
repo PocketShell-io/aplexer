@@ -178,3 +178,21 @@ pub(crate) fn check_antigravity_file(path: &Path) -> (bool, String) {
     });
     (installed, format!("lifecycle hooks in {}", path.display()))
 }
+
+pub fn check_antigravity_lifecycle_file(path: &Path) -> bool {
+    read_json_or_default(path).is_ok_and(|doc| {
+        let hook = &doc[ANTIGRAVITY_HOOK_KEY];
+        hook.get("enabled").and_then(Value::as_bool) != Some(false)
+            && [("PreInvocation", "working"), ("Stop", "idle")]
+                .iter()
+                .all(|(event, state)| {
+                    hook[*event].as_array().is_some_and(|handlers| {
+                        handlers.iter().any(|handler| {
+                            handler["command"]
+                                .as_str()
+                                .is_some_and(|command| reports_state(command, state))
+                        })
+                    })
+                })
+    })
+}
