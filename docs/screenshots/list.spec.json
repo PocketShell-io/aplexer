@@ -1,0 +1,92 @@
+{
+  "theme": "one-dark",
+  "chrome": "plain",
+  "width": 1862,
+  "font_size": 30,
+  "line_height": 40,
+  "pad_x": 46,
+  "first_baseline": 67,
+  "pad_bottom": 53,
+  "lines": [
+    {"spans": [
+      ["[1]", "cyan", true],
+      {"t": "~/git/demo-api", "c": "bright", "b": true, "col": 4},
+      {"t": "← here", "c": "cyan", "col": 20},
+      {"t": "3 active · 1 needs you · 90% cpu", "c": "muted", "col": 28}
+    ]},
+    {"spans": [
+      ["├── ", "faint"],
+      {"t": "1", "c": "muted", "col": 4},
+      {"t": "build", "c": "bright", "b": true, "col": 7},
+      {"t": "shell", "c": "muted", "col": 15},
+      {"t": "● running", "c": "green", "col": 27},
+      {"t": "9m ago  2p", "c": "muted", "col": 46}
+    ]},
+    {"spans": [
+      ["│   ", "faint"],
+      {"t": "2", "c": "muted", "col": 4},
+      {"t": "review", "c": "bright", "b": true, "col": 7},
+      {"t": "claude", "c": "muted", "col": 15},
+      {"t": "!", "c": "orange", "col": 27},
+      {"t": "waiting", "c": "orange", "col": 29},
+      {"t": "!", "c": "orange", "col": 37},
+      {"t": "just now  2p", "c": "muted", "col": 46}
+    ]},
+    {"spans": [
+      ["└── ", "faint"],
+      {"t": "3", "c": "muted", "col": 4},
+      {"t": "main", "c": "bright", "b": true, "col": 7},
+      {"t": "codex", "c": "muted", "col": 15},
+      {"t": "● running", "c": "green", "col": 27},
+      {"t": "3m ago  4p 90%", "c": "muted", "col": 46}
+    ]},
+    {"lead": 1, "spans": [
+      ["[2]", "cyan", true],
+      {"t": "~/git/demo-pipeline", "c": "bright", "b": true, "col": 4},
+      {"t": "2 active · 79% cpu", "c": "muted", "col": 25}
+    ]},
+    {"spans": [
+      ["├── ", "faint"],
+      {"t": "1", "c": "muted", "col": 4},
+      {"t": "logs", "c": "bright", "b": true, "col": 7},
+      {"t": "shell", "c": "muted", "col": 15},
+      {"t": "● running", "c": "green", "col": 27},
+      {"t": "9m ago  2p", "c": "muted", "col": 46}
+    ]},
+    {"spans": [
+      ["└── ", "faint"],
+      {"t": "2", "c": "muted", "col": 4},
+      {"t": "etl", "c": "bright", "b": true, "col": 7},
+      {"t": "grok", "c": "muted", "col": 15},
+      {"t": "● running", "c": "green", "col": 27},
+      {"t": "9m ago  3p 79%", "c": "muted", "col": 46}
+    ]},
+    {"lead": 1, "spans": [
+      ["[3]", "cyan", true],
+      {"t": "~/git/demo-web", "c": "bright", "b": true, "col": 4},
+      {"t": "2 active", "c": "muted", "col": 20}
+    ]},
+    {"spans": [
+      ["├── ", "faint"],
+      {"t": "1", "c": "muted", "col": 4},
+      {"t": "tests", "c": "bright", "b": true, "col": 7},
+      {"t": "codex/zodex", "c": "muted", "col": 15},
+      {"t": "○ idle", "c": "muted", "col": 28},
+      {"t": "7m ago  2p", "c": "muted", "col": 46}
+    ]},
+    {"spans": [
+      ["└── ", "faint"],
+      {"t": "2", "c": "muted", "col": 4},
+      {"t": "ui", "c": "bright", "b": true, "col": 7},
+      {"t": "opencode", "c": "muted", "col": 15},
+      {"t": "● running", "c": "green", "col": 27},
+      {"t": "9m ago  2p", "c": "muted", "col": 46}
+    ]},
+    {"lead": 1, "spans": [
+      ["Attach: a <workspace#> [session#|tag] · Here: a here [engine] [tag] · Another: a new · Help: a help", "muted"]
+    ]},
+    {"spans": [
+      ["Sort: name · a list --sort name|created|accessed|activity", "muted"]
+    ]}
+  ]
+}

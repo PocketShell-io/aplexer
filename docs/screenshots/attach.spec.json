@@ -1,0 +1,20 @@
+{
+  "theme": "one-dark",
+  "chrome": "plain",
+  "width": 1016,
+  "font_size": 30,
+  "line_height": 40,
+  "pad_x": 42,
+  "first_baseline": 107,
+  "pad_bottom": 53,
+  "lines": [
+    {"spans": [
+      ["~/git/demo-api ", "yellow"],
+      ["[main]", "purple"]
+    ]},
+    {"spans": [["❯", "prompt"]]},
+    {"lead": 5, "col": 0, "spans": [
+      {"t": "[attached to main · Ctrl-b ? help · Ctrl-b d detach]", "c": "bar_fg", "bg": "bar_bg"}
+    ]}
+  ]
+}
