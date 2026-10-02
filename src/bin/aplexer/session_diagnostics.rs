@@ -1,5 +1,15 @@
 use super::*;
 
+/// `a whoami --json`: the public session record plus the environment
+/// binding check, so a script can see both who the shell claims to be and
+/// whether the process tree agrees.
+#[derive(serde::Serialize)]
+struct WhoamiReport {
+    #[serde(flatten)]
+    record: SessionRecord,
+    binding_check: Option<BindingCheck>,
+}
+
 /// `a whoami` -- lets an agent or script running INSIDE a session (or a
 /// human at its prompt) ask "am I in an aplexer session, and if so which
 /// one" without hand-parsing environment variables. Every workload already
@@ -21,11 +31,20 @@ pub(crate) fn cmd_whoami(paths: &Paths, json_output: bool) -> Result<()> {
     let record = read_record(&paths.record(id)).with_context(|| {
         format!("session {id} (from APLEXER_SESSION_ID) has no persisted record")
     })?;
+    // Diagnose-only: the identity above is still exactly what the
+    // environment named; a stale binding is reported, never substituted.
+    let binding = check_session_binding(paths);
+    if let Some(issues) = binding.as_ref().filter(|c| !c.ok).map(|c| &c.issues) {
+        for issue in issues {
+            eprintln!("a: {issue}");
+        }
+    }
     if json_output {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&public_session_record(&record))?
-        );
+        let report = WhoamiReport {
+            record: public_session_record(&record),
+            binding_check: binding,
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("id: {}", record.id);
         println!("selector: {}", record.selector());

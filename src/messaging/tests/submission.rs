@@ -11,6 +11,7 @@ fn fixture(root: &Path) -> (MessagePaths, MessageEnvelope) {
     message.to = Recipient::Tag {
         tag: "peer".into(),
         session_id: Some(Uuid::now_v7()),
+        rerouted_from: None,
     };
     message.reply_to = Some(Uuid::now_v7());
     write_message_in(&mp, &message).unwrap();

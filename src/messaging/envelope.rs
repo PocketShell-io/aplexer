@@ -57,6 +57,13 @@ pub enum Recipient {
         tag: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<Uuid>,
+        /// Same-workspace `reply` resolves the tag's *current* holder when
+        /// the original sender session is gone or no longer holds the tag;
+        /// this records the session id that resolution replaced, so a
+        /// consumer can see the reply was rerouted rather than lost.
+        /// Absent when the reply went to the sender as recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rerouted_from: Option<Uuid>,
     },
     Broadcast {
         broadcast: bool,
@@ -145,7 +152,9 @@ pub fn addressed_to(
         .as_ref()
         .is_some_and(|source| source != &envelope.workspace);
     match &envelope.to {
-        Recipient::Tag { tag, session_id } => {
+        Recipient::Tag {
+            tag, session_id, ..
+        } => {
             if crosses_workspace {
                 *session_id == Some(consumer_id)
             } else {

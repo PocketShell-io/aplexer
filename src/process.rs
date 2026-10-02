@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
 
+use crate::{read_record, Paths, SessionRecord};
+
 /// Long enough for graceful shutdown, but bounded so an authenticated local
 /// client cannot monopolize a worker's serialized kill path indefinitely.
 pub const MAX_KILL_GRACE_MS: u64 = 30_000;
@@ -125,6 +127,101 @@ pub(crate) fn session_id_in_proc_environ(pid: u32) -> Option<Uuid> {
         }
     }
     None
+}
+
+/// `start` and its ancestors, nearest first. Bounded like
+/// `session_id_from_ancestor_environ`: a deep or cyclic `/proc` chain must
+/// not spin.
+pub fn pid_ancestry(start: u32) -> Vec<u32> {
+    let mut out = vec![start];
+    let mut pid = start;
+    for _ in 0..64 {
+        let Some(next) = proc_ppid(pid) else {
+            break;
+        };
+        if next == 0 || next == pid || out.contains(&next) {
+            break;
+        }
+        out.push(next);
+        pid = next;
+    }
+    out
+}
+
+/// What `check_session_binding` found, as machine-readable output for
+/// `a whoami --json` (`binding_check`) and as stderr text for the messaging
+/// commands. Diagnose-only by contract: a broken binding is named loudly,
+/// never auto-substituted with the identity the process tree would imply.
+#[derive(Debug, serde::Serialize)]
+pub struct BindingCheck {
+    pub ok: bool,
+    pub issues: Vec<String>,
+}
+
+/// The ways the caller's `APLEXER_*` environment can contradict the session
+/// record it names, given the caller's actual process ancestry: a recorded
+/// worker/workload pid that is live but not an ancestor means the variables
+/// are stale (a shell snapshot from another session, inherited by a tool
+/// subprocess), and an `APLEXER_WORKSPACE` that differs from the recorded
+/// workspace means the same thing with a second witness. A record with no
+/// live process to check against is skipped -- ancestry can neither confirm
+/// nor contradict a dead session, and `whoami`'s state output already says
+/// that session is gone.
+pub(crate) fn binding_issues(
+    record: &SessionRecord,
+    ancestry: &[u32],
+    env_workspace: Option<&Path>,
+) -> Vec<String> {
+    let mut issues = Vec::new();
+    let names_a_live_session = record.worker_alive() || record.workload_leader_alive();
+    let in_tree = record.worker_pid.is_some_and(|pid| ancestry.contains(&pid))
+        || record
+            .workload_pid
+            .is_some_and(|pid| ancestry.contains(&pid));
+    if names_a_live_session && !in_tree {
+        issues.push(format!(
+            "stale APLEXER_* environment: APLEXER_SESSION_ID names session {} (tag {}, workspace {}), whose worker/workload process is not in this process's ancestry -- these variables were likely inherited from another session's shell snapshot; start a fresh shell inside the session, or unset the stale APLEXER_* variables",
+            record.id,
+            record.tag,
+            record.workspace.display(),
+        ));
+    }
+    if let Some(workspace) = env_workspace {
+        if !workspace.as_os_str().is_empty() {
+            let canonical = fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+            if canonical != record.workspace {
+                issues.push(format!(
+                    "stale APLEXER_* environment: APLEXER_WORKSPACE={} disagrees with session {}'s recorded workspace {} -- start a fresh shell inside the session, or unset the stale APLEXER_* variables",
+                    workspace.display(),
+                    record.id,
+                    record.workspace.display(),
+                ));
+            }
+        }
+    }
+    issues
+}
+
+/// Resolve the caller's discovered session identity against its record and
+/// the process tree. `None` when there is nothing to check: no session id
+/// is discoverable, or the record it names does not exist (whoami already
+/// fails loudly there).
+pub fn check_session_binding(paths: &Paths) -> Option<BindingCheck> {
+    let id = discover_session_id()?;
+    let record = read_record(&paths.record(id)).ok()?;
+    let env_workspace = env::var("APLEXER_WORKSPACE")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    let issues = binding_issues(
+        &record,
+        &pid_ancestry(std::process::id()),
+        env_workspace.as_deref(),
+    );
+    Some(BindingCheck {
+        ok: issues.is_empty(),
+        issues,
+    })
 }
 
 /// Whether `pid` names a process that can still run code.

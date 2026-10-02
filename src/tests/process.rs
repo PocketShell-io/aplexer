@@ -165,3 +165,88 @@ fn executable_available_requires_execute_permission() {
     fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
     assert!(executable_available(program.to_str().unwrap()));
 }
+
+/// The live worker sits in the caller's ancestry, so the binding holds even
+/// though the process's own env may name it only indirectly.
+#[test]
+fn binding_issues_accepts_a_worker_in_the_ancestry() {
+    let worker = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let pid = worker.id();
+    let mut record = SessionRecord::fixture("/tmp/ws", "tagged");
+    record.worker_pid = Some(pid);
+    // binding_issues is pure over the ancestry it is handed; the caller's
+    // real chain here cannot contain the spawned pid, so stand in the chain
+    // a genuinely bound process would have.
+    let ancestry = vec![std::process::id(), pid];
+    assert!(
+        binding_issues(&record, &ancestry, None).is_empty(),
+        "a worker in the ancestry is not drift"
+    );
+    drop(worker);
+}
+
+/// The reported shape: a shell snapshot carried another session's
+/// APLEXER_SESSION_ID into a process whose ancestry has no aplexer worker
+/// at all -- live worker, absent from the tree, named explicitly.
+#[test]
+fn binding_issues_names_a_live_worker_outside_the_ancestry() {
+    let worker = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let pid = worker.id();
+    let mut record = SessionRecord::fixture("/tmp/ws", "other-tag");
+    record.worker_pid = Some(pid);
+    let issues = binding_issues(&record, &[std::process::id()], None);
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert!(
+        issues[0].contains("not in this process's ancestry"),
+        "{}",
+        issues[0]
+    );
+    assert!(issues[0].contains("unset the stale"), "{}", issues[0]);
+    drop(worker);
+}
+
+/// The workload leader alone also proves the binding, and a dead session
+/// proves nothing either way: ancestry cannot contradict a record with no
+/// live process to point at.
+#[test]
+fn binding_issues_checks_the_workload_leader_and_skips_dead_sessions() {
+    let leader = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let pid = leader.id();
+    let mut record = SessionRecord::fixture("/tmp/ws", "tagged");
+    record.workload_pid = Some(pid);
+    let ancestry = vec![std::process::id(), pid];
+    assert!(binding_issues(&record, &ancestry, None).is_empty());
+    let issues = binding_issues(&record, &[std::process::id()], None);
+    assert_eq!(issues.len(), 1, "{issues:?}");
+
+    let gone = SessionRecord::fixture("/tmp/ws", "tagged");
+    assert!(binding_issues(&gone, &[std::process::id()], None).is_empty());
+    drop(leader);
+}
+
+/// A stale APLEXER_WORKSPACE is a second witness, named on its own when
+/// the ancestry happens to agree.
+#[test]
+fn binding_issues_names_a_workspace_disagreement() {
+    let record = SessionRecord::fixture("/tmp/ws", "tagged");
+    let issues = binding_issues(
+        &record,
+        &[std::process::id()],
+        Some(Path::new("/tmp/other")),
+    );
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert!(issues[0].contains("APLEXER_WORKSPACE"), "{}", issues[0]);
+    assert!(binding_issues(&record, &[std::process::id()], Some(Path::new("/tmp/ws"))).is_empty());
+}
+
+/// The walk terminates and climbs: the test process's parent is in the
+/// list, and the chain ends at init (pid 0 stops it).
+#[test]
+fn pid_ancestry_walks_parents_and_terminates() {
+    let ancestry = pid_ancestry(std::process::id());
+    assert!(ancestry.contains(&std::process::id()));
+    let ppid = proc_ppid(std::process::id()).unwrap();
+    assert_eq!(ancestry[1], ppid);
+    assert!(ancestry.len() <= 65);
+    assert_eq!(pid_ancestry(1), vec![1]);
+}

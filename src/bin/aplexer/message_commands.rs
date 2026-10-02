@@ -62,6 +62,13 @@ pub(crate) fn print_message_details(m: &MessageEnvelope) {
         Recipient::Broadcast { .. } => println!("to: * (broadcast)"),
         Recipient::Engine { engine } => println!("to: engine:{engine}"),
     }
+    if let Recipient::Tag {
+        rerouted_from: Some(original),
+        ..
+    } = &m.to
+    {
+        println!("rerouted_from: {original}");
+    }
     println!("kind: {}", m.kind);
     if let Some(r) = m.reply_to {
         println!("reply_to: {r}");
@@ -226,6 +233,7 @@ pub(crate) fn cmd_message_ack(
     if !args.all && args.message_ids.is_empty() {
         bail!("specify at least one message id, or --all");
     }
+    warn_binding_drift(paths);
     let workspace = resolve_message_workspace(None)?;
     let records = list_records(paths)?;
     let consumer = SessionIdentity::required(resolve_identity(

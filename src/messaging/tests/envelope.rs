@@ -5,6 +5,7 @@ fn recipient_shapes_round_trip() {
     let tag = Recipient::Tag {
         tag: "review".into(),
         session_id: None,
+        rerouted_from: None,
     };
     let json = serde_json::to_value(&tag).unwrap();
     assert_eq!(json, serde_json::json!({"tag": "review"}));

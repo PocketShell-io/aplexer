@@ -557,6 +557,7 @@ fn retained_uuid_history_survives_ack_and_excludes_unrelated_mail() {
         Recipient::Tag {
             tag: "traveler".to_string(),
             session_id: Some(me),
+            rerouted_from: None,
         },
     );
     let broadcast = envelope(foreign.path(), Recipient::Broadcast { broadcast: true });
@@ -565,6 +566,7 @@ fn retained_uuid_history_survives_ack_and_excludes_unrelated_mail() {
         Recipient::Tag {
             tag: "traveler".to_string(),
             session_id: None,
+            rerouted_from: None,
         },
     );
     for message in [&addressed, &broadcast, &tag_only] {
@@ -702,6 +704,7 @@ fn unread_and_mailbox_listing_tolerate_a_missing_record() {
         Recipient::Tag {
             tag: "ghost".to_string(),
             session_id: Some(ghost),
+            rerouted_from: None,
         },
     );
     write_message(&isolated.paths, &message).unwrap();

@@ -3,6 +3,7 @@ mod support;
 
 use aplexer::{atomic_write_json, Phase};
 use serde_json::Value;
+use std::process::Command;
 use support::Harness;
 use tempfile::TempDir;
 
@@ -363,4 +364,171 @@ fn same_workspace_message_reply_and_ack_still_work() {
     assert!(inbox.status.success(), "{inbox:?}");
     let unread: Value = serde_json::from_slice(&inbox.stdout).unwrap();
     assert_eq!(unread.as_array().unwrap().len(), 0);
+}
+
+/// Reproduces the 2026-10-02 misreport: tag `codex-principal` moved from a
+/// dead session to a live one, and `message reply` on an old message built
+/// its recipient from the original sender's session id -- so the reply's
+/// JSON named the dead UUID and the principal read the reply as lost. A
+/// same-workspace reply must resolve the tag's current live holder, record
+/// that id, and say what it was rerouted from.
+#[test]
+fn reply_to_moved_tag_reroutes_to_current_live_holder() {
+    let harness = Harness::new();
+    let dead = harness.retag(&harness.record(Phase::Exited, None, b""), "codex-principal");
+    let worker = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let holder = harness.retag(
+        &harness.record(Phase::Running, Some(worker.id()), b""),
+        "codex-principal",
+    );
+    let replier = harness.record(Phase::Exited, None, b"");
+
+    let send = harness
+        .command()
+        .env("APLEXER_SESSION_ID", dead.id.to_string())
+        .env("APLEXER_WORKSPACE", &dead.workspace)
+        .args([
+            "--json",
+            "message",
+            "send",
+            "--to",
+            &replier.tag,
+            "please do X",
+        ])
+        .output()
+        .unwrap();
+    assert!(send.status.success(), "{send:?}");
+    let original: Value = serde_json::from_slice(&send.stdout).unwrap();
+
+    let reply = harness
+        .command()
+        .env("APLEXER_SESSION_ID", replier.id.to_string())
+        .env("APLEXER_WORKSPACE", &replier.workspace)
+        .args([
+            "--json",
+            "message",
+            "reply",
+            original["id"].as_str().unwrap(),
+            "done",
+        ])
+        .output()
+        .unwrap();
+    assert!(reply.status.success(), "{reply:?}");
+    let replied: Value = serde_json::from_slice(&reply.stdout).unwrap();
+    let holder_id = holder.id.to_string();
+    assert_eq!(replied["to"]["session_id"], holder_id.as_str());
+    let dead_id = dead.id.to_string();
+    assert_eq!(replied["to"]["rerouted_from"], dead_id.as_str());
+    let stderr = String::from_utf8_lossy(&reply.stderr);
+    assert!(stderr.contains("rerouted"), "{stderr}");
+
+    // The reroute is not cosmetic: the live holder actually receives it.
+    let inbox = harness
+        .command()
+        .env("APLEXER_SESSION_ID", holder.id.to_string())
+        .env("APLEXER_WORKSPACE", &holder.workspace)
+        .args(["--json", "message", "inbox"])
+        .output()
+        .unwrap();
+    assert!(inbox.status.success(), "{inbox:?}");
+    let messages: Value = serde_json::from_slice(&inbox.stdout).unwrap();
+    assert_eq!(messages[0]["id"], replied["id"]);
+    drop(worker);
+}
+
+/// When the original sender's session is gone and nothing live holds the
+/// tag any more, the reply must still be recorded -- tag addressing keeps
+/// it deliverable to whichever session next holds the tag -- but say so
+/// out loud instead of silently pinning a dead session id.
+#[test]
+fn reply_without_live_tag_holder_warns_and_stays_deliverable_by_tag() {
+    let harness = Harness::new();
+    let dead = harness.retag(&harness.record(Phase::Exited, None, b""), "lonely-tag");
+    let replier = harness.record(Phase::Exited, None, b"");
+
+    let send = harness
+        .command()
+        .env("APLEXER_SESSION_ID", dead.id.to_string())
+        .env("APLEXER_WORKSPACE", &dead.workspace)
+        .args(["--json", "message", "send", "--to", &replier.tag, "hello"])
+        .output()
+        .unwrap();
+    assert!(send.status.success(), "{send:?}");
+    let original: Value = serde_json::from_slice(&send.stdout).unwrap();
+
+    let reply = harness
+        .command()
+        .env("APLEXER_SESSION_ID", replier.id.to_string())
+        .env("APLEXER_WORKSPACE", &replier.workspace)
+        .args([
+            "--json",
+            "message",
+            "reply",
+            original["id"].as_str().unwrap(),
+            "done",
+        ])
+        .output()
+        .unwrap();
+    assert!(reply.status.success(), "{reply:?}");
+    let replied: Value = serde_json::from_slice(&reply.stdout).unwrap();
+    assert!(replied["to"].get("session_id").is_none());
+    let dead_id = dead.id.to_string();
+    assert_eq!(replied["to"]["rerouted_from"], dead_id.as_str());
+    let stderr = String::from_utf8_lossy(&reply.stderr);
+    assert!(stderr.contains("no live session holds tag"), "{stderr}");
+
+    // A session later reborn under the same tag inherits the parked reply.
+    let reborn = harness.retag(&harness.record(Phase::Exited, None, b""), "lonely-tag");
+    let inbox = harness
+        .command()
+        .env("APLEXER_SESSION_ID", reborn.id.to_string())
+        .env("APLEXER_WORKSPACE", &reborn.workspace)
+        .args(["--json", "message", "inbox"])
+        .output()
+        .unwrap();
+    assert!(inbox.status.success(), "{inbox:?}");
+    let messages: Value = serde_json::from_slice(&inbox.stdout).unwrap();
+    assert_eq!(messages[0]["id"], replied["id"]);
+}
+
+/// A reply to a sender that still holds its tag and is alive is recorded
+/// exactly as before: no reroute field, no warning.
+#[test]
+fn reply_to_live_sender_keeps_the_recorded_session() {
+    let harness = Harness::new();
+    let worker = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let sender = harness.record(Phase::Running, Some(worker.id()), b"");
+    let replier = harness.record(Phase::Exited, None, b"");
+
+    let send = harness
+        .command()
+        .env("APLEXER_SESSION_ID", sender.id.to_string())
+        .env("APLEXER_WORKSPACE", &sender.workspace)
+        .args(["--json", "message", "send", "--to", &replier.tag, "hello"])
+        .output()
+        .unwrap();
+    assert!(send.status.success(), "{send:?}");
+    let original: Value = serde_json::from_slice(&send.stdout).unwrap();
+
+    let reply = harness
+        .command()
+        .env("APLEXER_SESSION_ID", replier.id.to_string())
+        .env("APLEXER_WORKSPACE", &replier.workspace)
+        .args([
+            "--json",
+            "message",
+            "reply",
+            original["id"].as_str().unwrap(),
+            "done",
+        ])
+        .output()
+        .unwrap();
+    assert!(reply.status.success(), "{reply:?}");
+    let replied: Value = serde_json::from_slice(&reply.stdout).unwrap();
+    let sender_id = sender.id.to_string();
+    assert_eq!(replied["to"]["session_id"], sender_id.as_str());
+    assert!(replied["to"].get("rerouted_from").is_none());
+    let stderr = String::from_utf8_lossy(&reply.stderr);
+    assert!(!stderr.contains("rerouted"), "{stderr}");
+    drop(worker);
 }

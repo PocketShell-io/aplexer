@@ -30,6 +30,7 @@ fn envelope(workspace: &Path, consumer: &SessionIdentity) -> MessageEnvelope {
         to: Recipient::Tag {
             tag: "reader".into(),
             session_id: Some(consumer.id),
+            rerouted_from: None,
         },
         kind: "note".into(),
         reply_to: None,
@@ -85,6 +86,7 @@ fn unrelated_publication_is_only_a_wake_hint() {
     unrelated.to = Recipient::Tag {
         tag: "someone-else".into(),
         session_id: Some(Uuid::now_v7()),
+        rerouted_from: None,
     };
     write_message_in(&mp, &unrelated).unwrap();
     watch

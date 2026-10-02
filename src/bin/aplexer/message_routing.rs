@@ -23,6 +23,17 @@ pub(crate) fn resolve_message_workspace(explicit: Option<&Path>) -> Result<PathB
     canonical_workspace(Path::new("."))
 }
 
+/// Diagnose-only identity check shared by the messaging entry points: name
+/// a stale `APLEXER_*` binding loudly on stderr, then proceed with the
+/// identity as given -- never block, never substitute another identity.
+pub(crate) fn warn_binding_drift(paths: &Paths) {
+    if let Some(check) = check_session_binding(paths) {
+        for issue in &check.issues {
+            eprintln!("a: {issue}");
+        }
+    }
+}
+
 /// Resolves the `--to`/`--all`/`--to-engine` triple into a `Recipient`,
 /// applying the typo guard of design doc section 2.3: a tag that has never
 /// existed in this workspace is rejected with the list of known tags unless
@@ -62,6 +73,7 @@ pub(crate) fn build_recipient(
         return Ok(Recipient::Tag {
             tag: tag.to_string(),
             session_id: existing.map(|r| r.id),
+            rerouted_from: None,
         });
     }
     if all {
@@ -174,6 +186,7 @@ pub(crate) fn cmd_message_send(
         bail!("--pane requires --to TAG");
     }
     check_body_size(&args.text)?;
+    warn_binding_drift(paths);
     let workspace = resolve_message_workspace(args.workspace.as_deref())?;
     let records = list_records(paths)?;
     let data = parse_data_arg(args.data.as_deref())?;
@@ -237,12 +250,80 @@ fn reply_target(
         return Ok(Recipient::Tag {
             tag: target.tag.clone(),
             session_id: Some(target.id),
+            rerouted_from: None,
         });
     }
-    let target = session_by_tag(records, destination, original_tag);
+    reply_target_same_workspace(original, records, destination, original_tag)
+}
+
+/// Whether `record` names a session that can still act on mail: a live
+/// worker, or a start still inside its startup window (no worker pid
+/// published yet, but not yet old enough to be declared broken). A
+/// merely-recorded phase proves nothing on its own -- see
+/// `observed_state`'s doc comment on stale phases.
+fn session_can_receive(record: &SessionRecord) -> bool {
+    record.worker_alive()
+        || aplexer::within_startup_window(&record.phase, record.created_at_ms, now_ms())
+}
+
+/// The session a same-workspace reply should address, when the tag's
+/// original holder cannot: prefer the original sender while it still holds
+/// the tag and is alive, else the tag's current live holder. At most one
+/// session can hold a tag live at a time (a start refuses to bind a tag
+/// another live session holds), so "the live holder" is unambiguous.
+fn live_reply_holder<'a>(
+    original: &MessageEnvelope,
+    records: &'a [SessionRecord],
+    destination: &Path,
+    tag: &str,
+) -> Option<&'a SessionRecord> {
+    let candidates: Vec<&SessionRecord> = records
+        .iter()
+        .filter(|r| r.workspace == destination && r.tag == tag)
+        .collect();
+    if let Some(sender_id) = original.from.session_id {
+        if let Some(record) = candidates.iter().copied().find(|r| r.id == sender_id) {
+            if session_can_receive(record) {
+                return Some(record);
+            }
+        }
+    }
+    candidates.into_iter().find(|r| session_can_receive(r))
+}
+
+/// Same-workspace reply addressing: the sender as recorded while it is the
+/// tag's live holder, else the tag's current live holder, else the tag
+/// alone -- which stays deliverable to whichever session next holds it
+/// (`addressed_to` matches same-workspace tags against the consumer's
+/// current tag). A reroute is recorded in the recipient and named on
+/// stderr; silence is what made the original misreport possible.
+fn reply_target_same_workspace(
+    original: &MessageEnvelope,
+    records: &[SessionRecord],
+    destination: &Path,
+    tag: &str,
+) -> Result<Recipient> {
+    let holder = live_reply_holder(original, records, destination, tag);
+    let original_id = original.from.session_id;
+    let (session_id, rerouted_from) = match holder {
+        Some(record) if original_id == Some(record.id) => (Some(record.id), None),
+        Some(record) => (Some(record.id), original_id),
+        None => (None, original_id),
+    };
+    if let Some(rerouted) = rerouted_from {
+        match session_id {
+            Some(id) => eprintln!(
+                "a: reply rerouted: original sender session {rerouted} is gone or no longer holds tag {tag:?}; addressed to current holder {id}"
+            ),
+            None => eprintln!(
+                "a: no live session holds tag {tag:?} (original sender session {rerouted} is gone); message parked in the workspace inbox for the next holder of the tag"
+            ),
+        }
+    }
     Ok(Recipient::Tag {
-        tag: original_tag.clone(),
-        session_id: original.from.session_id.or(target.map(|r| r.id)),
+        tag: tag.to_string(),
+        session_id,
+        rerouted_from,
     })
 }
 
@@ -252,6 +333,7 @@ pub(crate) fn cmd_message_reply(
     json_output: bool,
 ) -> Result<()> {
     check_body_size(&args.text)?;
+    warn_binding_drift(paths);
     let workspace = resolve_message_workspace(None)?;
     let records = list_records(paths)?;
     let original = read_consumer_message(paths, &workspace, args.message_id)
