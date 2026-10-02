@@ -332,6 +332,7 @@ struct StartupTestCleanup {
     client: Option<std::process::Child>,
 }
 
+#[cfg(feature = "startup-test-hooks")]
 impl Drop for StartupTestCleanup {
     fn drop(&mut self) {
         if let Some(client) = &mut self.client {

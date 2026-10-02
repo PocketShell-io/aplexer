@@ -135,6 +135,8 @@ pub(crate) struct MessageSendArgs {
         help = "Sender identity override (default: APLEXER_TAG or anonymous)"
     )]
     pub(crate) from: Option<String>,
+    #[arg(long, value_name = "KEY", help = "Idempotency key to prevent duplicate sends on retries")]
+    pub(crate) idempotency_key: Option<String>,
     /// The message body
     #[arg(value_name = "TEXT")]
     pub(crate) text: String,
@@ -155,6 +157,8 @@ pub(crate) struct MessageReplyArgs {
     pub(crate) data: Option<String>,
     #[arg(long, value_name = "KIND", help = "Defaults to \"reply\"")]
     pub(crate) kind: Option<String>,
+    #[arg(long, value_name = "KEY", help = "Idempotency key to prevent duplicate sends on retries")]
+    pub(crate) idempotency_key: Option<String>,
     /// The reply body
     #[arg(value_name = "TEXT")]
     pub(crate) text: String,

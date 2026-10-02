@@ -92,8 +92,9 @@ pub struct MessageEnvelope {
     pub body: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
-    #[serde(default)]
     pub delivery: Delivery,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
 
 fn default_kind() -> String {
