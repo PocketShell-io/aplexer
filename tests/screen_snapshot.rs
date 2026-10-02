@@ -1352,23 +1352,29 @@ fn a_client_larger_than_the_shared_screen_is_repainted_at_the_new_size() {
         escape(&output[..end])
     );
 
-    // Poll to convergence: the repaint, the `stty size` output and the
-    // prompt that follows it are separate writes.
+    // Poll for the repaint: the `stty size` output and the prompt that
+    // follow it are separate writes, and they keep scrolling the reflowed
+    // screen, so no single instant is guaranteed to show FILLER-17 on top
+    // -- only a frame captured in the first milliseconds does. What holds
+    // from the repaint on is the durable shape: the shared screen's top row
+    // is a filler only the 10-row layout can show, the pre-resize top row
+    // is gone, and the shrunk-size output is visible. Sample the capture
+    // fresh each iteration -- a snapshot taken once freezes whatever frame
+    // had landed by that instant.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
+        let output = desktop.output();
         let host = host_terminal(&output, rows, cols);
         let contents = host.screen().contents();
-        if contents.contains("SHRUNK-VISIBLE") {
-            let shared: Vec<&str> = contents.lines().take(10).collect();
-            assert!(
-                shared[0].contains("FILLER-17"),
-                "the shared screen was not reflowed to the new size; its first row is {:?}",
-                shared[0]
-            );
-            assert!(
-                !contents.contains("FILLER-1\n"),
-                "a stale row of the pre-resize screen survived the repaint; screen:\n{contents}"
-            );
+        let repainted = contents
+            .lines()
+            .next()
+            .and_then(|row| row.trim().strip_prefix("FILLER-"))
+            .and_then(|n| n.parse::<u32>().ok())
+            .is_some_and(|n| (17..=25).contains(&n))
+            && !contents.contains("FILLER-1\n")
+            && contents.contains("SHRUNK-VISIBLE");
+        if repainted {
             let bar = host.screen().contents_between(rows - 1, 0, rows - 1, cols);
             assert!(
                 bar.contains("viewport-padding"),
@@ -1380,7 +1386,7 @@ fn a_client_larger_than_the_shared_screen_is_repainted_at_the_new_size() {
         if Instant::now() >= deadline {
             panic!("the desktop was never repainted at the shared size; screen:\n{contents}");
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(50));
     }
 
     drop(phone);
