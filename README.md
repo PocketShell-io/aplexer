@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/icon.svg" alt="aplexer icon" width="128" />
+
 # aplexer
 
 **Durable PTY sessions for coding agents - no daemon required.**
@@ -14,7 +16,7 @@ addressable by *project* and *name* from any terminal.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-fcc624?logo=linux&logoColor=black)](#requirements)
 
-![a list: sessions grouped by workspace, with each session's engine, state, age, and live process/CPU usage](docs/screenshots/list.png)
+![a list: sessions grouped by workspace, with each session's engine, state, age, and live process/CPU usage](docs/screenshots/list.svg)
 
 </div>
 
@@ -176,7 +178,7 @@ actually use:
 While attached, aplexer draws its own status bar at the bottom of the
 terminal:
 
-![attached to a session: the session's shell prompt with its tag indicator, and aplexer's status bar with detach and help hints](docs/screenshots/attach.png)
+![attached to a session: the session's shell prompt with its tag indicator, and aplexer's status bar with detach and help hints](docs/screenshots/attach.svg)
 
 The mouse wheel scrolls back through ordinary output. In full-screen apps that
 handle mouse input, such as Codex and OpenCode, the wheel scrolls the app's own

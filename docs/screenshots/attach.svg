@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1016" height="440" viewBox="0 0 1016 440" role="img" aria-label="terminal">
+<rect x="1" y="1" width="1014" height="438" rx="16" fill="#0c1016" stroke="#303642" stroke-width="2"/>
+<text x="42" y="107" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#e5c07b" xml:space="preserve">~/git/demo-api </text>
+<text x="312.9" y="107" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#c678dd" xml:space="preserve">[main]</text>
+<text x="42" y="147" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#dcdcdc" xml:space="preserve">❯</text>
+<rect x="32" y="362.4" width="959.12" height="34.2" rx="3" fill="#dee3ea"/>
+<text x="42" y="387" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#0c1016" xml:space="preserve">[attached to main · Ctrl-b ? help · Ctrl-b d detach]</text>
+</svg>

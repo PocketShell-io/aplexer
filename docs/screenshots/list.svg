@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1862" height="680" viewBox="0 0 1862 680" role="img" aria-label="terminal">
+<rect x="1" y="1" width="1860" height="678" rx="16" fill="#0c1016" stroke="#303642" stroke-width="2"/>
+<text x="46" y="67" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#56b6c2" xml:space="preserve">[1]</text>
+<text x="118.24" y="67" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#dee3ea" xml:space="preserve">~/git/demo-api</text>
+<text x="407.2" y="67" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#56b6c2" xml:space="preserve">← here</text>
+<text x="551.68" y="67" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">3 active · 1 needs you · 90% cpu</text>
+<text x="46" y="107" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6a6e75" xml:space="preserve">├── </text>
+<text x="118.24" y="107" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">1</text>
+<text x="172.42" y="107" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#dee3ea" xml:space="preserve">build</text>
+<text x="316.9" y="107" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">shell</text>
+<text x="533.62" y="107" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#98c379" xml:space="preserve">● running</text>
+<text x="876.76" y="107" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">9m ago  2p</text>
+<text x="46" y="147" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6a6e75" xml:space="preserve">│   </text>
+<text x="118.24" y="147" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">2</text>
+<text x="172.42" y="147" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#dee3ea" xml:space="preserve">review</text>
+<text x="316.9" y="147" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">claude</text>
+<text x="533.62" y="147" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#e8c58a" xml:space="preserve">!</text>
+<text x="569.74" y="147" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#e8c58a" xml:space="preserve">waiting</text>
+<text x="714.22" y="147" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#e8c58a" xml:space="preserve">!</text>
+<text x="876.76" y="147" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">just now  2p</text>
+<text x="46" y="187" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6a6e75" xml:space="preserve">└── </text>
+<text x="118.24" y="187" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">3</text>
+<text x="172.42" y="187" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#dee3ea" xml:space="preserve">main</text>
+<text x="316.9" y="187" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">codex</text>
+<text x="533.62" y="187" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#98c379" xml:space="preserve">● running</text>
+<text x="876.76" y="187" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">3m ago  4p 90%</text>
+<text x="46" y="267" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#56b6c2" xml:space="preserve">[2]</text>
+<text x="118.24" y="267" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#dee3ea" xml:space="preserve">~/git/demo-pipeline</text>
+<text x="497.5" y="267" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">2 active · 79% cpu</text>
+<text x="46" y="307" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6a6e75" xml:space="preserve">├── </text>
+<text x="118.24" y="307" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">1</text>
+<text x="172.42" y="307" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#dee3ea" xml:space="preserve">logs</text>
+<text x="316.9" y="307" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">shell</text>
+<text x="533.62" y="307" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#98c379" xml:space="preserve">● running</text>
+<text x="876.76" y="307" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">9m ago  2p</text>
+<text x="46" y="347" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6a6e75" xml:space="preserve">└── </text>
+<text x="118.24" y="347" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">2</text>
+<text x="172.42" y="347" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#dee3ea" xml:space="preserve">etl</text>
+<text x="316.9" y="347" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">grok</text>
+<text x="533.62" y="347" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#98c379" xml:space="preserve">● running</text>
+<text x="876.76" y="347" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">9m ago  3p 79%</text>
+<text x="46" y="427" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#56b6c2" xml:space="preserve">[3]</text>
+<text x="118.24" y="427" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#dee3ea" xml:space="preserve">~/git/demo-web</text>
+<text x="407.2" y="427" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">2 active</text>
+<text x="46" y="467" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6a6e75" xml:space="preserve">├── </text>
+<text x="118.24" y="467" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">1</text>
+<text x="172.42" y="467" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#dee3ea" xml:space="preserve">tests</text>
+<text x="316.9" y="467" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">codex/zodex</text>
+<text x="551.68" y="467" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">○ idle</text>
+<text x="876.76" y="467" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">7m ago  2p</text>
+<text x="46" y="507" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#6a6e75" xml:space="preserve">└── </text>
+<text x="118.24" y="507" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">2</text>
+<text x="172.42" y="507" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" font-weight="bold" fill="#dee3ea" xml:space="preserve">ui</text>
+<text x="316.9" y="507" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">opencode</text>
+<text x="533.62" y="507" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#98c379" xml:space="preserve">● running</text>
+<text x="876.76" y="507" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">9m ago  2p</text>
+<text x="46" y="587" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">Attach: a &lt;workspace#&gt; [session#|tag] · Here: a here [engine] [tag] · Another: a new · Help: a help</text>
+<text x="46" y="627" font-family="JetBrains Mono, DejaVu Sans Mono, Noto Sans Mono, Menlo, Consolas, monospace" font-size="30" fill="#9da2a8" xml:space="preserve">Sort: name · a list --sort name|created|accessed|activity</text>
+</svg>
