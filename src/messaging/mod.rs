@@ -23,6 +23,7 @@ mod store;
 mod submission;
 #[cfg(test)]
 mod tests;
+mod wait;
 
 use crate::history::hex_encode;
 use crate::persist::{read_bounded_json, read_bounded_regular_file};
@@ -79,3 +80,4 @@ pub(crate) use migrate::*;
 pub use notice::*;
 pub use store::*;
 pub use submission::*;
+pub use wait::*;

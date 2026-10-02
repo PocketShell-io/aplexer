@@ -137,6 +137,21 @@ pub(crate) fn entries_with_extension(dir: &Path, extensions: &[&str]) -> Result<
 /// creates it up front. So the shared `messages/` root is chmod'd
 /// explicitly here, before the per-workspace subdirectories.
 pub fn ensure_workspace(paths: &Paths, canonical_workspace: &Path) -> Result<MessagePaths> {
+    ensure_workspace_with_lock_mode(paths, canonical_workspace, false)
+}
+
+pub(crate) fn ensure_workspace_nonblocking(
+    paths: &Paths,
+    workspace: &Path,
+) -> Result<MessagePaths> {
+    ensure_workspace_with_lock_mode(paths, workspace, true)
+}
+
+fn ensure_workspace_with_lock_mode(
+    paths: &Paths,
+    canonical_workspace: &Path,
+    nonblocking: bool,
+) -> Result<MessagePaths> {
     let messages_root = paths.state_root.join("messages");
     ensure_private_dir(&messages_root)?;
 
@@ -152,11 +167,22 @@ pub fn ensure_workspace(paths: &Paths, canonical_workspace: &Path) -> Result<Mes
     // current operation will notice and drain it instead of silently ignoring
     // those messages.
     let migration_lock = messages_root.join(format!(".{stable_key}.migration.lock"));
-    let _migration = FileLock::exclusive(&migration_lock, false)?;
+    let _migration = FileLock::exclusive(&migration_lock, nonblocking)?;
+    migrate_workspace_directory(&mp, &legacy_mp, canonical_workspace, nonblocking)?;
+    initialize_workspace_dir(&mp, canonical_workspace)?;
+    Ok(mp)
+}
+
+fn migrate_workspace_directory(
+    mp: &MessagePaths,
+    legacy_mp: &MessagePaths,
+    canonical_workspace: &Path,
+    nonblocking: bool,
+) -> Result<()> {
     let legacy_present =
         legacy_mp.workspace_dir != mp.workspace_dir && legacy_mp.workspace_dir.exists();
     if legacy_present && !mp.workspace_dir.exists() {
-        let _legacy_mailbox = FileLock::exclusive(&mailbox_lock_path(&legacy_mp), false)?;
+        let _legacy_mailbox = FileLock::exclusive(&mailbox_lock_path(legacy_mp), nonblocking)?;
         verify_workspace_metadata(&legacy_mp.workspace_dir, canonical_workspace)?;
         fs::rename(&legacy_mp.workspace_dir, &mp.workspace_dir).with_context(|| {
             format!(
@@ -166,17 +192,25 @@ pub fn ensure_workspace(paths: &Paths, canonical_workspace: &Path) -> Result<Mes
             )
         })?;
     } else if legacy_present {
-        initialize_workspace_dir(&mp, canonical_workspace)?;
-        let _stable_mailbox = FileLock::exclusive(&mailbox_lock_path(&mp), false)?;
-        let _legacy_mailbox = FileLock::exclusive(&mailbox_lock_path(&legacy_mp), false)?;
-        verify_workspace_metadata(&mp.workspace_dir, canonical_workspace)?;
-        verify_workspace_metadata(&legacy_mp.workspace_dir, canonical_workspace)?;
-        ensure_private_dir(&legacy_mp.msgs_dir)?;
-        ensure_private_dir(&legacy_mp.cursors_dir)?;
-        merge_legacy_mailbox(&mp, &legacy_mp, canonical_workspace)?;
+        merge_existing_workspace(mp, legacy_mp, canonical_workspace, nonblocking)?;
     }
-    initialize_workspace_dir(&mp, canonical_workspace)?;
-    Ok(mp)
+    Ok(())
+}
+
+fn merge_existing_workspace(
+    mp: &MessagePaths,
+    legacy_mp: &MessagePaths,
+    workspace: &Path,
+    nonblocking: bool,
+) -> Result<()> {
+    initialize_workspace_dir(mp, workspace)?;
+    let _stable_mailbox = FileLock::exclusive(&mailbox_lock_path(mp), nonblocking)?;
+    let _legacy_mailbox = FileLock::exclusive(&mailbox_lock_path(legacy_mp), nonblocking)?;
+    verify_workspace_metadata(&mp.workspace_dir, workspace)?;
+    verify_workspace_metadata(&legacy_mp.workspace_dir, workspace)?;
+    ensure_private_dir(&legacy_mp.msgs_dir)?;
+    ensure_private_dir(&legacy_mp.cursors_dir)?;
+    merge_legacy_mailbox(mp, legacy_mp, workspace)
 }
 
 pub(crate) fn mailbox_lock_path(mp: &MessagePaths) -> PathBuf {

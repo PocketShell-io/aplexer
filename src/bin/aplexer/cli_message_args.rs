@@ -23,6 +23,8 @@ pub(crate) enum MessageCommand {
     /// List unread messages addressed to the calling session.
     #[command(after_help = MESSAGE_INBOX_EXAMPLES)]
     Inbox(MessageInboxArgs),
+    /// Wait for unread messages addressed to the calling session.
+    Wait(MessageWaitArgs),
     /// Show the whole workspace conversation, in id (time) order.
     #[command(after_help = MESSAGE_LOG_EXAMPLES)]
     Log(MessageLogArgs),
@@ -171,6 +173,13 @@ pub(crate) struct MessageInboxArgs {
         help = "Consumer identity override (default: APLEXER_SESSION_ID)"
     )]
     pub(crate) from: Option<String>,
+}
+
+#[derive(Args)]
+pub(crate) struct MessageWaitArgs {
+    /// Maximum seconds to wait; zero checks immediately. Does not acknowledge messages.
+    #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+    pub(crate) timeout: u64,
 }
 
 #[derive(Args)]

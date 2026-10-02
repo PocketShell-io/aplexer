@@ -62,8 +62,21 @@ pub fn read_cursor_in(mp: &MessagePaths, consumer_id: Uuid) -> Result<Cursor> {
 }
 
 pub(crate) fn read_cursor_locked(mp: &MessagePaths, consumer_id: Uuid) -> Result<Cursor> {
+    read_cursor_with_lock_mode(mp, consumer_id, false)
+}
+
+pub(crate) fn read_cursor_nonblocking(mp: &MessagePaths, consumer_id: Uuid) -> Result<Cursor> {
+    read_cursor_with_lock_mode(mp, consumer_id, true)
+}
+
+fn read_cursor_with_lock_mode(
+    mp: &MessagePaths,
+    consumer_id: Uuid,
+    nonblocking: bool,
+) -> Result<Cursor> {
     let path = mp.cursors_dir.join(format!("{consumer_id}.json"));
-    let _cursor = FileLock::exclusive(&cursor_lock_path(&mp.cursors_dir, consumer_id), false)?;
+    let _cursor =
+        FileLock::exclusive(&cursor_lock_path(&mp.cursors_dir, consumer_id), nonblocking)?;
     let mut value = read_cursor_file(&path)?;
     let original = value.clone();
     let retained_ids = retained_message_ids(&mp.msgs_dir)?;
