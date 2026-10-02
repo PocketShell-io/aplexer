@@ -87,6 +87,7 @@ pub(crate) fn cmd_message(paths: &Paths, args: MessageArgs, json_output: bool) -
         MessageCommand::Reply(a) => cmd_message_reply(paths, a, json_output),
         MessageCommand::Deliver(a) => cmd_message_deliver(paths, a, json_output),
         MessageCommand::Inbox(a) => cmd_message_inbox(paths, a, json_output),
+        MessageCommand::Wait(a) => cmd_message_wait(paths, a, json_output),
         MessageCommand::Log(a) => cmd_message_log(paths, a, json_output),
         MessageCommand::Show(a) => cmd_message_show(paths, a, json_output),
         MessageCommand::Ack(a) => cmd_message_ack(paths, a, json_output),
@@ -96,6 +97,44 @@ pub(crate) fn cmd_message(paths: &Paths, args: MessageArgs, json_output: bool) -
             Ok(())
         }
     }
+}
+
+fn cmd_message_wait(paths: &Paths, args: MessageWaitArgs, json_output: bool) -> Result<()> {
+    let (workspace, consumer) = wait_consumer(paths)?;
+    let messages = wait_messages(
+        paths,
+        &workspace,
+        &consumer,
+        std::time::Duration::from_secs(args.timeout),
+    )?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&messages)?);
+    } else if messages.is_empty() {
+        println!("no unread messages");
+    } else {
+        for message in &messages {
+            print_message_line(message);
+        }
+    }
+    Ok(())
+}
+
+fn wait_consumer(paths: &Paths) -> Result<(PathBuf, SessionIdentity)> {
+    let id = discover_session_id()
+        .ok_or_else(|| anyhow!("message wait requires an aplexer session identity"))?;
+    let records = list_records(paths)?;
+    let record = records
+        .iter()
+        .find(|record| record.id == id)
+        .ok_or_else(|| anyhow!("message wait requires an existing session record"))?;
+    let consumer = SessionIdentity {
+        id: record.id,
+        workspace: Some(record.workspace.clone()),
+        tag: Some(record.tag.clone()),
+        engine: Some(record.engine.clone()),
+        profile: record.profile.clone(),
+    };
+    Ok((record.workspace.clone(), consumer))
 }
 
 fn cmd_message_hook_notice(paths: &Paths, args: MessageHookNoticeArgs) {

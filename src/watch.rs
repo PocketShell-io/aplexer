@@ -33,7 +33,7 @@ use events::{
 #[cfg(test)]
 use serde_json::json;
 use state::derive_agent_state;
-pub use state::derive_agent_state_with_source;
+pub use state::{derive_agent_state_with_source, reported_state_rejection};
 #[cfg(test)]
 use state::{
     fresh_reported_state, ACTIVITY_THRESHOLD_MS, IDLE_ACTIVITY_GRACE_MS, REPORTED_STATE_STALE_MS,
