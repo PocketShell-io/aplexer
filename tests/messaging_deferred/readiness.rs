@@ -93,3 +93,62 @@ fn old_quiet_idle_stays_eligible_and_same_envelope_is_submitted_once() {
     assert_eq!(case.stored(), expected);
     assert_eq!(server.finish().len(), 4);
 }
+
+#[test]
+fn antigravity_busy_working_is_blocked_without_writing_input() {
+    let mut case = Case::new(false, "antigravity");
+    case.recipient.reported_state = Some("working".into());
+    case.recipient.reported_state_at_ms = Some(aplexer::now_ms());
+    case.recipient.last_activity_ms = None;
+    let detail = rejected_detail(&case);
+    assert!(detail.contains("recipient reported working"), "{detail}");
+    assert!(!detail.contains("state-report idle"), "{detail}");
+}
+
+#[test]
+fn antigravity_missing_hooks_idle_is_contradicted_by_later_activity() {
+    let empty_home = tempfile::TempDir::new().unwrap();
+    let mut case = Case::new(false, "antigravity");
+    case.recipient.reported_state = Some("idle".into());
+    case.recipient.reported_state_at_ms = Some(1000);
+    case.recipient.last_activity_ms = Some(3001);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", empty_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    status(&output, "not-ready");
+    assert!(server.finish().is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let detail = value["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("idle report contradicted by later PTY output"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn antigravity_with_installed_hooks_permits_idle_delivery_despite_tui_output() {
+    let mut case = Case::new(false, "antigravity");
+    case.recipient.reported_state = Some("idle".into());
+    case.recipient.reported_state_at_ms = Some(1000);
+    case.recipient.last_activity_ms = Some(3001);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case.deliver(&case.sender);
+    assert!(output.status.success(), "{output:?}");
+    status(&output, "submitted");
+    assert_eq!(server.finish().len(), 4);
+}
+
