@@ -260,6 +260,7 @@ fn idempotent_write_returns_existing_envelope_on_identical_retry() {
     first.to = Recipient::Tag {
         tag: "target-b".into(),
         session_id: None,
+        rerouted_from: None,
     };
 
     let written = write_message_idempotent(&mp, &first, 10, MAX_WORKSPACE_BYTES).unwrap();
@@ -273,6 +274,7 @@ fn idempotent_write_returns_existing_envelope_on_identical_retry() {
     retry.to = Recipient::Tag {
         tag: "target-b".into(),
         session_id: None,
+        rerouted_from: None,
     };
 
     let deduplicated = write_message_idempotent(&mp, &retry, 10, MAX_WORKSPACE_BYTES).unwrap();
@@ -297,6 +299,7 @@ fn idempotent_write_rejects_payload_conflict_on_data_mismatch() {
     first.to = Recipient::Tag {
         tag: "target-b".into(),
         session_id: None,
+        rerouted_from: None,
     };
 
     write_message_idempotent(&mp, &first, 10, MAX_WORKSPACE_BYTES).unwrap();
@@ -308,6 +311,7 @@ fn idempotent_write_rejects_payload_conflict_on_data_mismatch() {
     conflict.to = Recipient::Tag {
         tag: "target-b".into(),
         session_id: None,
+        rerouted_from: None,
     };
 
     let err = write_message_idempotent(&mp, &conflict, 10, MAX_WORKSPACE_BYTES).unwrap_err();
@@ -331,6 +335,7 @@ fn idempotent_write_rejects_payload_conflict_on_body_mismatch() {
     first.to = Recipient::Tag {
         tag: "target-b".into(),
         session_id: None,
+        rerouted_from: None,
     };
 
     write_message_idempotent(&mp, &first, 10, MAX_WORKSPACE_BYTES).unwrap();
@@ -342,7 +347,9 @@ fn idempotent_write_rejects_payload_conflict_on_body_mismatch() {
     conflict.to = Recipient::Tag {
         tag: "target-b".into(),
         session_id: None,
+        rerouted_from: None,
     };
+
 
     let err = write_message_idempotent(&mp, &conflict, 10, MAX_WORKSPACE_BYTES).unwrap_err();
     assert!(

@@ -118,12 +118,19 @@ pub fn reported_state_rejection(record: &SessionRecord, now: u64) -> Option<&'st
 }
 
 fn idle_was_contradicted(record: &SessionRecord, at: u64) -> bool {
+    // Antigravity's TUI keeps producing output while idle. Its native
+    // PreInvocation hook reports working before the next model call, so
+    // terminal redraws cannot override the Stop hook's semantic rest.
+    if record.engine == "antigravity" {
+        return false;
+    }
     // Idle has no clock TTL: only PTY activity beyond the render grace
     // retracts it. Quiet resting sessions have no follow-up refresh event.
     record
         .last_activity_ms
         .is_some_and(|activity| activity > at.saturating_add(IDLE_ACTIVITY_GRACE_MS))
 }
+
 
 /// `starting/running/waiting/idle/exited/oom/error/unknown` is spec.md
 /// section 20's full vocabulary. `starting`, the PTY-recency

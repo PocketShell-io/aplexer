@@ -328,6 +328,24 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_tui_output_does_not_retract_reported_idle() {
+        let mut record = sample_record(Phase::Running);
+        record.engine = "antigravity".to_string();
+        record.reported_state = Some("idle".to_string());
+        record.reported_state_at_ms = Some(1_000);
+        record.last_activity_ms = Some(1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000);
+        assert_eq!(
+            derive_agent_state_with_source(&record, 1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000),
+            ("idle", "reported")
+        );
+        assert_eq!(
+            reported_state_rejection(&record, 1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000),
+            None
+        );
+    }
+
+    #[test]
+
     fn reported_waiting_state_wins_even_over_fresh_pty_activity() {
         let mut record = sample_record(Phase::Running);
         // The heuristic alone would say "running": output just now.
