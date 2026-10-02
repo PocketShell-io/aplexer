@@ -428,6 +428,26 @@ includes the message id and reply command. A successful send proves storage
 or PTY injection, not that the recipient acted. Request a reply when receipt
 matters.
 
+### Coordination packages for every engine
+
+To give each agent the same coordination surface — the protocol skill plus an
+awareness hook that surfaces unread mail and work declarations — generate a
+native package for its engine:
+
+```bash
+a context --json                                   # who is active, in which scopes
+a work join . --task "port auth" --mode edit --paths 'src/auth/**'
+a work leave .                                     # idle does not release; leave explicitly
+scripts/package-coordination.py --engine all --dest /tmp/aplexer-coordination-bundles
+```
+
+Six engines are supported: `codex`, `claude`, `grok` (Claude-compatible),
+`antigravity`, `gemini`, and `opencode`. The generator writes bundles to the
+destination you choose and never installs anything or edits user config;
+each bundle's `INSTALL.md` covers the manual steps. See
+[docs/coordination-packages.md](docs/coordination-packages.md) for layouts,
+verification, and the truthful per-engine limitations.
+
 ## From Python
 
 The `aplexer` package (installed alongside the CLI) talks to the same

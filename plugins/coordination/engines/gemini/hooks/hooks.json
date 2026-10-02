@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__APLEXER_BIN__ context hook --engine gemini || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__APLEXER_BIN__ context hook --engine gemini || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__APLEXER_BIN__ context hook --engine gemini || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

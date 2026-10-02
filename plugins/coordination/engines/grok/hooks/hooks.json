@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__APLEXER_BIN__ context hook --engine grok || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

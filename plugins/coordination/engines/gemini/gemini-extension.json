@@ -1,0 +1,6 @@
+{
+  "name": "aplexer-coordination",
+  "version": "0.1.0",
+  "description": "aplexer cross-agent coordination: durable sibling inbox, work declarations, and awareness context hooks.",
+  "contextFileName": "GEMINI.md"
+}
