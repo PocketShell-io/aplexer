@@ -33,7 +33,10 @@ use events::{
 #[cfg(test)]
 use serde_json::json;
 use state::derive_agent_state;
-pub use state::{derive_agent_state_with_source, reported_state_rejection};
+pub use state::{
+    derive_agent_state_with_source, derive_agent_state_with_source_and_hooks,
+    reported_state_rejection, reported_state_rejection_with_hooks,
+};
 #[cfg(test)]
 use state::{
     fresh_reported_state, ACTIVITY_THRESHOLD_MS, IDLE_ACTIVITY_GRACE_MS, REPORTED_STATE_STALE_MS,
@@ -329,49 +332,31 @@ mod tests {
 
     #[test]
     fn antigravity_tui_output_does_not_retract_reported_idle_when_hooks_installed() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let hooks_dir = temp_dir.path().join(".gemini").join("config");
-        std::fs::create_dir_all(&hooks_dir).unwrap();
-        std::fs::write(
-            hooks_dir.join("hooks.json"),
-            serde_json::json!({
-                "aplexer-state-report": {
-                    "PreInvocation": [{"command": "a state-report working || true", "type": "command"}],
-                    "Stop": [{"command": "a state-report idle || true", "type": "command"}]
-                }
-            }).to_string(),
-        ).unwrap();
-
-        let orig_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", temp_dir.path());
-
         let mut record = sample_record(Phase::Running);
         record.engine = "antigravity".to_string();
         record.reported_state = Some("idle".to_string());
         record.reported_state_at_ms = Some(1_000);
         record.last_activity_ms = Some(1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000);
         assert_eq!(
-            derive_agent_state_with_source(&record, 1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000),
+            derive_agent_state_with_source_and_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                true,
+            ),
             ("idle", "reported")
         );
         assert_eq!(
-            reported_state_rejection(&record, 1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000),
+            reported_state_rejection_with_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                true,
+            ),
             None
         );
-
-        if let Some(h) = orig_home {
-            std::env::set_var("HOME", h);
-        } else {
-            std::env::remove_var("HOME");
-        }
     }
 
     #[test]
     fn antigravity_missing_hooks_retracts_idle_on_pty_activity() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let orig_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", temp_dir.path());
-
         let mut record = sample_record(Phase::Running);
         record.engine = "antigravity".to_string();
         record.reported_state = Some("idle".to_string());
@@ -379,19 +364,21 @@ mod tests {
         record.last_activity_ms = Some(1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000);
 
         assert_eq!(
-            reported_state_rejection(&record, 1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000),
+            reported_state_rejection_with_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                false,
+            ),
             Some("idle report contradicted by later PTY output")
         );
         assert_eq!(
-            derive_agent_state_with_source(&record, 1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000),
+            derive_agent_state_with_source_and_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                false,
+            ),
             ("running", "heuristic")
         );
-
-        if let Some(h) = orig_home {
-            std::env::set_var("HOME", h);
-        } else {
-            std::env::remove_var("HOME");
-        }
     }
 
     #[test]

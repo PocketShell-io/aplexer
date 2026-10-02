@@ -84,8 +84,17 @@ pub(super) const IDLE_ACTIVITY_GRACE_MS: u64 = 2_000;
 /// already understands the heuristic's `running` handles a *reported*
 /// `working` push for free, and the two genuinely mean the same thing
 /// (actively producing/thinking).
-pub(super) fn fresh_reported_state(record: &SessionRecord, now: u64) -> Option<&'static str> {
-    if reported_state_rejection(record, now).is_some() {
+#[allow(dead_code)]
+pub fn fresh_reported_state(record: &SessionRecord, now: u64) -> Option<&'static str> {
+    fresh_reported_state_with_hooks(record, now, crate::hooks::antigravity_has_lifecycle_hooks())
+}
+
+pub(super) fn fresh_reported_state_with_hooks(
+    record: &SessionRecord,
+    now: u64,
+    has_lifecycle_hooks: bool,
+) -> Option<&'static str> {
+    if reported_state_rejection_with_hooks(record, now, has_lifecycle_hooks).is_some() {
         return None;
     }
     match record.reported_state.as_deref()? {
@@ -99,6 +108,14 @@ pub(super) fn fresh_reported_state(record: &SessionRecord, now: u64) -> Option<&
 /// Why a semantic report is unusable now, or None when it remains valid.
 /// This assesses report evidence only; callers must also check lifecycle.
 pub fn reported_state_rejection(record: &SessionRecord, now: u64) -> Option<&'static str> {
+    reported_state_rejection_with_hooks(record, now, crate::hooks::antigravity_has_lifecycle_hooks())
+}
+
+pub fn reported_state_rejection_with_hooks(
+    record: &SessionRecord,
+    now: u64,
+    has_lifecycle_hooks: bool,
+) -> Option<&'static str> {
     let Some(state) = record.reported_state.as_deref() else {
         return Some("missing reported state");
     };
@@ -107,7 +124,7 @@ pub fn reported_state_rejection(record: &SessionRecord, now: u64) -> Option<&'st
     };
     let expired = now.saturating_sub(at) > REPORTED_STATE_STALE_MS;
     match state {
-        "idle" if idle_was_contradicted(record, at) => {
+        "idle" if idle_was_contradicted_with_hooks(record, at, has_lifecycle_hooks) => {
             Some("idle report contradicted by later PTY output")
         }
         "waiting" if expired => Some("waiting report expired"),
@@ -117,14 +134,18 @@ pub fn reported_state_rejection(record: &SessionRecord, now: u64) -> Option<&'st
     }
 }
 
-fn idle_was_contradicted(record: &SessionRecord, at: u64) -> bool {
+pub(crate) fn idle_was_contradicted_with_hooks(
+    record: &SessionRecord,
+    at: u64,
+    has_lifecycle_hooks: bool,
+) -> bool {
     // Antigravity's TUI keeps producing output while idle.
     // Hook-gated exemption: only when native lifecycle hooks are installed
     // (PreInvocation -> working, Stop -> idle) do terminal redraws not override
     // the Stop hook's semantic rest, because PreInvocation will report working
     // when active execution resumes. If hooks are missing, PTY output retracts idle
     // to prevent unhooked sessions from being stuck in false-idle.
-    if record.engine == "antigravity" && crate::hooks::antigravity_has_lifecycle_hooks() {
+    if record.engine == "antigravity" && has_lifecycle_hooks {
         return false;
     }
     // Idle has no clock TTL: only PTY activity beyond the render grace
@@ -133,6 +154,8 @@ fn idle_was_contradicted(record: &SessionRecord, at: u64) -> bool {
         .last_activity_ms
         .is_some_and(|activity| activity > at.saturating_add(IDLE_ACTIVITY_GRACE_MS))
 }
+
+
 
 
 /// `starting/running/waiting/idle/exited/oom/error/unknown` is spec.md
@@ -153,10 +176,22 @@ pub fn derive_agent_state_with_source(
     record: &SessionRecord,
     now: u64,
 ) -> (&'static str, &'static str) {
+    derive_agent_state_with_source_and_hooks(
+        record,
+        now,
+        crate::hooks::antigravity_has_lifecycle_hooks(),
+    )
+}
+
+pub fn derive_agent_state_with_source_and_hooks(
+    record: &SessionRecord,
+    now: u64,
+    has_lifecycle_hooks: bool,
+) -> (&'static str, &'static str) {
     match record.phase {
         Phase::Starting => ("starting", "heuristic"),
         Phase::Running | Phase::Exiting => {
-            if let Some(state) = fresh_reported_state(record, now) {
+            if let Some(state) = fresh_reported_state_with_hooks(record, now, has_lifecycle_hooks) {
                 return (state, "reported");
             }
             let state = match record.last_activity_ms {
