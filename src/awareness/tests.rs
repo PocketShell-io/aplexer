@@ -55,6 +55,7 @@ fn envelope(id: Uuid, body: &str, created_at: u64) -> MessageEnvelope {
         reply_to: None,
         body: body.to_string(),
         data: None,
+        idempotency_key: None,
         delivery: crate::messaging::Delivery::Inbox,
     }
 }

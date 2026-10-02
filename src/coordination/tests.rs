@@ -685,6 +685,7 @@ fn envelope(workspace: &std::path::Path, to: Recipient) -> MessageEnvelope {
         reply_to: None,
         body: "please look at the failing test".to_string(),
         data: None,
+        idempotency_key: None,
         delivery: Delivery::default(),
     }
 }
