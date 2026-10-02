@@ -1,3 +1,5 @@
+#[path = "messaging_deferred/readiness.rs"]
+mod readiness;
 #[path = "support/messaging.rs"]
 mod support;
 #[path = "messaging_deferred/worker.rs"]

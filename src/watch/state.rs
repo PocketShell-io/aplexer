@@ -85,43 +85,44 @@ pub(super) const IDLE_ACTIVITY_GRACE_MS: u64 = 2_000;
 /// `working` push for free, and the two genuinely mean the same thing
 /// (actively producing/thinking).
 pub(super) fn fresh_reported_state(record: &SessionRecord, now: u64) -> Option<&'static str> {
-    let state = record.reported_state.as_deref()?;
-    let at = record.reported_state_at_ms?;
-    match state {
-        // An `idle` push is not windowed by the clock but by the PTY: it
-        // describes "the agent finished its turn and is resting", a fact
-        // that stays true -- however long the rest -- until the terminal
-        // sees new output (the agent working again, or the user typing at
-        // a prompt). Output stamped beyond IDLE_ACTIVITY_GRACE_MS after
-        // the push retracts it; the heuristic then speaks from real PTY
-        // recency. Elapsed time alone must not expire the push: unlike
-        // working/waiting there is no follow-up push to refresh it, and
-        // letting go of it mid-rest is what made resting sessions read
-        // RUNNING.
-        "idle" => match record.last_activity_ms {
-            Some(ts) if ts > at.saturating_add(IDLE_ACTIVITY_GRACE_MS) => None,
-            _ => Some("idle"),
-        },
-        "waiting" => {
-            if now.saturating_sub(at) > REPORTED_STATE_STALE_MS {
-                None
-            } else {
-                Some("waiting")
-            }
-        }
-        "working" => {
-            if now.saturating_sub(at) > REPORTED_STATE_STALE_MS {
-                None
-            } else {
-                Some("running")
-            }
-        }
-        // Defensive only: the worker validates every write
-        // (WorkerRuntime::report_state), so this arm only fires against a
-        // foreign/hand-edited session.json. Fall back to the heuristic
-        // rather than propagate an unrecognised value into the stream.
+    if reported_state_rejection(record, now).is_some() {
+        return None;
+    }
+    match record.reported_state.as_deref()? {
+        "idle" => Some("idle"),
+        "waiting" => Some("waiting"),
+        "working" => Some("running"),
         _ => None,
     }
+}
+
+/// Why a semantic report is unusable now, or None when it remains valid.
+/// This assesses report evidence only; callers must also check lifecycle.
+pub fn reported_state_rejection(record: &SessionRecord, now: u64) -> Option<&'static str> {
+    let Some(state) = record.reported_state.as_deref() else {
+        return Some("missing reported state");
+    };
+    let Some(at) = record.reported_state_at_ms else {
+        return Some("missing reported-state timestamp");
+    };
+    let expired = now.saturating_sub(at) > REPORTED_STATE_STALE_MS;
+    match state {
+        "idle" if idle_was_contradicted(record, at) => {
+            Some("idle report contradicted by later PTY output")
+        }
+        "waiting" if expired => Some("waiting report expired"),
+        "working" if expired => Some("working report expired"),
+        "idle" | "waiting" | "working" => None,
+        _ => Some("unsupported reported state"),
+    }
+}
+
+fn idle_was_contradicted(record: &SessionRecord, at: u64) -> bool {
+    // Idle has no clock TTL: only PTY activity beyond the render grace
+    // retracts it. Quiet resting sessions have no follow-up refresh event.
+    record
+        .last_activity_ms
+        .is_some_and(|activity| activity > at.saturating_add(IDLE_ACTIVITY_GRACE_MS))
 }
 
 /// `starting/running/waiting/idle/exited/oom/error/unknown` is spec.md

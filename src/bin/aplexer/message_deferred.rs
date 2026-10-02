@@ -51,11 +51,31 @@ fn require_ready_prompt(record: &SessionRecord) -> Result<()> {
     }
     let raw = rpc_simple(record, Operation::Status, None)?;
     let live: SessionRecord = serde_json::from_value(raw).context("read live recipient status")?;
-    let (state, source) = session_ui_state(&live, now_ms());
+    let now = now_ms();
+    let (state, source) = session_ui_state(&live, now);
     if source != "reported" || !matches!(state, "waiting" | "idle") {
-        bail!("recipient has no fresh reported idle/waiting state; inspect its prompt first");
+        bail!("{}", readiness_detail(&live, state, source, now));
     }
     Ok(())
+}
+
+fn readiness_detail(record: &SessionRecord, state: &str, source: &str, now: u64) -> String {
+    let reason = readiness_reason(record, state, source, now);
+    format!(
+        "recipient {} readiness unavailable: {reason}; derived={state} source={source}; reported={:?} reported_at_ms={:?} last_activity_ms={:?}. Prompt capture does not refresh harness state. The original recipient must obtain a genuine harness state event; re-inspect its prompt before explicitly delivering this same message. If no current harness event is available, leave the message queued.",
+        record.id, record.reported_state, record.reported_state_at_ms, record.last_activity_ms,
+    )
+}
+
+fn readiness_reason(record: &SessionRecord, state: &str, source: &str, now: u64) -> &'static str {
+    if record.phase != Phase::Running || source == "lifecycle" {
+        return "recipient lifecycle does not accept delivery";
+    }
+    if state == "running" && source == "reported" {
+        return "recipient reported working";
+    }
+    aplexer::watch::reported_state_rejection(record, now)
+        .unwrap_or("recipient semantic readiness unavailable")
 }
 
 fn deliver_existing(paths: &Paths, args: MessageDeliverArgs) -> Result<SubmissionOutcome> {
