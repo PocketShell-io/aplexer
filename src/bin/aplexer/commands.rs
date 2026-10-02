@@ -164,6 +164,94 @@ pub(crate) fn looks_like_uuid_selector(raw: &str) -> bool {
     (8..=32).contains(&hex_digits)
 }
 
+/// The selector resolution every subcommand that takes a bare SESSION word
+/// shares, including the ones without TargetArgs' `--workspace`/`--tag`
+/// flags (`a agent`, `a rename` -- whose help promises "tag in the current
+/// workspace" like every other subcommand, but which used to call
+/// `resolve_record` directly and answer "no matching session" for exactly
+/// that form). UUID and `workspace:tag` selectors keep
+/// `resolve_record`'s machine-facing semantics first; a plain word then
+/// resolves as a tag in the current workspace, after
+/// `resolve_message_workspace` (the session binding, `APLEXER_WORKSPACE`,
+/// the cwd) has had its say.
+pub(crate) fn resolve_selector(paths: &Paths, selector: &str) -> Result<SessionRecord> {
+    match resolve_message_workspace(None) {
+        Ok(workspace) => resolve_tag_in_workspace(paths, selector, &workspace),
+        // Workspace unusable (gone cwd, unset binding): keep
+        // `resolve_record`'s UUID and `workspace:tag` answers reachable,
+        // and its failure shape, exactly as `resolve` always did.
+        Err(_) => resolve_record(paths, Some(selector), None, None),
+    }
+}
+
+/// `resolve_selector`'s body with the workspace explicit: `resolve_record`'s
+/// UUID/`workspace:tag` semantics first, then the plain-word tag form
+/// against `workspace` -- to the single live holder, never a corpse. A pair
+/// can transiently be held by a corpse next to the live session that took
+/// its name (`a rename`, issue #13); the tag still means the live session
+/// until prune clears the corpse. When no live holder disambiguates, the
+/// error names every candidate (with its short UUID prefix, the form every
+/// resolver accepts) instead of a bare "no matching session".
+pub(crate) fn resolve_tag_in_workspace(
+    paths: &Paths,
+    selector: &str,
+    workspace: &Path,
+) -> Result<SessionRecord> {
+    // A selector containing ':' is a `workspace:tag` pair -- tags themselves
+    // can never hold one (`validate_tag`) -- so it is resolve_record's
+    // machine-facing form with its own ambiguity error, never a bare tag
+    // candidate. Reinterpreting the whole string as a tag here would turn
+    // its precise error into "no session tagged '/path:tag'".
+    if selector.contains(':') {
+        return resolve_record(paths, Some(selector), None, None);
+    }
+    if let Ok(record) = resolve_record(paths, Some(selector), None, None) {
+        return Ok(record);
+    }
+    let matches: Vec<SessionRecord> = list_records(paths)?
+        .into_iter()
+        .filter(|r| r.workspace == workspace && r.tag == selector)
+        .collect();
+    match matches.len() {
+        0 => bail!(
+            "no session tagged '{selector}' in {}; run `a` to list sessions, \
+             or use a full workspace:tag selector",
+            display_workspace(workspace, env::var_os("HOME").as_deref().map(Path::new))
+        ),
+        1 => Ok(matches.into_iter().next().expect("one match")),
+        _ => {
+            let live: Vec<SessionRecord> = matches
+                .iter()
+                .filter(|r| aplexer::reap_verdict(r).is_none())
+                .cloned()
+                .collect();
+            match live.len() {
+                1 => Ok(live.into_iter().next().expect("exactly one live match")),
+                _ => bail!(
+                    "tag '{selector}' is ambiguous in {}; pick one with a UUID prefix: {}",
+                    display_workspace(workspace, env::var_os("HOME").as_deref().map(Path::new)),
+                    candidate_list(&matches)
+                ),
+            }
+        }
+    }
+}
+
+/// The disambiguation candidates a resolver error names: each match's
+/// short UUID prefix (the shortest selector `resolve_record` accepts),
+/// marked when the record is a corpse.
+fn candidate_list(records: &[SessionRecord]) -> String {
+    records
+        .iter()
+        .map(|record| {
+            let id = record.id.simple().to_string();
+            let corpse = (aplexer::reap_verdict(record).is_some()).then_some(" (exited)");
+            format!("{}{}", &id[..8], corpse.unwrap_or_default())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub(crate) fn resolve(paths: &Paths, target: &TargetArgs) -> Result<SessionRecord> {
     // `a attach 1`, `a status 1`, `a kill 1`, etc. should mean the same
     // thing as the bare `a 1` shortcut, not just work for `attach`. Only
@@ -222,44 +310,12 @@ pub(crate) fn resolve(paths: &Paths, target: &TargetArgs) -> Result<SessionRecor
     // UUID resolves as a tag in the current workspace, after UUID and
     // full `workspace:tag` selectors have had their chance -- so existing
     // machine-facing selector semantics can never be shadowed by a tag.
+    // The shared `resolve_selector` body owns that order and the live /
+    // ambiguity rules; `resolve` only keeps the flag-aware guards.
     if let Some(selector) = &target.selector {
         if target.workspace.is_none() && target.tag.is_none() && !looks_like_uuid_selector(selector)
         {
-            if let Ok(record) = resolve_record(paths, Some(selector), None, None) {
-                return Ok(record);
-            }
-            if let Ok(workspace) = resolve_message_workspace(None) {
-                let matches: Vec<SessionRecord> = list_records(paths)?
-                    .into_iter()
-                    .filter(|r| r.workspace == workspace && r.tag == selector.as_str())
-                    .collect();
-                match matches.len() {
-                    1 => return Ok(matches.into_iter().next().expect("one match")),
-                    0 => bail!(
-                        "no session tagged '{selector}' in {}; run `a` to list sessions, \
-                         or use a full workspace:tag selector",
-                        display_workspace(
-                            &workspace,
-                            env::var_os("HOME").as_deref().map(Path::new)
-                        )
-                    ),
-                    // A pair can transiently be held by a corpse next to the
-                    // live session that took its name (`a rename`, issue
-                    // #13); the tag still means the live session until prune
-                    // clears the corpse. Same rule as `resolve_record`.
-                    _ => {
-                        let live: Vec<SessionRecord> = matches
-                            .iter()
-                            .filter(|r| aplexer::reap_verdict(r).is_none())
-                            .cloned()
-                            .collect();
-                        if live.len() == 1 {
-                            return Ok(live.into_iter().next().expect("exactly one live match"));
-                        }
-                        bail!("tag '{selector}' is ambiguous in this workspace")
-                    }
-                }
-            }
+            return resolve_selector(paths, selector);
         }
     }
     resolve_record(

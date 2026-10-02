@@ -185,12 +185,26 @@ pub fn resolve_record(
         // window the selector still means the live session -- a corpse must
         // not shadow it, or the rename that fixed the invisible-corpse
         // error would make the name unusable instead. Only when no live
-        // holder disambiguates the matches does the ambiguity error apply.
+        // holder disambiguates the matches does the ambiguity error apply,
+        // and it names every candidate's short UUID prefix -- the shortest
+        // selector that still resolves -- rather than leaving the caller to
+        // guess which records collided.
         _ => {
             let mut live = matches.iter().filter(|r| reap_verdict(r).is_none());
             match (live.next(), live.next()) {
                 (Some(only), None) => Ok((*only).clone()),
-                _ => bail!("selector is ambiguous; use a longer UUID"),
+                _ => bail!(
+                    "selector is ambiguous; use a longer UUID prefix (candidates: {})",
+                    matches
+                        .iter()
+                        .map(|record| {
+                            let id = record.id.simple().to_string();
+                            let corpse = (reap_verdict(record).is_some()).then_some(" (exited)");
+                            format!("{}{}", &id[..8], corpse.unwrap_or_default())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             }
         }
     }

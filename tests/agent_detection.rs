@@ -632,6 +632,157 @@ fn a_pinned_agent_reports_on_every_surface_until_cleared() {
     );
 }
 
+/// A fake like `write_fake_agent` that also records its own pid: `echo $$
+/// > "$2"` -- so the test can pin exactly which process detection answered
+/// from (`agent_pid`).
+fn write_recording_fake(dir: &Path, name: &str) -> PathBuf {
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).expect("create fake bin dir");
+    let script = bin.join(name);
+    fs::write(
+        &script,
+        "#!/bin/sh\n\
+         echo running > \"$1\"\n\
+         [ -n \"$2\" ] && echo $$ > \"$2\"\n\
+         while [ -e \"$3\" ]; do /bin/sleep 0.05; done\n",
+    )
+    .expect("write recording fake");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod fake");
+    script
+}
+
+/// The launch-engine must win over the other agent-named processes its own
+/// workload spawns. The reported misdetection (session 56420916, tag
+/// `codex-principal`, engine `codex`): the engine launch's prompt argument
+/// named other agents, and the tree walk answered `claude` -- both because
+/// the joined cmdline let the free text reclassify the codex launch, and
+/// because nothing preferred the engine when another agent-named process
+/// sat first in walk order. The repro is that tree, end to end: an
+/// `engine = codex` session whose launch script spawns a stale claude
+/// FIRST (lower pid), then the codex fake with a prompt argument naming
+/// Claude. Detection must answer codex, and `agent_pid` must point at the
+/// codex fake's pid -- "which process said so", checkable against the tree.
+#[test]
+fn the_launch_engine_wins_over_agents_its_workload_spawns() {
+    assert!(
+        Path::new("/bin/bash").exists(),
+        "/bin/bash is required by this test"
+    );
+    let mut harness = Harness::new();
+    let workspace = harness
+        .workspace
+        .path()
+        .to_str()
+        .expect("utf8 workspace")
+        .to_owned();
+    let claude_fake = write_recording_fake(harness.workspace.path(), "claude");
+    let codex_fake = write_recording_fake(harness.workspace.path(), "codex");
+    let ready = harness.workspace.path().join("codex.ready");
+    let pid_file = harness.workspace.path().join("codex.pid");
+    let sentinel = harness.workspace.path().join("keep-running");
+    fs::write(&sentinel, b"run").expect("write sentinel");
+
+    // The engine launch script itself: stale claude spawned first, then
+    // the engine's codex with the poisoned prompt argument -- the exact
+    // argv shape `node …/bin/codex resume <id> … <prompt text naming
+    // Claude>` presented on the box.
+    let launch = harness.workspace.path().join("launch-engine.sh");
+    fs::write(
+        &launch,
+        format!(
+            "#!/bin/sh\n\
+             /bin/sh {} {}/claude.ready '' {} &\n\
+             /bin/sh {} {} {} {} resume \
+             01a0fdd7-109e-7972-9199-e082a7a1383d \
+             --dangerously-bypass-approvals-and-sandbox \
+             \"Claude principal now exists as a resumed interactive UI; \
+             coordination/codex.stop is an obsolete marker.\" &\n\
+             while [ -e {} ]; do /bin/sleep 0.05; done\n",
+            claude_fake.display(),
+            workspace,
+            sentinel.display(),
+            codex_fake.display(),
+            ready.display(),
+            pid_file.display(),
+            sentinel.display(),
+            sentinel.display(),
+        ),
+    )
+    .expect("write engine launch script");
+    fs::set_permissions(&launch, fs::Permissions::from_mode(0o755)).expect("chmod launch");
+
+    // The engine exists only through the config, exactly as a real
+    // installation declares a codex whose launch is a wrapper script.
+    fs::write(
+        &harness.config,
+        format!(
+            "[engines.codex]\ncommand = [\"/bin/sh\", \"{}\"]\n",
+            launch.display()
+        ),
+    )
+    .expect("write harness config");
+
+    let home = format!("HOME={workspace}");
+    let stdout = harness.run_ok(
+        &[
+            "start",
+            "--workspace",
+            &workspace,
+            "--tag",
+            "engine-wins",
+            "--engine",
+            "codex",
+            "--env",
+            &home,
+            "--json",
+        ],
+        Duration::from_secs(20),
+    );
+    let started: Value = serde_json::from_str(&stdout).expect("start JSON");
+    let id = started["id"].as_str().expect("session id").to_owned();
+    harness.track(&id);
+
+    wait_for_file(&ready, "the fake codex engine to start");
+    // Wait with the row in hand: a timeout must show WHAT the row reported
+    // (claude? null? a wrong pid?) instead of a bare condition name.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let row = loop {
+        let row = harness.list_row(&id);
+        if row["agent"] == Value::String("codex".into()) {
+            break row;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for `a list --json` to report agent \"codex\" \
+             (not the stale claude, not the prompt text's claude); last row: {row}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    };
+
+    // The reported pid is the codex fake's, not the stale claude's and not
+    // the launch script's -- the anchor that makes the answer checkable.
+    let recorded_pid: u32 = fs::read_to_string(&pid_file)
+        .expect("codex fake pid file")
+        .trim()
+        .parse()
+        .expect("codex fake pid number");
+    assert_eq!(
+        row["agent_pid"],
+        serde_json::json!(recorded_pid),
+        "agent_pid must name the codex fake"
+    );
+    let shown: Value =
+        serde_json::from_str(&harness.run_ok(&["agent", &id, "--json"], Duration::from_secs(10)))
+            .expect("agent show JSON");
+    assert_eq!(shown["source"], Value::String("detection".into()));
+    assert_eq!(shown["agent_pid"], row["agent_pid"]);
+
+    harness.run_ok(
+        &["kill", &id, "--signal", "TERM", "--grace-ms", "200"],
+        Duration::from_secs(15),
+    );
+}
+
 /// Kill a spawned helper even if an assertion unwinds the test.
 struct ChildGuard(Child);
 

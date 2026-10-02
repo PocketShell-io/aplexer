@@ -446,7 +446,7 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
 /// attach client's `Ctrl-b R` prompt.
 pub(crate) fn cmd_rename(paths: &Paths, args: RenameArgs, json_output: bool) -> Result<()> {
     let old = match args.selector.as_deref() {
-        Some(selector) => resolve_record(paths, Some(selector), None, None)?,
+        Some(selector) => resolve_selector(paths, selector)?,
         None => {
             let id = discover_session_id().ok_or_else(|| {
                 anyhow!(
@@ -486,7 +486,7 @@ pub(crate) fn cmd_rename(paths: &Paths, args: RenameArgs, json_output: bool) -> 
 /// pin always resolves to a real agent/profile pair.
 pub(crate) fn cmd_agent(paths: &Paths, args: AgentArgs, json_output: bool) -> Result<()> {
     let selected = match args.selector.as_deref() {
-        Some(selector) => resolve_record(paths, Some(selector), None, None)?,
+        Some(selector) => resolve_selector(paths, selector)?,
         None => {
             let id = discover_session_id().ok_or_else(|| {
                 anyhow!(
@@ -509,7 +509,7 @@ pub(crate) fn cmd_agent(paths: &Paths, args: AgentArgs, json_output: bool) -> Re
     };
     let Some(agent) = request else {
         // Read-only: what does this session report right now, and from where?
-        let detected = aplexer::api::record_detected(&selected);
+        let detected = aplexer::api::record_detected_process(&selected);
         if json_output {
             let source = match (&selected.agent_override, &detected) {
                 (Some(_), _) => "override",
@@ -522,8 +522,9 @@ pub(crate) fn cmd_agent(paths: &Paths, args: AgentArgs, json_output: bool) -> Re
                     "id": selected.id,
                     "selector": selected.selector(),
                     "override": selected.agent_override,
-                    "agent": detected.as_ref().map(|d| d.kind),
-                    "agent_profile": detected.as_ref().map(|d| d.profile_label()),
+                    "agent": detected.as_ref().map(|d| d.agent.kind),
+                    "agent_profile": detected.as_ref().map(|d| d.agent.profile_label()),
+                    "agent_pid": detected.as_ref().and_then(|d| d.pid),
                     "source": source,
                 }))?
             );
@@ -531,14 +532,14 @@ pub(crate) fn cmd_agent(paths: &Paths, args: AgentArgs, json_output: bool) -> Re
             println!(
                 "{}: {}",
                 selected.selector(),
-                agent_fact(&selected.agent_override, &detected)
+                agent_fact(&selected.agent_override, detected.as_ref())
             );
         }
         return Ok(());
     };
     let result = rpc_simple(&selected, Operation::SetAgent { agent }, None)?;
     let updated: SessionRecord = serde_json::from_value(result)?;
-    let now_reporting = aplexer::api::record_detected(&updated);
+    let now_reporting = aplexer::api::record_detected_process(&updated);
     if json_output {
         println!(
             "{}",
@@ -546,15 +547,16 @@ pub(crate) fn cmd_agent(paths: &Paths, args: AgentArgs, json_output: bool) -> Re
                 "id": updated.id,
                 "selector": updated.selector(),
                 "override": updated.agent_override,
-                "agent": now_reporting.as_ref().map(|d| d.kind),
-                "agent_profile": now_reporting.as_ref().map(|d| d.profile_label()),
+                "agent": now_reporting.as_ref().map(|d| d.agent.kind),
+                "agent_profile": now_reporting.as_ref().map(|d| d.agent.profile_label()),
+                "agent_pid": now_reporting.as_ref().and_then(|d| d.pid),
             }))?
         );
     } else {
         println!(
             "{}: {}",
             updated.selector(),
-            agent_fact(&updated.agent_override, &now_reporting)
+            agent_fact(&updated.agent_override, now_reporting.as_ref())
         );
     }
     Ok(())
@@ -562,19 +564,23 @@ pub(crate) fn cmd_agent(paths: &Paths, args: AgentArgs, json_output: bool) -> Re
 
 /// The one human sentence about a session's reported agent, shared by the
 /// show form and both mutations: what is reported, and whether the pin or
-/// the live walk is speaking.
+/// the live walk is speaking -- and for the live walk, which pid the
+/// answer was classified from, so a suspicious answer can be checked
+/// against the tree it came from.
 fn agent_fact(
     override_token: &Option<String>,
-    detected: &Option<aplexer::agent_kind::DetectedAgent>,
+    detected: Option<&aplexer::api::RecordDetection>,
 ) -> String {
     let fact = match detected {
-        Some(detected) => format!("{}/{}", detected.kind, detected.profile_label()),
+        Some(detected) => format!("{}/{}", detected.agent.kind, detected.agent.profile_label()),
         None => "no agent".to_owned(),
     };
-    match override_token {
-        Some(pin) => format!("{fact} (pinned {pin})"),
-        None => format!("{fact} (live detection)"),
-    }
+    let source = match (override_token, detected.and_then(|d| d.pid)) {
+        (Some(pin), _) => format!("pinned {pin}"),
+        (None, Some(pid)) => format!("live detection, pid {pid}"),
+        (None, None) => "live detection".to_owned(),
+    };
+    format!("{fact} ({source})")
 }
 
 pub(crate) fn cmd_engines(paths: &Paths, json_output: bool) -> Result<()> {

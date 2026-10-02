@@ -301,7 +301,9 @@ fn status_json_agrees_with_list_json_and_human_output_for_a_live_record() {
 /// query-time derived fields -- `state` (liveness, see `observed_state`),
 /// `agent` (which agent is live in the workload's process tree,
 /// pocketshell issue #2580), `agent_profile` (which of that agent's
-/// configured variations it runs as, spec.md 9), and the issue #1 placement
+/// configured variations it runs as, spec.md 9), `agent_pid` (which process
+/// the answer was classified from, `null` for a pin or no detection), and
+/// the issue #1 placement
 /// set: the recorded
 /// `worker_cgroup`/`workload_cgroup` (real /proc evidence, so a
 /// manager-wide kill leaves the failure domain provable) and the derived
@@ -343,6 +345,7 @@ fn status_json_adds_only_the_derived_state_and_agent_fields() {
         added,
         vec![
             "agent",
+            "agent_pid",
             "agent_profile",
             "cpu_percent",
             "processes",

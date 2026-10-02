@@ -38,7 +38,10 @@ mod rules;
 #[cfg(test)]
 mod tests;
 
-pub use detect::{detect_agent, detect_agent_detailed, detect_agent_process, AgentProcess};
+pub use detect::{
+    detect_agent, detect_agent_candidates, detect_agent_detailed, detect_agent_process,
+    pick_detected_candidate, AgentProcess,
+};
 pub use profile::{profile_variants, ProfileVariants};
 pub use rules::classify_token;
 
@@ -79,6 +82,21 @@ pub fn validate_agent_token(token: &str, config: Option<&crate::config::Config>)
         "unknown agent token {token:?}; expected an agent name or a configured variation: {}",
         known.join(", ")
     )
+}
+
+/// The agent kind a session's `engine` id names, if any: a canonical agent
+/// id directly, the shipped variant alias (`zcodex`) through its family
+/// (`config::engine_family`), and `shell` -- or any unknown id -- as no
+/// signal at all. This is the record-level preference over the
+/// process-tree walk's shallowest-first answer: when the session was
+/// launched as a specific agent, a stale agent sitting nearer the root
+/// (or merely first by pid) must not outvote it.
+pub fn engine_kind(engine: &str) -> Option<AgentKind> {
+    let family = crate::config::engine_family(engine);
+    AgentKind::ALL
+        .iter()
+        .find(|kind| kind.name() == family)
+        .copied()
 }
 
 /// The `/proc` root detection reads. Injectable so the unit tests classify a
