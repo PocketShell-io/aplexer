@@ -37,9 +37,11 @@
 //!   modern `hooks.json` channel carries our signal independently, so both
 //!   can coexist; we only write `notify` when it is absent (old binaries,
 //!   `codex exec` where hooks do not fire).
-//! - `uninstall` (`a init --uninstall`) removes only `state-report` hook
-//!   entries and our own generated files. Anything it cannot recognise as
-//!   ours-by-content (`state-report` in the command) is left untouched.
+//! - `uninstall` (`a init --uninstall`) removes only aplexer-managed hook
+//!   entries and our own generated files: `state-report` commands, the
+//!   current awareness context hooks, and legacy inbox-notice commands --
+//!   all identified ours-by-content, never by position. Anything it
+//!   cannot recognise as ours is left untouched.
 //!
 //! Per-engine mechanisms (verified against each CLI's docs, see the
 //! `*_EVENTS` tables below):
@@ -112,7 +114,11 @@ pub const HOOK_ENGINES: [&str; 6] = [
     "opencode",
 ];
 /// (hook event, reported state) wirings per engine. The state words are `a
-/// state-report`'s vocabulary; the event names are each engine's own.
+/// state-report`'s vocabulary; the event names are each engine's own. The
+/// special state `awareness:<engine>` installs the one model-context
+/// injection source for that engine (see `src/awareness.rs`) on every
+/// event that engine can inject on -- `notice:<engine>` entries from the
+/// previous generation are replaced by the installer, marker by marker.
 ///
 /// `SubagentStop` is deliberately absent even though Claude and Grok fire
 /// it: a subagent finishing does not leave *the agent* idle -- the main
@@ -120,33 +126,43 @@ pub const HOOK_ENGINES: [&str; 6] = [
 /// a fresh lie mid-turn, and `idle` is the one push with no follow-up hook
 /// to correct it (see `watch::fresh_reported_state`). The main turn's
 /// `Stop` alone marks the rest.
-pub const CLAUDE_EVENTS: [(&str, &str); 5] = [
+pub const CLAUDE_EVENTS: [(&str, &str); 7] = [
     ("Stop", "idle"),
     ("Notification", "waiting"),
     ("UserPromptSubmit", "working"),
     ("SessionStart", "working"),
-    ("PostToolUse", "notice:claude"),
+    ("SessionStart", "awareness:claude"),
+    ("UserPromptSubmit", "awareness:claude"),
+    ("PostToolUse", "awareness:claude"),
 ];
 /// Codex's `hooks.json` uses Claude-style event names for these three.
-pub const CODEX_EVENTS: [(&str, &str); 4] = [
+pub const CODEX_EVENTS: [(&str, &str); 6] = [
     ("Stop", "idle"),
     ("UserPromptSubmit", "working"),
     ("SessionStart", "working"),
-    ("PostToolUse", "notice:codex"),
+    ("SessionStart", "awareness:codex"),
+    ("UserPromptSubmit", "awareness:codex"),
+    ("PostToolUse", "awareness:codex"),
 ];
 /// Grok's personal-hooks dir speaks the Claude-compatible nested format.
-pub const GROK_EVENTS: [(&str, &str); 4] = [
+/// Its startup hooks ignore hook stdout, so awareness rides PostToolUse
+/// alone; the state-report hooks are unaffected by that limitation.
+pub const GROK_EVENTS: [(&str, &str); 5] = [
     ("Stop", "idle"),
     ("Notification", "waiting"),
     ("UserPromptSubmit", "working"),
     ("SessionStart", "working"),
+    ("PostToolUse", "awareness:grok"),
 ];
 /// Gemini renames the turn boundaries; the shape is otherwise identical.
-pub const GEMINI_EVENTS: [(&str, &str); 4] = [
+pub const GEMINI_EVENTS: [(&str, &str); 7] = [
     ("AfterAgent", "idle"),
     ("BeforeAgent", "working"),
     ("Notification", "waiting"),
     ("SessionStart", "working"),
+    ("SessionStart", "awareness:gemini"),
+    ("BeforeAgent", "awareness:gemini"),
+    ("AfterTool", "awareness:gemini"),
 ];
 /// Owned filename for our hooks inside Grok's merged `hooks/` dir.
 pub const GROK_HOOKS_FILENAME: &str = "aplexer.json";
@@ -185,10 +201,11 @@ pub fn is_state_report_command(command: &str) -> bool {
 /// per-event status: a `Stop` hooked to `working` would be a wiring bug,
 /// not an installed stop hook). The state must be the argument right
 /// after `state-report`: a binary path that happens to contain "idle"
-/// does not make every hook an idle hook.
+/// does not make every hook an idle hook. `awareness:<engine>` asks
+/// whether the command is that engine's context hook.
 fn reports_state(command: &str, state: &str) -> bool {
-    if let Some(engine) = state.strip_prefix("notice:") {
-        return reports_notice(command, engine);
+    if let Some(engine) = state.strip_prefix("awareness:") {
+        return reports_context(command, engine);
     }
     let words: Vec<&str> = command.split_whitespace().collect();
     words

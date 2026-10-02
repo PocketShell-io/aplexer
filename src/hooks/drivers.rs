@@ -22,7 +22,18 @@ use super::*;
 /// - `permission.asked` / `session.error` → `waiting`.
 /// - `session.created` → `working` (initial session start).
 /// - `tool.execute.before` → `working` (a tool starting means back to work,
-///   correcting any micro-`idle` blip between think→tool steps).
+///   correcting any micro-`idle` blip between think→tool steps), and saves
+///   the call's safe path arguments in a bounded pending map keyed by
+///   session + call id, so `tool.execute.after` can surface
+///   foreign-workspace awareness from its own input identity — never from
+///   a shared slot a concurrent call could overwrite.
+/// - `tool.execute.after` shells out to `a context hook --engine opencode`
+///   (argv, 5s timeout) with a flat JSON payload — `hook_event_name`,
+///   `tool_name`, `session_id`, `tool_input` — and appends the returned
+///   plain text to `output.output`. Append-only: the original tool result
+///   is preserved byte-for-byte, and `title`/`metadata` are never touched.
+///   The pending entry is deleted after use (or on any non-string output),
+///   so stale arguments cannot leak into a later call.
 pub fn opencode_plugin_source(a_bin: &str) -> String {
     let a_json = serde_json::to_string(a_bin).unwrap_or_else(|_| "\"a\"".to_string());
     format!(
@@ -30,12 +41,37 @@ pub fn opencode_plugin_source(a_bin: &str) -> String {
 //
 // Reports agent lifecycle to `a state-report` so `a list`, `a status` and
 // the attach status bar show semantic state (idle/waiting/working) instead
-// of guessing from PTY output. Best-effort: failures never surface to the
-// agent. Re-running `a init` refreshes this file; `a init --uninstall`
-// removes it. Other plugins in this dir are untouched.
+// of guessing from PTY output, and surfaces aplexer coordination context
+// by appending `a context hook` text to tool results. Best-effort:
+// failures never surface to the agent. Re-running `a init` refreshes this
+// file; `a init --uninstall` removes it. Other plugins in this dir are
+// untouched.
 import child_process from "node:child_process";
 
 const A = {a_json};
+
+// Tool-argument keys safe to forward for workspace awareness. Arbitrary
+// argument text (shell commands, file contents) is never forwarded, and
+// camelCase engine spellings normalize onto the canonical snake_case key.
+const SAFE_ARG_KEYS = {{
+  workdir: "workdir",
+  cwd: "cwd",
+  directory: "directory",
+  file_path: "file_path",
+  filePath: "file_path",
+  path: "path",
+}};
+
+// Pending per-call state, keyed "sessionID|callID" and deleted on the
+// matching after-callback; bounded so a pathological stream of before
+// events without afters cannot grow it without limit.
+const PENDING_LIMIT = 512;
+const pending = new Map();
+
+function callKey(input) {{
+  return String(input?.sessionID ?? input?.session_id ?? "") + "|" +
+    String(input?.callID ?? input?.call?.id ?? input?.id ?? "");
+}}
 
 function report(state) {{
   try {{
@@ -43,6 +79,38 @@ function report(state) {{
   }} catch (e) {{
     // best-effort; never throw out of a plugin hook
   }}
+}}
+
+function safeArgs(args) {{
+  const out = {{}};
+  if (!args || typeof args !== "object") return out;
+  for (const [from, to] of Object.entries(SAFE_ARG_KEYS)) {{
+    const value = args[from];
+    if (typeof value === "string" && value.startsWith("/")) out[to] = value;
+  }}
+  return out;
+}}
+
+function runAwareness(tool, sessionID, args) {{
+  try {{
+    const payload = JSON.stringify({{
+      hook_event_name: "tool.execute.after",
+      tool_name: tool,
+      session_id: sessionID,
+      tool_input: args,
+    }});
+    const r = child_process.spawnSync(
+      A,
+      ["context", "hook", "--engine", "opencode"],
+      {{ input: payload, encoding: "utf8", timeout: 5000 }},
+    );
+    if (r.status === 0 && typeof r.stdout === "string" && r.stdout.length > 0) {{
+      return r.stdout;
+    }}
+  }} catch (e) {{
+    // best-effort; never throw out of a plugin hook
+  }}
+  return null;
 }}
 
 export const AplexerStateReport = async () => {{
@@ -66,8 +134,39 @@ export const AplexerStateReport = async () => {{
         report("working");
       }}
     }},
-    "tool.execute.before": async () => {{
+    "tool.execute.before": async (input) => {{
       report("working");
+      try {{
+        const entry = {{
+          tool: String(input?.tool ?? input?.tool_name ?? ""),
+          sessionID: String(input?.sessionID ?? input?.session_id ?? ""),
+          args: safeArgs(input?.arguments ?? input?.call?.arguments ?? input?.args),
+        }};
+        const key = callKey(input) + "|" + entry.tool;
+        pending.delete(key);
+        pending.set(key, entry);
+        if (pending.size > PENDING_LIMIT) {{
+          pending.delete(pending.keys().next().value);
+        }}
+      }} catch (e) {{
+        // best-effort; never throw out of a plugin hook
+      }}
+    }},
+    "tool.execute.after": async (input, output) => {{
+      try {{
+        const key = callKey(input) + "|" + String(input?.tool ?? input?.tool_name ?? "");
+        const entry = pending.get(key) ?? null;
+        pending.delete(key);
+        const sessionID = String(input?.sessionID ?? input?.session_id ?? entry?.sessionID ?? "");
+        const tool = String(input?.tool ?? input?.tool_name ?? entry?.tool ?? "");
+        if (!output || typeof output.output !== "string") return;
+        const awareness = runAwareness(tool, sessionID, entry?.args ?? {{}});
+        if (awareness === null) return;
+        // Append only: the original tool result is preserved byte-for-byte.
+        output.output = output.output + "\n\n" + awareness.trim() + "\n";
+      }} catch (e) {{
+        // best-effort; never throw out of a plugin hook
+      }}
     }},
   }};
 }};

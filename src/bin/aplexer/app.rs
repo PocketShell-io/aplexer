@@ -41,6 +41,8 @@ mod attach_threads;
 mod capture_commands;
 #[path = "cli.rs"]
 mod cli;
+#[path = "cli_coordination_args.rs"]
+mod cli_coordination_args;
 #[path = "cli_examples.rs"]
 mod cli_examples;
 #[path = "cli_message_args.rs"]
@@ -51,6 +53,8 @@ mod cli_session_args;
 mod commands;
 #[path = "completions.rs"]
 mod completions;
+#[path = "coordination_commands.rs"]
+mod coordination_commands;
 #[path = "diagnostics.rs"]
 mod diagnostics;
 #[path = "doctor.rs"]
@@ -123,10 +127,12 @@ pub(crate) use attach_session::*;
 pub(crate) use attach_threads::*;
 pub(crate) use capture_commands::*;
 pub(crate) use cli::*;
+pub(crate) use cli_coordination_args::*;
 pub(crate) use cli_message_args::*;
 pub(crate) use cli_session_args::*;
 pub(crate) use commands::*;
 pub(crate) use completions::*;
+pub(crate) use coordination_commands::*;
 pub(crate) use diagnostics::*;
 pub(crate) use doctor::*;
 pub(crate) use handoff_commands::*;

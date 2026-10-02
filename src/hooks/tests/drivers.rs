@@ -25,6 +25,41 @@ fn opencode_plugin_embeds_the_a_binary_and_maps_events() {
 }
 
 #[test]
+fn opencode_plugin_awareness_after_appends_without_clobbering() {
+    let source = opencode_plugin_source(A_BIN);
+    // The after callback shells out argv with a timeout and speaks the
+    // exact payload the awareness parser reads.
+    assert!(source.contains("tool.execute.after"), "{source}");
+    // argv form: the plugin never routes through a shell.
+    assert!(
+        source.contains(r#"["context", "hook", "--engine", "opencode"]"#),
+        "{source}"
+    );
+    assert!(source.contains("timeout: 5000"), "{source}");
+    for key in ["hook_event_name", "tool_name", "session_id", "tool_input"] {
+        assert!(source.contains(key), "missing payload key {key}");
+    }
+    // The before callback saves the safe path arguments for after.
+    assert!(source.contains("SAFE_ARG_KEYS"), "{source}");
+    assert!(source.contains("file_path"), "{source}");
+    // Append-only: original tool output is preserved byte-for-byte (suffix
+    // append, never a replace/trim of the original), and title/metadata
+    // are untouched (the Node runtime test in tests/coordination_packages.py
+    // pins the package bundle's behavior; this pins the same contract in
+    // the built-in plugin).
+    assert!(
+        source.contains("output.output = output.output + \"\\n\\n\" +"),
+        "{source}"
+    );
+    assert!(!source.contains(".replace"), "{source}");
+    assert!(!source.contains("output.output.trim()"), "{source}");
+    assert!(
+        source.contains("state-report"),
+        "check_opencode greps for this"
+    );
+}
+
+#[test]
 fn normalize_engine_filter_maps_zcodex_onto_codex() {
     assert_eq!(normalize_engine_filter("zcodex").unwrap(), "codex");
     assert_eq!(normalize_engine_filter("codex").unwrap(), "codex");

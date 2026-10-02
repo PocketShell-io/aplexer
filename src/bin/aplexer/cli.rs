@@ -1,3 +1,4 @@
+use super::cli_coordination_args::*;
 use super::cli_examples::*;
 use super::cli_message_args::*;
 use super::cli_session_args::*;
@@ -116,6 +117,10 @@ pub(crate) enum Commands {
     /// Print the current session's identity (workspace/tag/engine/profile).
     #[command(visible_alias = "current", after_help = WHOAMI_EXAMPLES)]
     Whoami,
+    /// Show nearby agents, declared work scopes, and unread peer messages.
+    Context(ContextArgs),
+    /// Declare or release participation in a workspace without relocating the session.
+    Work(WorkArgs),
     /// Push the current session's semantic agent state, for a hook script
     /// to call from inside it (see `a state-report --help`).
     #[command(

@@ -70,34 +70,43 @@ fn read_notice(path: &Path) -> Result<NoticeState> {
     serde_json::from_slice(&bytes).context("parse mailbox notice")
 }
 
-fn claim_notice(
-    mp: &MessagePaths,
-    identity: &SessionIdentity,
-) -> Result<Option<(usize, Vec<Uuid>)>> {
-    // This callback is optional; a busy mailbox must not hold a tool result.
-    let _mailbox = FileLock::exclusive(&mailbox_lock_path(mp), true)?;
-    let cursor_path = mp.cursors_dir.join(format!("{}.json", identity.id));
-    let mut cursor = read_cursor_file(&cursor_path)?;
-    let messages = list_messages_in(mp, identity.workspace.as_deref().unwrap())?;
-    let retained = messages.iter().map(|message| message.id).collect();
-    compact_cursor(&mut cursor, &retained);
-    let unread: Vec<Uuid> = messages
-        .iter()
-        .filter(|message| identity.receives(message) && !cursor.is_acked(message.id))
-        .map(|message| message.id)
-        .collect();
-    let path = notice_path(mp, identity.id);
+fn notice_lock_path(mp: &MessagePaths, id: Uuid) -> PathBuf {
+    mp.cursors_dir.join(format!("{id}.notice.lock"))
+}
+
+fn claim_notice(paths: &Paths, identity: &SessionIdentity) -> Result<Option<(usize, Vec<Uuid>)>> {
+    // This callback is optional; a busy mailbox must not hold a tool
+    // result. The unread snapshot comes from core (its multiworkspace,
+    // addressing and retained-message filtering, nonblocking locks); the
+    // claim bookkeeping below is guarded by its own dedicated lock so two
+    // concurrent callbacks can never both notice the same ids.
+    let snapshot = match crate::coordination::unread_messages(paths, identity.id) {
+        Ok(messages) => messages,
+        Err(_) => return Ok(None),
+    };
+    let unread: Vec<Uuid> = snapshot.iter().map(|message| message.id).collect();
+    let home = identity.workspace.as_deref().unwrap();
+    let mp = match ensure_workspace_nonblocking(paths, home) {
+        Ok(mp) => mp,
+        Err(_) => return Ok(None),
+    };
+    let _notice = match FileLock::exclusive(&notice_lock_path(&mp, identity.id), true) {
+        Ok(lock) => lock,
+        Err(_) => return Ok(None),
+    };
+    let path = notice_path(&mp, identity.id);
     let mut state = read_notice(&path)?;
     let before = state.claimed_at.len();
     state.claimed_at.retain(|id, _| unread.contains(id));
     let now = now_secs();
     let ids = eligible_ids(&unread, &state, now);
+    if ids.is_empty() && state.claimed_at.len() == before {
+        return Ok(None);
+    }
     for id in &ids {
         state.claimed_at.insert(*id, now);
     }
-    if before != state.claimed_at.len() || !ids.is_empty() {
-        atomic_write_json(&path, &state)?;
-    }
+    atomic_write_json(&path, &state)?;
     Ok((!ids.is_empty()).then_some((unread.len(), ids)))
 }
 
@@ -117,6 +126,9 @@ fn eligible_ids(unread: &[Uuid], state: &NoticeState, now: u64) -> Vec<Uuid> {
 
 /// Returns a model-visible JSON envelope, or no output when input or binding
 /// is invalid. The caller intentionally swallows errors so tools keep running.
+/// Unread is counted across every mailbox the session participates in (core
+/// multiworkspaces); the claim state itself stays anchored to the session's
+/// home workspace.
 pub fn hook_notice(paths: &Paths, engine: &str, input: impl Read) -> Result<Option<String>> {
     if !main_tool_event(input)? {
         return Ok(None);
@@ -124,9 +136,7 @@ pub fn hook_notice(paths: &Paths, engine: &str, input: impl Read) -> Result<Opti
     let Some(identity) = bound_recipient(paths, engine)? else {
         return Ok(None);
     };
-    let workspace = identity.workspace.as_deref().unwrap();
-    let mp = ensure_workspace(paths, workspace)?;
-    let Some((count, ids)) = claim_notice(&mp, &identity)? else {
+    let Some((count, ids)) = claim_notice(paths, &identity)? else {
         return Ok(None);
     };
     let context = format!(

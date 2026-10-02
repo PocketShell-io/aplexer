@@ -1,4 +1,3 @@
-
 #[test]
 fn attach_goodbye_distinguishes_detach_error_and_socket_loss() {
     let selector = "/ws:tag";
@@ -220,7 +219,15 @@ fn worker_subcommand_parses_the_client_spawn_shape() {
         _ => panic!("expected worker command"),
     }
 
-    let args = args_of(&["worker", "--id", &id.to_string(), "--rows", "5", "--cols", "3"]);
+    let args = args_of(&[
+        "worker",
+        "--id",
+        &id.to_string(),
+        "--rows",
+        "5",
+        "--cols",
+        "3",
+    ]);
     match Cli::try_parse_from(args).unwrap().command {
         Some(Commands::Worker(worker)) => {
             assert_eq!(worker.rows, Some(5));
@@ -267,6 +274,8 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Whoami => "whoami",
         Commands::StateReport(_) => "state-report",
         Commands::Message(_) => "message",
+        Commands::Context(_) => "context",
+        Commands::Work(_) => "work",
         Commands::Watch(_) => "watch",
         Commands::Transcript(_) => "transcript",
         Commands::Handoff(_) => "handoff",
@@ -632,7 +641,6 @@ fn check_attachable_does_not_advise_killing_a_still_starting_session() {
     assert!(check_attachable(&ready).is_ok());
 }
 
-
 #[test]
 fn attach_handshake_treats_deadline_expiries_as_transient_and_nothing_else() {
     // A worker busy past the control deadline -- a history fsync holding
@@ -650,7 +658,9 @@ fn attach_handshake_treats_deadline_expiries_as_transient_and_nothing_else() {
             .context("set control response deadline")
     ));
     // A genuine answer must reach the user instead of being retried into.
-    assert!(!is_deadline_expiry(&anyhow::Error::msg("worker closed connection")));
+    assert!(!is_deadline_expiry(&anyhow::Error::msg(
+        "worker closed connection"
+    )));
     assert!(!is_deadline_expiry(&anyhow::Error::from(io::Error::from(
         io::ErrorKind::ConnectionRefused
     ))));

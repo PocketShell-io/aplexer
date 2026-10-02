@@ -3,11 +3,17 @@ use super::*;
 #[test]
 fn merge_creates_hooks_object_from_empty() {
     let doc = merged(&CLAUDE_EVENTS, json!({}));
+    // One group per (event, state) wiring; an event wired for two states
+    // (SessionStart: working + awareness) carries two groups.
     for (event, state) in CLAUDE_EVENTS {
         let groups = doc["hooks"][event].as_array().unwrap();
-        assert_eq!(groups.len(), 1, "event {event}");
-        assert!(group_reports(&groups[0], state));
+        assert!(
+            groups.iter().any(|g| group_reports(g, state)),
+            "event {event} state {state}"
+        );
     }
+    let session_start = doc["hooks"]["SessionStart"].as_array().unwrap();
+    assert_eq!(session_start.len(), 2);
     assert!(missing_nested_hooks(&doc, &CLAUDE_EVENTS).is_empty());
 }
 
@@ -21,23 +27,157 @@ fn merge_is_idempotent() {
 }
 
 #[test]
-fn post_tool_notice_merges_and_unmerges_without_touching_foreign_hooks() {
-    for (engine, events) in [("claude", &CLAUDE_EVENTS[..]), ("codex", &CODEX_EVENTS[..])] {
+fn awareness_hook_is_bounded_and_installs_one_source_per_engine() {
+    let doc = merged(&CLAUDE_EVENTS, json!({}));
+    for (event, state) in CLAUDE_EVENTS {
+        if let Some(engine) = state.strip_prefix("awareness:") {
+            let group = doc["hooks"][event]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|g| group_reports(g, state))
+                .unwrap();
+            let command = group["hooks"][0]["command"].as_str().unwrap();
+            assert!(
+                command.contains(&format!("context hook --engine {engine}")),
+                "{command}"
+            );
+            // The `|| true` guard, then the content marker.
+            assert!(
+                command.contains(" || true # aplexer-managed-awareness-hook-v1"),
+                "{command}"
+            );
+            // Seconds-budget hosts get 5.
+            assert_eq!(group["hooks"][0]["timeout"], 5);
+        }
+    }
+    // Gemini's timeout unit is milliseconds (documented default 60000),
+    // so its budget is 5000ms -- a 5 there would kill the hook after 5ms.
+    let doc = merged(&GEMINI_EVENTS, json!({}));
+    let group = doc["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| group_reports(g, "awareness:gemini"))
+        .unwrap();
+    assert_eq!(group["hooks"][0]["timeout"], 5000);
+    // State-report hooks carry no timeout: `|| true` is the guard.
+    let working = doc["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| group_reports(g, "working"))
+        .unwrap();
+    assert!(working["hooks"][0].get("timeout").is_none());
+}
+
+#[test]
+fn install_migrates_legacy_notice_commands_by_marker() {
+    // A config written by an older binary carries the legacy managed
+    // inbox-notice commands. Installing must replace exactly those (by
+    // content marker, any engine) with the awareness wiring, keep
+    // state-report and foreign hooks, and count the migration as a
+    // change so `a init` reports it.
+    let legacy = json!({"hooks": {
+        "PostToolUse": [{"hooks": [
+            {"type": "command", "command": format!("{} message hook-notice --engine claude 2>/dev/null || true # aplexer-managed-inbox-hook-v1", A_BIN)},
+            {"type": "command", "command": "foreign-post-tool"}
+        ]}],
+        "Stop": [{"hooks": [
+            {"type": "command", "command": format!("{} state-report idle || true", A_BIN)}
+        ]}]
+    }});
+    let mut doc = legacy;
+    let changed = merge_nested_hooks(&mut doc, &CLAUDE_EVENTS, A_BIN).unwrap();
+    assert!(changed > 0);
+    let commands: Vec<String> = doc["hooks"]["PostToolUse"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| {
+            g["hooks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|h| h["command"].as_str().unwrap_or("").to_string())
+        })
+        .collect();
+    assert!(
+        !commands
+            .iter()
+            .any(|c| c.contains("hook-notice") || c.contains("aplexer-managed-inbox-hook-v1")),
+        "legacy notice survived: {commands:?}"
+    );
+    assert!(commands
+        .iter()
+        .any(|c| c.contains("context hook --engine claude")));
+    assert!(commands.iter().any(|c| c.contains("foreign-post-tool")));
+    assert!(group_reports(&doc["hooks"]["Stop"][0], "idle"));
+    assert!(missing_nested_hooks(&doc, &CLAUDE_EVENTS).is_empty());
+    // Idempotent: migrating again changes nothing.
+    assert_eq!(
+        merge_nested_hooks(&mut doc, &CLAUDE_EVENTS, A_BIN).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn migration_counts_inner_removal_in_a_mixed_group() {
+    // Regression: a PostToolUse group holding the legacy notice AND a
+    // foreign hook, with the current awareness entry already installed.
+    // Removing the notice leaves the group alive but must still count as
+    // a change -- otherwise the installer skips the write and the legacy
+    // entry survives forever.
+    let legacy_command = format!(
+        "{A_BIN} message hook-notice --engine claude 2>/dev/null || true # aplexer-managed-inbox-hook-v1"
+    );
+    let mut doc = json!({"hooks": {"PostToolUse": [{"hooks": [
+        {"type": "command", "command": legacy_command},
+        {"type": "command", "command": "foreign-post-tool"},
+        {"type": "command", "command": format!("{A_BIN} context hook --engine claude 2>/dev/null || true # aplexer-managed-awareness-hook-v1")}
+    ]}]}});
+    let changed = merge_nested_hooks(&mut doc, &CLAUDE_EVENTS, A_BIN).unwrap();
+    assert!(changed > 0, "inner notice removal must count as a change");
+    let commands: Vec<String> = doc["hooks"]["PostToolUse"][0]["hooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["command"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(commands.iter().any(|c| c.contains("foreign-post-tool")));
+    assert!(commands
+        .iter()
+        .any(|c| c.contains("context hook --engine claude")));
+    // Settled: another merge changes nothing.
+    assert_eq!(
+        merge_nested_hooks(&mut doc, &CLAUDE_EVENTS, A_BIN).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn post_tool_awareness_merges_and_unmerges_without_touching_foreign_hooks() {
+    for (engine, events) in [
+        ("claude", &CLAUDE_EVENTS[..]),
+        ("codex", &CODEX_EVENTS[..]),
+        ("grok", &GROK_EVENTS[..]),
+    ] {
         let foreign = json!({"hooks": {"PostToolUse": [{"hooks": [
             {"type": "command", "command": "foreign-post-tool"},
-            {"type": "command", "command": format!("echo message hook-notice --engine {engine}")}
+            {"type": "command", "command": format!("echo context hook --engine {engine}")}
         ]}]}});
         let mut doc = merged(events, foreign.clone());
         let groups = doc["hooks"]["PostToolUse"].as_array().unwrap();
         assert_eq!(groups.len(), 2);
         assert!(groups
             .iter()
-            .any(|group| group_reports(group, &format!("notice:{engine}"))));
-        let notice = groups
+            .any(|group| group_reports(group, &format!("awareness:{engine}"))));
+        let awareness = groups
             .iter()
-            .find(|group| group_reports(group, &format!("notice:{engine}")))
+            .find(|group| group_reports(group, &format!("awareness:{engine}")))
             .unwrap();
-        assert_eq!(notice["hooks"][0]["timeout"], 5);
+        assert_eq!(awareness["hooks"][0]["timeout"], 5);
         assert_eq!(merge_nested_hooks(&mut doc, events, A_BIN).unwrap(), 0);
         assert!(missing_nested_hooks(&doc, events).is_empty());
         assert!(unmerge_nested_hooks(&mut doc));
@@ -164,9 +304,35 @@ fn unmerge_sweeps_retired_events_but_leaves_foreign_hooks_there() {
 }
 
 #[test]
-fn missing_reports_every_absent_event() {
+fn missing_reports_every_absent_event_once() {
     let missing = missing_nested_hooks(&json!({}), &GEMINI_EVENTS);
-    assert_eq!(missing.len(), GEMINI_EVENTS.len());
+    // Events wired for two states are reported once.
+    let distinct: std::collections::BTreeSet<&str> =
+        GEMINI_EVENTS.iter().map(|(event, _)| *event).collect();
+    assert_eq!(missing.len(), distinct.len());
+    assert!(missing.contains(&"AfterTool".to_string()));
     let doc = merged(&GEMINI_EVENTS, json!({}));
     assert!(missing_nested_hooks(&doc, &GEMINI_EVENTS).is_empty());
+}
+
+#[test]
+fn uninstall_sweeps_every_managed_generation() {
+    // A config carrying all three generations -- current awareness, legacy
+    // inbox-notice (any engine), and state-report -- loses exactly those;
+    // foreign hooks survive.
+    let start = json!({"hooks": {"PostToolUse": [{"hooks": [
+        {"type": "command", "command": format!("{A_BIN} context hook --engine zzz 2>/dev/null || true # aplexer-managed-awareness-hook-v1")},
+        {"type": "command", "command": format!("{A_BIN} message hook-notice --engine claude 2>/dev/null || true # aplexer-managed-inbox-hook-v1")},
+        {"type": "command", "command": format!("{A_BIN} message hook-notice --engine grok 2>/dev/null || true # aplexer-managed-inbox-hook-v1")},
+        {"type": "command", "command": "foreign-post-tool"}
+    ]}]}});
+    let mut doc = start;
+    assert!(unmerge_nested_hooks(&mut doc));
+    let commands: Vec<&str> = doc["hooks"]["PostToolUse"][0]["hooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|h| h["command"].as_str())
+        .collect();
+    assert_eq!(commands, vec!["foreign-post-tool"]);
 }

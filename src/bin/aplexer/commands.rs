@@ -22,6 +22,8 @@ pub(crate) fn run() -> Result<()> {
     let command = cli.command.unwrap_or(Commands::List(ListArgs::default()));
     match command {
         Commands::Start(args) => cmd_start(&paths, args, cli.json),
+        Commands::Context(args) => cmd_context(&paths, args, cli.json),
+        Commands::Work(args) => cmd_work(&paths, args, cli.json),
         Commands::New(mut args) => {
             args.attach = true;
             // `new` is the "always creates" verb: a live session holding the
