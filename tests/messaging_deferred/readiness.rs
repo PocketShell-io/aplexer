@@ -141,12 +141,45 @@ fn antigravity_missing_hooks_idle_is_contradicted_by_later_activity() {
 
 #[test]
 fn antigravity_with_installed_hooks_permits_idle_delivery_despite_tui_output() {
+    let temp_home = tempfile::TempDir::new().unwrap();
+    let hooks_dir = temp_home.path().join(".gemini").join("config");
+    std::fs::create_dir_all(&hooks_dir).unwrap();
+    let hooks_content = serde_json::json!({
+        "aplexer-state-report": {
+            "PreInvocation": [
+                {"type": "command", "command": "/bin/a state-report working || true"}
+            ],
+            "Stop": [
+                {"type": "command", "command": "/bin/a state-report idle || true"}
+            ]
+        }
+    });
+    std::fs::write(
+        hooks_dir.join("hooks.json"),
+        serde_json::to_string_pretty(&hooks_content).unwrap(),
+    )
+    .unwrap();
+
     let mut case = Case::new(false, "antigravity");
     case.recipient.reported_state = Some("idle".into());
     case.recipient.reported_state_at_ms = Some(1000);
     case.recipient.last_activity_ms = Some(3001);
     let server = worker::Worker::start(&case.recipient, false);
-    let output = case.deliver(&case.sender);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{output:?}");
     status(&output, "submitted");
     assert_eq!(server.finish().len(), 4);
