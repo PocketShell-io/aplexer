@@ -6,7 +6,10 @@ fn pane_target<'a>(
     envelope: &MessageEnvelope,
 ) -> Result<&'a SessionRecord> {
     check_body_size(&envelope.body)?;
-    let Recipient::Tag { tag, session_id } = &envelope.to else {
+    let Recipient::Tag {
+        tag, session_id, ..
+    } = &envelope.to
+    else {
         bail!("pane delivery requires a single tag target");
     };
     let cross_workspace = envelope

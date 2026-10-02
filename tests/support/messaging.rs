@@ -102,4 +102,17 @@ impl Harness {
         atomic_write_json(&paths.record(id), &record).unwrap();
         record
     }
+
+    /// Rewrite a record under a different tag, the way `a start` binding a
+    /// tag that a dead session used to hold leaves two records with one tag
+    /// between them (the old one historical, the new one current). Each
+    /// test file compiles its own copy of this harness, so only the files
+    /// that retag records mark this used.
+    #[allow(dead_code)]
+    pub(crate) fn retag(&self, record: &SessionRecord, tag: &str) -> SessionRecord {
+        let mut retagged = record.clone();
+        retagged.tag = tag.to_string();
+        atomic_write_json(&self.paths().record(retagged.id), &retagged).unwrap();
+        retagged
+    }
 }
