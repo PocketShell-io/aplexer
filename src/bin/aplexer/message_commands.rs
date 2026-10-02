@@ -160,9 +160,13 @@ pub(crate) fn cmd_message_inbox(
         &workspace,
         args.from.as_deref(),
     )?)?;
-    let mp = ensure_workspace(paths, &workspace)?;
-    let _ = maybe_gc_in(&mp, &workspace, &records);
-    let messages = unread_messages(&mp, &workspace, &consumer)?;
+    let messages = if args.from.is_none() && records.iter().any(|r| r.id == consumer.id) {
+        aplexer::coordination::unread_messages(paths, consumer.id)?
+    } else {
+        let mp = ensure_workspace(paths, &workspace)?;
+        let _ = maybe_gc_in(&mp, &workspace, &records);
+        unread_messages(&mp, &workspace, &consumer)?
+    };
     if json_output {
         println!("{}", serde_json::to_string_pretty(&messages)?);
     } else if messages.is_empty() {
@@ -202,7 +206,7 @@ pub(crate) fn cmd_message_show(
     json_output: bool,
 ) -> Result<()> {
     let workspace = resolve_message_workspace(None)?;
-    let message = read_message(paths, &workspace, args.message_id)?;
+    let message = read_consumer_message(paths, &workspace, args.message_id)?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&message)?);
     } else {
@@ -229,6 +233,9 @@ pub(crate) fn cmd_message_ack(
         &workspace,
         args.from.as_deref(),
     )?)?;
+    if args.from.is_none() && records.iter().any(|r| r.id == consumer.id) {
+        return ack_participating_mailboxes(paths, &consumer, args, json_output);
+    }
     let mp = ensure_workspace(paths, &workspace)?;
     let ids: Vec<Uuid> = if args.all {
         unread_messages(&mp, &workspace, &consumer)?
@@ -257,6 +264,74 @@ pub(crate) fn cmd_message_ack(
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(", ")
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Follow the stable consumer UUID across declared and retained mailboxes.
+/// The current workspace log remains inspectable for backwards compatibility.
+pub(crate) fn read_consumer_message(
+    paths: &Paths,
+    workspace: &Path,
+    message_id: Uuid,
+) -> Result<MessageEnvelope> {
+    if let Ok(message) = read_message(paths, workspace, message_id) {
+        return Ok(message);
+    }
+    if let Some(id) = discover_session_id() {
+        for mailbox in aplexer::coordination::mailbox_workspaces(paths, id)? {
+            if mailbox == workspace {
+                continue;
+            }
+            if let Ok(message) = read_message(paths, &mailbox, message_id) {
+                return Ok(message);
+            }
+        }
+    }
+    bail!("no such message {message_id}")
+}
+
+fn ack_participating_mailboxes(
+    paths: &Paths,
+    consumer: &SessionIdentity,
+    args: MessageAckArgs,
+    json_output: bool,
+) -> Result<()> {
+    let messages = aplexer::coordination::unread_messages(paths, consumer.id)?;
+    let ids: Vec<Uuid> = if args.all {
+        messages.iter().map(|m| m.id).collect()
+    } else {
+        args.message_ids
+    };
+    let mut acked = Vec::new();
+    for workspace in aplexer::coordination::mailbox_workspaces(paths, consumer.id)? {
+        let mp = ensure_workspace(paths, &workspace)?;
+        // Only acknowledge IDs actually addressed to this consumer, rather than
+        // adding another workspace's UUIDs to an unrelated cursor.
+        let local: Vec<Uuid> = list_messages_in(&mp, &workspace)?
+            .iter()
+            .filter(|m| ids.contains(&m.id) && consumer.receives(m))
+            .map(|m| m.id)
+            .collect();
+        acked.extend(ack_messages_in(&mp, consumer.id, &local)?);
+    }
+    acked.sort();
+    acked.dedup();
+    let unknown: Vec<_> = ids
+        .iter()
+        .filter(|id| !acked.contains(id))
+        .copied()
+        .collect();
+    if json_output {
+        println!("{}", json!({"acked": acked, "unknown": unknown}));
+    } else {
+        println!("acked {} message(s)", acked.len());
+        if !unknown.is_empty() {
+            eprintln!(
+                "a: {} id(s) not addressed to this consumer in its mailboxes",
+                unknown.len()
             );
         }
     }

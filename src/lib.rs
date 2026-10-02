@@ -3,6 +3,7 @@
 pub mod agent_events;
 pub mod agent_kind;
 pub mod api;
+pub mod coordination;
 pub mod hooks;
 pub mod messaging;
 pub mod placement;
