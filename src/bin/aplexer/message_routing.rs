@@ -140,15 +140,6 @@ fn send_target(
     Ok(to)
 }
 
-fn finish_and_print_existing(envelope: MessageEnvelope, json_output: bool) -> Result<()> {
-    if json_output {
-        println!("{}", serde_json::to_string(&envelope)?);
-    } else {
-        super::message_commands::print_message_line(&envelope);
-    }
-    Ok(())
-}
-
 fn finish_and_print(
     paths: &Paths,
     records: &[SessionRecord],
@@ -158,7 +149,6 @@ fn finish_and_print(
 ) -> Result<()> {
     let workspace = envelope.workspace.clone();
     let mp = ensure_workspace(paths, &workspace)?;
-    eprintln!("DEBUG: body={}", envelope.body);
     let sent = finish_send(&mp, records, &workspace, envelope, pane)?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&sent)?);

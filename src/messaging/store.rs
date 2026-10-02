@@ -69,7 +69,10 @@ pub(crate) fn write_message_idempotent(
 ) -> Result<MessageEnvelope> {
     let bytes = serialized_envelope(envelope)?;
     if bytes.len() as u64 > max_bytes {
-        bail!("too large");
+        bail!(
+            "serialized message envelope is {} bytes, larger than the {max_bytes}-byte workspace quota",
+            bytes.len()
+        );
     }
     let _mailbox = FileLock::exclusive(&mailbox_lock_path(mp), false)?;
     
@@ -88,7 +91,7 @@ pub(crate) fn write_message_idempotent(
                 };
 
                 if same_sender && same_recipient {
-                    if m.body == envelope.body && m.reply_to == envelope.reply_to && m.kind == envelope.kind {
+                    if m.body == envelope.body && m.data == envelope.data && m.reply_to == envelope.reply_to && m.kind == envelope.kind {
                         return Ok(m);
                     } else {
                         bail!("idempotency conflict: message with key {} exists but has different payload", key);
@@ -99,9 +102,22 @@ pub(crate) fn write_message_idempotent(
     }
 
     let path = mp.msgs_dir.join(format!("{}.json", envelope.id));
-    if path.try_exists()? { bail!("already exists"); }
+    if path.try_exists()? {
+        bail!("message {} already exists", envelope.id);
+    }
     atomic_write_bytes(&path, &bytes)?;
-    let _ = prune_workspace_locked(mp, &envelope.workspace, Some(&path), max_messages, max_bytes, false);
+    if let Err(error) = prune_workspace_locked(
+        mp,
+        &envelope.workspace,
+        Some(&path),
+        max_messages,
+        max_bytes,
+        false,
+    ) {
+        let _ = fs::remove_file(&path);
+        let _ = fs::File::open(&mp.msgs_dir).and_then(|dir| dir.sync_all());
+        return Err(error).context("enforce mailbox quota after append");
+    }
     Ok(envelope.clone())
 }
 

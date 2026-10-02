@@ -117,9 +117,6 @@ pub(crate) fn finish_send(
         bail!("--pane requires a single --to TAG target: no pane broadcast");
     }
     envelope = aplexer::messaging::write_message_in_idempotent(mp, &envelope)?;
-    if envelope.delivery == Delivery::Pane && !pane.pane {
-        // duplicate that was already pane-delivered
-    }
     if pane.pane {
         finish_pane(mp, records, workspace, &mut envelope, pane)?;
     }
