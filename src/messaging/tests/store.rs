@@ -245,3 +245,129 @@ fn message_loader_rejects_a_false_broadcast() {
         "unexpected error: {error:#}"
     );
 }
+
+#[test]
+fn idempotent_write_returns_existing_envelope_on_identical_retry() {
+    let root = TempDir::new().unwrap();
+    let paths = test_paths(root.path());
+    let workspace = Path::new("/tmp/aplexer-idempotent-dedup-workspace");
+    let mp = ensure_workspace(&paths, workspace).unwrap();
+
+    let mut first = test_message(workspace, Uuid::from_u128(1));
+    first.idempotency_key = Some("test-key-123".into());
+    first.data = Some(serde_json::json!({"field": "val1"}));
+    first.from.tag = Some("sender-a".into());
+    first.to = Recipient::Tag {
+        tag: "target-b".into(),
+        session_id: None,
+    };
+
+    let written = write_message_idempotent(&mp, &first, 10, MAX_WORKSPACE_BYTES).unwrap();
+    assert_eq!(written.id, first.id);
+
+    // Second send with different UUID and timestamp, but same key, sender tag, recipient, body, and data
+    let mut retry = test_message(workspace, Uuid::from_u128(2));
+    retry.idempotency_key = Some("test-key-123".into());
+    retry.data = Some(serde_json::json!({"field": "val1"}));
+    retry.from.tag = Some("sender-a".into());
+    retry.to = Recipient::Tag {
+        tag: "target-b".into(),
+        session_id: None,
+    };
+
+    let deduplicated = write_message_idempotent(&mp, &retry, 10, MAX_WORKSPACE_BYTES).unwrap();
+    assert_eq!(deduplicated.id, first.id, "must return original message id");
+    assert_eq!(deduplicated.created_at, first.created_at);
+
+    let messages = list_messages(&paths, workspace).unwrap();
+    assert_eq!(messages.len(), 1, "only 1 message file must exist in mailbox");
+}
+
+#[test]
+fn idempotent_write_rejects_payload_conflict_on_data_mismatch() {
+    let root = TempDir::new().unwrap();
+    let paths = test_paths(root.path());
+    let workspace = Path::new("/tmp/aplexer-idempotent-data-conflict-workspace");
+    let mp = ensure_workspace(&paths, workspace).unwrap();
+
+    let mut first = test_message(workspace, Uuid::from_u128(1));
+    first.idempotency_key = Some("conflict-key-data".into());
+    first.data = Some(serde_json::json!({"setting": "alpha"}));
+    first.from.tag = Some("sender-a".into());
+    first.to = Recipient::Tag {
+        tag: "target-b".into(),
+        session_id: None,
+    };
+
+    write_message_idempotent(&mp, &first, 10, MAX_WORKSPACE_BYTES).unwrap();
+
+    let mut conflict = test_message(workspace, Uuid::from_u128(2));
+    conflict.idempotency_key = Some("conflict-key-data".into());
+    conflict.data = Some(serde_json::json!({"setting": "beta"})); // different data
+    conflict.from.tag = Some("sender-a".into());
+    conflict.to = Recipient::Tag {
+        tag: "target-b".into(),
+        session_id: None,
+    };
+
+    let err = write_message_idempotent(&mp, &conflict, 10, MAX_WORKSPACE_BYTES).unwrap_err();
+    assert!(
+        err.to_string().contains("idempotency conflict"),
+        "expected idempotency conflict on data mismatch, got: {err}"
+    );
+}
+
+#[test]
+fn idempotent_write_rejects_payload_conflict_on_body_mismatch() {
+    let root = TempDir::new().unwrap();
+    let paths = test_paths(root.path());
+    let workspace = Path::new("/tmp/aplexer-idempotent-body-conflict-workspace");
+    let mp = ensure_workspace(&paths, workspace).unwrap();
+
+    let mut first = test_message(workspace, Uuid::from_u128(1));
+    first.idempotency_key = Some("conflict-key-body".into());
+    first.body = "original body".into();
+    first.from.tag = Some("sender-a".into());
+    first.to = Recipient::Tag {
+        tag: "target-b".into(),
+        session_id: None,
+    };
+
+    write_message_idempotent(&mp, &first, 10, MAX_WORKSPACE_BYTES).unwrap();
+
+    let mut conflict = test_message(workspace, Uuid::from_u128(2));
+    conflict.idempotency_key = Some("conflict-key-body".into());
+    conflict.body = "altered body".into(); // different body
+    conflict.from.tag = Some("sender-a".into());
+    conflict.to = Recipient::Tag {
+        tag: "target-b".into(),
+        session_id: None,
+    };
+
+    let err = write_message_idempotent(&mp, &conflict, 10, MAX_WORKSPACE_BYTES).unwrap_err();
+    assert!(
+        err.to_string().contains("idempotency conflict"),
+        "expected idempotency conflict on body mismatch, got: {err}"
+    );
+}
+
+#[test]
+fn idempotent_write_rolls_back_when_quota_cannot_retain() {
+    let root = TempDir::new().unwrap();
+    let paths = test_paths(root.path());
+    let workspace = Path::new("/tmp/aplexer-idempotent-quota-rollback-workspace");
+    let mp = ensure_workspace(&paths, workspace).unwrap();
+
+    let mut message = test_message(workspace, Uuid::from_u128(1));
+    message.idempotency_key = Some("rollback-key".into());
+
+    let error = write_message_idempotent(&mp, &message, 0, MAX_WORKSPACE_BYTES)
+        .expect_err("a zero-message quota must reject the idempotent append");
+
+    assert!(error.to_string().contains("enforce mailbox quota after append"));
+    assert!(
+        !mp.msgs_dir.join(format!("{}.json", message.id)).exists(),
+        "file must be rolled back on quota failure"
+    );
+    assert!(list_messages(&paths, workspace).unwrap().is_empty());
+}

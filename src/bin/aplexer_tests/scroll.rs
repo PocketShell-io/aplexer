@@ -462,6 +462,7 @@ fn pane_delivery_appends_enter_by_default_and_no_enter_drops_it() {
         reply_to: None,
         body: "ship it".into(),
         data: None,
+        idempotency_key: None,
         delivery: Delivery::Inbox,
     };
     assert_eq!(

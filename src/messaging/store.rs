@@ -23,6 +23,17 @@ pub fn write_message_in(mp: &MessagePaths, envelope: &MessageEnvelope) -> Result
 /// Promote an already durable inbox message after its pane write succeeds.
 /// The id and workspace remain unchanged, so a failed promotion leaves a
 /// replyable inbox entry rather than a pane frame pointing at missing mail.
+
+pub fn write_message_in_idempotent(mp: &MessagePaths, envelope: &MessageEnvelope) -> Result<MessageEnvelope> {
+    write_message_idempotent(
+        mp,
+        envelope,
+        MAX_MESSAGES_PER_WORKSPACE,
+        MAX_WORKSPACE_BYTES,
+    )
+}
+
+
 pub fn mark_pane_delivered_in(mp: &MessagePaths, envelope: &MessageEnvelope) -> Result<()> {
     let _mailbox = FileLock::exclusive(&mailbox_lock_path(mp), false)?;
     mark_pane_delivered_locked(mp, envelope)
@@ -44,6 +55,72 @@ pub(crate) fn mark_pane_delivered_locked(
     pane.delivery = Delivery::Pane;
     atomic_write_bytes(&path, &serialized_envelope(&pane)?)
 }
+
+
+
+
+
+
+pub(crate) fn write_message_idempotent(
+    mp: &MessagePaths,
+    envelope: &MessageEnvelope,
+    max_messages: usize,
+    max_bytes: u64,
+) -> Result<MessageEnvelope> {
+    let bytes = serialized_envelope(envelope)?;
+    if bytes.len() as u64 > max_bytes {
+        bail!(
+            "serialized message envelope is {} bytes, larger than the {max_bytes}-byte workspace quota",
+            bytes.len()
+        );
+    }
+    let _mailbox = FileLock::exclusive(&mailbox_lock_path(mp), false)?;
+    
+    if let Some(ref key) = envelope.idempotency_key {
+        let existing = list_messages_in(mp, &envelope.workspace)?;
+        for m in existing {
+            if m.idempotency_key.as_deref() == Some(key) {
+                // Logical identity matching: ignore ephemeral session_ids
+                let same_sender = m.from.tag == envelope.from.tag && m.from.workspace == envelope.from.workspace;
+                
+                let same_recipient = match (&m.to, &envelope.to) {
+                    (Recipient::Tag { tag: t1, .. }, Recipient::Tag { tag: t2, .. }) => t1 == t2,
+                    (Recipient::Broadcast { .. }, Recipient::Broadcast { .. }) => true,
+                    (Recipient::Engine { engine: e1 }, Recipient::Engine { engine: e2 }) => e1 == e2,
+                    _ => false,
+                };
+
+                if same_sender && same_recipient {
+                    if m.body == envelope.body && m.data == envelope.data && m.reply_to == envelope.reply_to && m.kind == envelope.kind {
+                        return Ok(m);
+                    } else {
+                        bail!("idempotency conflict: message with key {} exists but has different payload", key);
+                    }
+                }
+            }
+        }
+    }
+
+    let path = mp.msgs_dir.join(format!("{}.json", envelope.id));
+    if path.try_exists()? {
+        bail!("message {} already exists", envelope.id);
+    }
+    atomic_write_bytes(&path, &bytes)?;
+    if let Err(error) = prune_workspace_locked(
+        mp,
+        &envelope.workspace,
+        Some(&path),
+        max_messages,
+        max_bytes,
+        false,
+    ) {
+        let _ = fs::remove_file(&path);
+        let _ = fs::File::open(&mp.msgs_dir).and_then(|dir| dir.sync_all());
+        return Err(error).context("enforce mailbox quota after append");
+    }
+    Ok(envelope.clone())
+}
+
 
 pub(crate) fn write_message_limited(
     mp: &MessagePaths,

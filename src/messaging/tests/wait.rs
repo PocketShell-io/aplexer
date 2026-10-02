@@ -35,6 +35,7 @@ fn envelope(workspace: &Path, consumer: &SessionIdentity) -> MessageEnvelope {
         reply_to: None,
         body: "hello".into(),
         data: None,
+        idempotency_key: None,
         delivery: Delivery::Inbox,
     }
 }

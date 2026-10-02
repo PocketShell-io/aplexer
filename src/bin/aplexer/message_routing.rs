@@ -179,6 +179,8 @@ pub(crate) fn cmd_message_send(
     let data = parse_data_arg(args.data.as_deref())?;
     let from = send_source(&args, &records, &workspace)?;
     let to = send_target(&args, &records, &workspace)?;
+
+
     let envelope = MessageEnvelope {
         schema_version: MESSAGE_SCHEMA_VERSION,
         id: Uuid::now_v7(),
@@ -190,6 +192,7 @@ pub(crate) fn cmd_message_send(
         reply_to: None,
         body: args.text,
         data,
+        idempotency_key: args.idempotency_key,
         delivery: Delivery::Inbox,
     };
     finish_and_print(paths, &records, envelope, &args.pane_delivery, json_output)
@@ -277,6 +280,7 @@ pub(crate) fn cmd_message_reply(
         reply_to: Some(original.id),
         body: args.text,
         data,
+        idempotency_key: args.idempotency_key,
         delivery: Delivery::Inbox,
     };
     finish_and_print(paths, &records, envelope, &args.pane_delivery, json_output)

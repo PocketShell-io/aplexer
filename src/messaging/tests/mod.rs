@@ -45,6 +45,7 @@ fn test_message(workspace: &Path, id: Uuid) -> MessageEnvelope {
         reply_to: None,
         body: "test".into(),
         data: None,
+        idempotency_key: None,
         delivery: Delivery::Inbox,
     }
 }
