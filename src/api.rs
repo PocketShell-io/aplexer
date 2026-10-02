@@ -31,8 +31,8 @@ use startup_guard::*;
 use worker_reaper::*;
 
 use crate::agent_kind::{
-    detect_agent_detailed, profile_variants, AgentKind, DetectedAgent, ProfileVariants,
-    DEFAULT_PROC_ROOT,
+    detect_agent_candidates, pick_detected_candidate, profile_variants, AgentKind, DetectedAgent,
+    ProfileVariants, DEFAULT_PROC_ROOT,
 };
 use crate::{
     atomic_write_json, canonical_workspace, cleanup_recorded_cgroup_until, command_exists,
@@ -159,7 +159,24 @@ pub fn record_detected(record: &SessionRecord) -> Option<DetectedAgent> {
     record_detected_with(record, &default_profile_variants())
 }
 
-/// `record_detected` with the caller's [`profile_variants`] table -- for
+/// `record_detected` plus the pid the answer was classified from: `None`
+/// when the user's pin answered (nothing was walked), `Some` when the
+/// `/proc` walk did -- the anchor for "which process said so" on the JSON
+/// surfaces, without which a mis-detected answer cannot be checked
+/// against the tree it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordDetection {
+    pub agent: DetectedAgent,
+    pub pid: Option<u32>,
+}
+
+/// `record_detected` plus where the answer came from
+/// ([`RecordDetection`]), with the default variant table.
+pub fn record_detected_process(record: &SessionRecord) -> Option<RecordDetection> {
+    record_detected_process_with(record, &default_profile_variants())
+}
+
+/// `record_detected_with` with the caller's [`profile_variants`] table -- for
 /// callers that already hold the config (`a list` detects one agent per
 /// row, so it builds the table once instead of per row).
 ///
@@ -171,19 +188,45 @@ pub fn record_detected(record: &SessionRecord) -> Option<DetectedAgent> {
 /// the config no longer classifies (a profile was renamed or removed since)
 /// degrades to the live walk -- an honest "whatever is running" beats
 /// repeating a pin that lost its meaning.
+///
+/// The walk itself no longer decides alone: it hands back every
+/// agent-named process it found (shallowest first), and the record's
+/// engine picks -- when the session was launched as a specific agent, that
+/// agent answers even if a stale one sits nearer the root or merely first
+/// by pid. `engine: "shell"` (the common hand-launched session) keeps the
+/// walk's own first answer.
 pub fn record_detected_with(
     record: &SessionRecord,
     variants: &ProfileVariants,
 ) -> Option<DetectedAgent> {
+    record_detected_process_with(record, variants).map(|detected| detected.agent)
+}
+
+/// `record_detected_with` plus where the answer came from
+/// ([`RecordDetection`]).
+pub fn record_detected_process_with(
+    record: &SessionRecord,
+    variants: &ProfileVariants,
+) -> Option<RecordDetection> {
     if !record.worker_phase_active() {
         return None;
     }
     if let Some(token) = record.agent_override.as_deref() {
         if let Some(detected) = crate::agent_kind::resolve_agent_token(token, variants) {
-            return Some(detected);
+            return Some(RecordDetection {
+                agent: detected,
+                pid: None,
+            });
         }
     }
-    detect_agent_detailed(Path::new(DEFAULT_PROC_ROOT), record.workload_pid?, variants)
+    let candidates =
+        detect_agent_candidates(Path::new(DEFAULT_PROC_ROOT), record.workload_pid?, variants);
+    pick_detected_candidate(&candidates, crate::agent_kind::engine_kind(&record.engine)).map(
+        |agent| RecordDetection {
+            agent: agent.detected,
+            pid: Some(agent.pid),
+        },
+    )
 }
 
 /// The variant table for query-time callers with no config at hand:
@@ -237,10 +280,13 @@ pub fn snapshot_json(paths: &Paths, running: bool) -> Result<Value> {
         // can read unconditionally. `agent_profile` names the agent's
         // variation the same way profiles are registered (spec.md 9): the
         // profile id (`zcodex`, `godex`, ...) or `"default"` for the
-        // engine's own config, `null` exactly when `agent` is.
-        let detected = record_detected(record);
-        value["agent"] = json!(detected.as_ref().map(|d| d.kind));
-        value["agent_profile"] = json!(detected.as_ref().map(|d| d.profile_label()));
+        // engine's own config, `null` exactly when `agent` is. `agent_pid`
+        // is the pid the answer was classified from (`null` for a pin, or
+        // when nothing was detected) -- the "which process said so" anchor.
+        let detected = record_detected_process(record);
+        value["agent"] = json!(detected.as_ref().map(|d| d.agent.kind));
+        value["agent_profile"] = json!(detected.as_ref().map(|d| d.agent.profile_label()));
+        value["agent_pid"] = json!(detected.as_ref().and_then(|d| d.pid));
         // Placement facts derived from the recorded cgroup paths
         // (`placement::classify_cgroup_path`), the same classification
         // `a doctor`'s launch_placement check uses -- so a consumer of this
@@ -376,10 +422,12 @@ pub fn status_json(paths: &Paths, selector: &str) -> Result<Value> {
     value["worker_reachable"] = json!(worker_reachable);
     // Same query-time agent detection every `a list --json`/`a snapshot` row
     // carries, so the two commands cannot disagree about which agent is in a
-    // session -- or which of its variations it runs (`agent_profile`).
-    let detected = record_detected(&current);
-    value["agent"] = json!(detected.as_ref().map(|d| d.kind));
-    value["agent_profile"] = json!(detected.as_ref().map(|d| d.profile_label()));
+    // session -- or which of its variations it runs (`agent_profile`), or
+    // which process the answer was classified from (`agent_pid`).
+    let detected = record_detected_process(&current);
+    value["agent"] = json!(detected.as_ref().map(|d| d.agent.kind));
+    value["agent_profile"] = json!(detected.as_ref().map(|d| d.agent.profile_label()));
+    value["agent_pid"] = json!(detected.as_ref().and_then(|d| d.pid));
     // Same derived placement facts every `a list --json`/`a snapshot` row
     // carries, from the same helper (issue #1).
     value["worker_placement"] =

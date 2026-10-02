@@ -89,9 +89,10 @@ impl StatusData {
             self.worker_alive(),
             self.current.created_at_ms
         ));
-        let detected = aplexer::api::record_detected(&self.current);
-        value["agent"] = json!(detected.as_ref().map(|d| d.kind));
-        value["agent_profile"] = json!(detected.as_ref().map(|d| d.profile_label()));
+        let detected = aplexer::api::record_detected_process(&self.current);
+        value["agent"] = json!(detected.as_ref().map(|d| d.agent.kind));
+        value["agent_profile"] = json!(detected.as_ref().map(|d| d.agent.profile_label()));
+        value["agent_pid"] = json!(detected.as_ref().and_then(|d| d.pid));
         value["worker_placement"] =
             aplexer::placement::placement_summary(self.current.worker_cgroup.as_deref());
         value["workload_placement"] =

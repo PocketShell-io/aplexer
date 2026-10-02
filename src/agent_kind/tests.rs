@@ -143,6 +143,51 @@ fn zcodex_under_bash_is_detected_as_codex() {
     assert_eq!(detect_agent(&root, 210, &no_variants()), None);
 }
 
+/// The wrapper-script engine shape (`command = ["/bin/sh",
+/// "launch-engine.sh"]`, how an engine gets a preamble around the real
+/// agent): the interpreter's basename must never become a variation token
+/// of that engine -- or every `sh` in every tree, including the workload
+/// root's own comm, classifies as the engine's agent, and the wrapper's
+/// pid answers where the agent's pid belongs (`agent_pid`). The engine's
+/// id still derives its token; the interpreter derives nothing, and the
+/// script's basename is left to the config author to declare.
+#[test]
+fn an_engine_wrapped_in_an_interpreter_claims_no_interpreter_token() {
+    let mut config = Config::default();
+    config.engines.insert(
+        "codex".to_owned(),
+        EngineConfig {
+            command: vec!["/bin/sh".to_owned(), "/opt/bin/launch-codex.sh".to_owned()],
+            ..EngineConfig::default()
+        },
+    );
+    let variants = profile_variants(&config);
+    assert!(
+        !variants.contains_key("sh"),
+        "the interpreter basename must not become a variation token: {variants:?}"
+    );
+    assert!(!variants.contains_key("launch-codex.sh"));
+
+    // End to end: the bare wrapper root detects nothing by itself; the
+    // codex it spawned is what answers.
+    let (_dir, root) = proc_tree();
+    write_proc(
+        &root,
+        215,
+        "sh",
+        &["/bin/sh", "/opt/bin/launch-codex.sh"],
+        &[216],
+    );
+    write_proc(
+        &root,
+        216,
+        "codex",
+        &["/opt/codex/bin/codex", "resume"],
+        &[],
+    );
+    assert_eq!(detect_agent(&root, 215, &variants), Some(AgentKind::Codex));
+}
+
 #[test]
 fn zcodex_binary_names_the_zcodex_profile_without_any_env() {
     // The usual hand-launched shape: the variant engine's binary and
@@ -592,6 +637,124 @@ fn tokens_are_lowercase_rules_applied_to_lowercased_text() {
         classify_token("/usr/bin/Codex", &no_variants()),
         Some(AgentKind::Codex)
     );
+}
+
+/// The reported misdetection (session 56420916, tag `codex-principal`): a
+/// node-wrapped codex launched with the user's prompt as an argument, and
+/// the prompt text names other agents ("Claude principal now exists as a
+/// resumed interactive UI; coordination/codex.stop is an obsolete
+/// marker"). Classification answered from the joined cmdline, where the
+/// free text reclassifies the whole launch; it must answer from the
+/// arguments the launch is made of, so an earlier argument's agent token
+/// wins and later free text cannot outvote it. comm is `MainThread` --
+/// node's renamed main thread -- so the cmdline is the only evidence.
+#[test]
+fn free_text_arguments_cannot_reclassify_the_launch_command() {
+    let (_dir, root) = proc_tree();
+    write_proc(
+        &root,
+        1400,
+        "MainThread",
+        &[
+            "node",
+            "/home/alexey/.nvm/versions/node/v24.13.1/bin/codex",
+            "resume",
+            "01a0fdd7-109e-7972-9199-e082a7a1383d",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "Claude principal now exists as a resumed interactive UI; \
+             coordination/codex.stop is an obsolete headless-loop marker.",
+        ],
+        &[1401],
+    );
+    write_proc(
+        &root,
+        1401,
+        "codex",
+        &["/opt/codex/bin/codex", "resume"],
+        &[],
+    );
+
+    assert_eq!(
+        detect_agent(&root, 1400, &no_variants()),
+        Some(AgentKind::Codex)
+    );
+}
+
+/// The flip side of the per-argument rule: an agent named ONLY in a
+/// non-executable argument (`bash -c "claude --resume"`) must still be
+/// found. The fix stops free text from outvoting an earlier argument; it
+/// does not stop arguments from naming the agent when nothing earlier
+/// does.
+#[test]
+fn an_agent_named_only_in_a_later_argument_is_still_found() {
+    let (_dir, root) = proc_tree();
+    write_proc(
+        &root,
+        1410,
+        "bash",
+        &["/bin/bash", "-c", "claude --resume"],
+        &[],
+    );
+
+    assert_eq!(
+        detect_agent(&root, 1410, &no_variants()),
+        Some(AgentKind::Claude)
+    );
+}
+
+/// The stale-sibling shape the launch engine must win: one workload tree
+/// holding BOTH a leftover claude (spawned first, lower pid) and the
+/// engine's own codex. The walk alone cannot tell them apart --
+/// shallowest, then ascending pid, names the claude -- so the choice
+/// between candidates takes the record's engine kind. Also pins the
+/// candidate list's order: shallowest first, then ascending pid.
+#[test]
+fn the_engine_kind_prefers_its_own_agent_among_candidates() {
+    let (_dir, root) = proc_tree();
+    write_proc(&root, 1420, "bash", &["/bin/bash", "-l"], &[1421, 1422]);
+    write_proc(&root, 1421, "claude", &["claude", "--resume"], &[]);
+    write_proc(&root, 1422, "codex", &["codex", "resume"], &[]);
+
+    let candidates = detect_agent_candidates(&root, 1420, &no_variants());
+    assert_eq!(candidates.len(), 2, "both agent processes are candidates");
+    assert_eq!(
+        candidates.iter().map(|c| c.pid).collect::<Vec<_>>(),
+        vec![1421, 1422],
+        "candidates stay in walk order: shallowest, then ascending pid"
+    );
+    assert_eq!(
+        pick_detected_candidate(&candidates, None).map(|c| c.pid),
+        Some(1421),
+        "no engine signal: the walk's own first answer"
+    );
+    assert_eq!(
+        pick_detected_candidate(&candidates, Some(AgentKind::Codex)).map(|c| c.pid),
+        Some(1422),
+        "the launch engine's own agent wins wherever it sits in the tree"
+    );
+    assert_eq!(
+        pick_detected_candidate(&candidates, Some(AgentKind::Grok)).map(|c| c.pid),
+        Some(1421),
+        "an engine kind with no candidate in the tree falls back to the walk"
+    );
+}
+
+/// The engine-id mapping the record-level preference reads: canonical
+/// agent ids directly, the shipped variant alias through its family, and
+/// `shell` (and any unknown id) as no signal at all -- the common
+/// engine-less session keeps today's walk-only answer.
+#[test]
+fn engine_kind_maps_engine_ids_onto_agent_kinds() {
+    assert_eq!(engine_kind("codex"), Some(AgentKind::Codex));
+    assert_eq!(engine_kind("claude"), Some(AgentKind::Claude));
+    assert_eq!(engine_kind("grok"), Some(AgentKind::Grok));
+    assert_eq!(
+        engine_kind("zcodex"),
+        Some(AgentKind::Codex),
+        "the shipped alias rides its family"
+    );
+    assert_eq!(engine_kind("shell"), None);
+    assert_eq!(engine_kind("something-else"), None);
 }
 
 #[test]

@@ -9,6 +9,7 @@ include!("session_picker.rs");
 include!("status.rs");
 include!("switching.rs");
 include!("lifecycle.rs");
+include!("selector.rs");
 include!("terminal_render.rs");
 include!("terminal_resize.rs");
 include!("structure.rs");

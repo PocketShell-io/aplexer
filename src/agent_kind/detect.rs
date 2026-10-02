@@ -20,19 +20,17 @@ fn read_comm(proc_root: &Path, pid: u32) -> Option<String> {
     Some(text.trim().to_owned())
 }
 
-/// `/proc/<pid>/cmdline` (NUL-delimited) joined with spaces. `None` when the
-/// pid is gone or unreadable; an empty string for a kernel thread.
-fn read_cmdline(proc_root: &Path, pid: u32) -> Option<String> {
+/// `/proc/<pid>/cmdline` split back into its arguments. `None` when the pid
+/// is gone or unreadable; an empty vec for a kernel thread.
+fn read_cmdline_args(proc_root: &Path, pid: u32) -> Option<Vec<String>> {
     let raw = fs::read(proc_root.join(pid.to_string()).join("cmdline")).ok()?;
-    let decoded = String::from_utf8_lossy(&raw);
     Some(
-        decoded
+        String::from_utf8_lossy(&raw)
             .split('\0')
             .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim()
-            .to_owned(),
+            .map(str::trim)
+            .map(str::to_owned)
+            .collect(),
     )
 }
 
@@ -87,8 +85,15 @@ fn resolve_profile(
 }
 
 /// Classify one pid by its `comm` first (cheap and definitive for an
-/// unwrapped CLI) and then its `cmdline` (which catches the node-wrapped
-/// form whose comm is just `node`).
+/// unwrapped CLI) and then its `cmdline` -- one argument at a time, in
+/// argv order. Arguments are classified separately, not as one joined
+/// string: the words the launch is made of (the executable path, a `-c`
+/// script) must answer, while free text that merely RIDES in a later
+/// argument must not outvote them -- a codex launched as
+/// `node …/bin/codex resume <id> … <prompt>` was reclassified claude
+/// because its prompt argument named Claude, and the canonical rule order
+/// puts claude ahead of codex on the joined string. An argument names an
+/// agent only when nothing earlier does.
 fn classify_pid(
     proc_root: &Path,
     pid: u32,
@@ -99,11 +104,9 @@ fn classify_pid(
             return Some(named);
         }
     }
-    let cmdline = read_cmdline(proc_root, pid)?;
-    if cmdline.is_empty() {
-        return None;
-    }
-    classify_token_detailed(&cmdline, variants)
+    let args = read_cmdline_args(proc_root, pid)?;
+    args.iter()
+        .find_map(|arg| classify_token_detailed(arg, variants))
 }
 
 /// The agent running in `workload_pid`'s process tree, or `None`.
@@ -159,16 +162,41 @@ pub fn detect_agent_process(
     workload_pid: u32,
     variants: &ProfileVariants,
 ) -> Option<AgentProcess> {
+    detect_agent_candidates(proc_root, workload_pid, variants)
+        .into_iter()
+        .next()
+}
+
+/// Every agent-named process in `workload_pid`'s tree, in walk order:
+/// shallowest first, ties by ascending pid -- the deterministic order the
+/// single-answer walk has always returned, kept as the candidate list
+/// [`pick_detected_candidate`] chooses from so the record's launch engine
+/// can prefer its own kind over the walk's first answer. Empty when
+/// nothing in the tree names an agent, and also when the safety bound
+/// trips, so a pathological tree keeps the old "no answer" behavior
+/// rather than a partial one.
+///
+/// The walk is breadth-first from the workload leader itself, visiting
+/// each level's children in ascending pid order so the order is
+/// deterministic rather than dependent on directory-read order. Never
+/// fails: an unreadable pid, a `children` file that vanished mid-walk, or
+/// a pid that exited between enumeration and classification is skipped.
+pub fn detect_agent_candidates(
+    proc_root: &Path,
+    workload_pid: u32,
+    variants: &ProfileVariants,
+) -> Vec<AgentProcess> {
+    let mut found = Vec::new();
     let mut pending = VecDeque::from([workload_pid]);
     let mut seen = HashSet::from([workload_pid]);
     let mut scanned = 0usize;
     while let Some(pid) = pending.pop_front() {
         scanned += 1;
         if scanned > MAX_SCANNED_PIDS {
-            return None;
+            return Vec::new();
         }
         if let Some((kind, variant)) = classify_pid(proc_root, pid, variants) {
-            return Some(AgentProcess {
+            found.push(AgentProcess {
                 pid,
                 detected: DetectedAgent {
                     kind,
@@ -178,7 +206,9 @@ pub fn detect_agent_process(
         }
         // A read error here is "this pid told us nothing", never a failure:
         // the strict, error-propagating variant is the containment walker's
-        // contract (a truncated kill list is a bug), not detection's.
+        // contract (a truncated kill list is a bug), not detection's. A
+        // classified pid's children stay in the walk: a nested agent is
+        // still a candidate for the engine-kind preference.
         let mut children = crate::worker::direct_child_pids_in(proc_root, pid).unwrap_or_default();
         children.sort_unstable();
         for child in children {
@@ -187,5 +217,24 @@ pub fn detect_agent_process(
             }
         }
     }
-    None
+    found
+}
+
+/// Which candidate answers for the session: the walk's own first answer
+/// (shallowest, then ascending pid) unless `engine` names an agent kind
+/// that sits anywhere in the tree -- then that one, wherever it is. The
+/// walk alone cannot tell a stale agent (left running beside the one the
+/// session was launched with) from the launch engine at the same depth,
+/// and the ascending-pid tie-break names the stale one whenever it was
+/// spawned first; the record's engine is the one signal that can. An
+/// engine kind with no candidate in the tree (the engine's agent has
+/// exited) falls back to the walk's honest "whatever is running".
+pub fn pick_detected_candidate(
+    candidates: &[AgentProcess],
+    engine: Option<AgentKind>,
+) -> Option<AgentProcess> {
+    engine
+        .and_then(|kind| candidates.iter().find(|c| c.detected.kind == kind))
+        .or_else(|| candidates.first())
+        .cloned()
 }

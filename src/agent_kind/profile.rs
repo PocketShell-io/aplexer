@@ -31,12 +31,37 @@ use super::AgentKind;
 /// beats the built-in derivation).
 pub type ProfileVariants = BTreeMap<String, (AgentKind, String)>;
 
-pub fn profile_variants(config: &Config) -> ProfileVariants {
-    fn add(map: &mut ProfileVariants, token: &str, kind: AgentKind, label: &str) {
-        if !token.is_empty() && canonical_kind(token).is_none() {
-            map.insert(token.to_owned(), (kind, label.to_owned()));
-        }
+/// Interpreter basenames an engine command may start with. An engine
+/// declared `command = ["/bin/sh", "launch-codex.sh"]` launches the
+/// script -- it must not make `sh` a variation token of that engine, or
+/// every shell process in every tree (comm `sh`, `/bin/sh` in argv)
+/// classifies as that engine's agent. Same for the other interpreters a
+/// wrapper is routinely launched through. The script's own basename would
+/// be the honest token; deriving it is the config author's job (declare
+/// the engine by the script path, or a profile).
+const INTERPRETER_BASENAMES: &[&str] = &[
+    "sh", "bash", "dash", "ash", "zsh", "ksh", "node", "nodejs", "python", "python3", "perl",
+    "ruby",
+];
+
+/// One variant entry, unless the token is empty or already canonical (the
+/// canonical rules always win).
+fn add(map: &mut ProfileVariants, token: &str, kind: AgentKind, label: &str) {
+    if !token.is_empty() && canonical_kind(token).is_none() {
+        map.insert(token.to_owned(), (kind, label.to_owned()));
     }
+}
+
+/// `add` over a command's leading basename, interpreter basenames excepted
+/// (see [`INTERPRETER_BASENAMES`]).
+fn add_command_basename(map: &mut ProfileVariants, command: &str, kind: AgentKind, label: &str) {
+    let base = basename(command);
+    if !INTERPRETER_BASENAMES.contains(&base) {
+        add(map, base, kind, label);
+    }
+}
+
+pub fn profile_variants(config: &Config) -> ProfileVariants {
     let mut variants = ProfileVariants::new();
     for (id, engine) in &config.engines {
         let Some(kind) = canonical_kind(crate::engine_family(id)) else {
@@ -44,7 +69,7 @@ pub fn profile_variants(config: &Config) -> ProfileVariants {
         };
         add(&mut variants, id, kind, id);
         if let Some(command) = engine.command.first() {
-            add(&mut variants, basename(command), kind, id);
+            add_command_basename(&mut variants, command, kind, id);
         }
     }
     for (id, profile) in &config.profiles {
@@ -62,7 +87,7 @@ pub fn profile_variants(config: &Config) -> ProfileVariants {
         }
         if let Some(command) = &profile.command {
             if let Some(first) = command.first() {
-                add(&mut variants, basename(first), kind, id);
+                add_command_basename(&mut variants, first, kind, id);
             }
         }
     }
