@@ -262,6 +262,12 @@ fn heuristic_ambiguity_names_candidates_and_binds_nothing() {
     let cwd_str = dir.path().join("proj").display().to_string();
     let first = codex_rollout(&codex_home.join("sessions"), "a.jsonl", &cwd_str, "one");
     let second = codex_rollout(&codex_home.join("sessions"), "b.jsonl", &cwd_str, "two");
+    // The ambiguity report lists candidates newest first. Stamp the mtimes
+    // explicitly: leaving them to the filesystem makes "two written after
+    // one" share a's timestamp tick or carry a strictly newer one, so the
+    // expected order would depend on the host's clock granularity.
+    stamp_mtime(&first, mtime_now_minus_ms(2_000));
+    stamp_mtime(&second, mtime_now_minus_ms(1_000));
     let mut record = dummy_record("codex");
     record.cwd = dir.path().join("proj");
     std::fs::create_dir_all(&record.cwd).unwrap();
@@ -281,6 +287,21 @@ fn heuristic_ambiguity_names_candidates_and_binds_nothing() {
         error.contains("--engine") && error.contains("--path"),
         "{error}"
     );
-    assert_eq!(resolution.candidates, vec![first, second]);
+    assert_eq!(resolution.candidates, vec![second, first]);
     assert!(!bind_path.exists());
+}
+
+/// Pin a file's mtime to a fixed point so candidate ordering is
+/// deterministic regardless of the host's timestamp granularity.
+fn stamp_mtime(path: &Path, mtime: std::time::SystemTime) {
+    File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+}
+
+fn mtime_now_minus_ms(ms: u64) -> std::time::SystemTime {
+    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(crate::now_ms() - ms)
 }
