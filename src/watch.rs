@@ -312,6 +312,7 @@ mod tests {
     #[test]
     fn newer_pty_output_retracts_a_reported_idle() {
         let mut record = sample_record(Phase::Running);
+        record.engine = "shell".to_string();
         record.reported_state = Some("idle".to_string());
         record.reported_state_at_ms = Some(1_000);
         record.last_activity_ms = Some(1_000 + IDLE_ACTIVITY_GRACE_MS + 1);
@@ -359,6 +360,108 @@ mod tests {
     fn antigravity_missing_hooks_retracts_idle_on_pty_activity() {
         let mut record = sample_record(Phase::Running);
         record.engine = "antigravity".to_string();
+        record.reported_state = Some("idle".to_string());
+        record.reported_state_at_ms = Some(1_000);
+        record.last_activity_ms = Some(1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000);
+
+        assert_eq!(
+            reported_state_rejection_with_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                false,
+            ),
+            Some("idle report contradicted by later PTY output")
+        );
+        assert_eq!(
+            derive_agent_state_with_source_and_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                false,
+            ),
+            ("running", "heuristic")
+        );
+    }
+
+    #[test]
+    fn opencode_tui_output_does_not_retract_reported_idle_when_hooks_installed() {
+        let mut record = sample_record(Phase::Running);
+        record.engine = "opencode".to_string();
+        record.reported_state = Some("idle".to_string());
+        record.reported_state_at_ms = Some(1_000);
+        record.last_activity_ms = Some(1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000);
+        assert_eq!(
+            derive_agent_state_with_source_and_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                true,
+            ),
+            ("idle", "reported")
+        );
+        assert_eq!(
+            reported_state_rejection_with_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn opencode_missing_hooks_retracts_idle_on_pty_activity() {
+        let mut record = sample_record(Phase::Running);
+        record.engine = "opencode".to_string();
+        record.reported_state = Some("idle".to_string());
+        record.reported_state_at_ms = Some(1_000);
+        record.last_activity_ms = Some(1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000);
+
+        assert_eq!(
+            reported_state_rejection_with_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                false,
+            ),
+            Some("idle report contradicted by later PTY output")
+        );
+        assert_eq!(
+            derive_agent_state_with_source_and_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                false,
+            ),
+            ("running", "heuristic")
+        );
+    }
+
+    #[test]
+    fn zcodex_tui_output_does_not_retract_reported_idle_when_hooks_installed() {
+        let mut record = sample_record(Phase::Running);
+        record.engine = "zcodex".to_string();
+        record.reported_state = Some("idle".to_string());
+        record.reported_state_at_ms = Some(1_000);
+        record.last_activity_ms = Some(1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000);
+        assert_eq!(
+            derive_agent_state_with_source_and_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                true,
+            ),
+            ("idle", "reported")
+        );
+        assert_eq!(
+            reported_state_rejection_with_hooks(
+                &record,
+                1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000,
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn zcodex_missing_hooks_retracts_idle_on_pty_activity() {
+        let mut record = sample_record(Phase::Running);
+        record.engine = "zcodex".to_string();
         record.reported_state = Some("idle".to_string());
         record.reported_state_at_ms = Some(1_000);
         record.last_activity_ms = Some(1_000 + IDLE_ACTIVITY_GRACE_MS + 50_000);

@@ -9,8 +9,23 @@ fn rejected_case(state: Option<&str>, reported_at: Option<u64>, activity: Option
 }
 
 fn rejected_detail(case: &Case) -> String {
+    let empty_home = tempfile::TempDir::new().unwrap();
     let server = worker::Worker::start(&case.recipient, false);
-    let output = case.deliver(&case.sender);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", empty_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
     assert!(!output.status.success(), "{output:?}");
     status(&output, "not-ready");
     assert!(server.finish().is_empty());
@@ -184,4 +199,341 @@ fn antigravity_with_installed_hooks_permits_idle_delivery_despite_tui_output() {
     status(&output, "submitted");
     assert_eq!(server.finish().len(), 4);
 }
+
+#[test]
+fn opencode_missing_hooks_idle_is_contradicted_by_later_activity() {
+    let empty_home = tempfile::TempDir::new().unwrap();
+    let mut case = Case::new(false, "opencode");
+    case.recipient.reported_state = Some("idle".into());
+    case.recipient.reported_state_at_ms = Some(1000);
+    case.recipient.last_activity_ms = Some(3001);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", empty_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    status(&output, "not-ready");
+    assert!(server.finish().is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let detail = value["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("idle report contradicted by later PTY output"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn opencode_with_installed_hooks_permits_idle_delivery_despite_tui_output() {
+    let temp_home = tempfile::TempDir::new().unwrap();
+    let plugin_dir = temp_home.path().join(".config").join("opencode").join("plugin");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    let plugin_code = aplexer::hooks::opencode_plugin_source("/bin/a");
+    std::fs::write(plugin_dir.join("aplexer-state-report.js"), plugin_code).unwrap();
+
+    let mut case = Case::new(false, "opencode");
+    case.recipient.reported_state = Some("idle".into());
+    case.recipient.reported_state_at_ms = Some(1000);
+    case.recipient.last_activity_ms = Some(3001);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    status(&output, "submitted");
+    assert_eq!(server.finish().len(), 4);
+}
+
+#[test]
+fn zcodex_missing_hooks_idle_is_contradicted_by_later_activity() {
+    let empty_home = tempfile::TempDir::new().unwrap();
+    let mut case = Case::new(false, "zcodex");
+    case.recipient.reported_state = Some("idle".into());
+    case.recipient.reported_state_at_ms = Some(1000);
+    case.recipient.last_activity_ms = Some(3001);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", empty_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    status(&output, "not-ready");
+    assert!(server.finish().is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let detail = value["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("idle report contradicted by later PTY output"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn zcodex_with_installed_hooks_permits_idle_delivery_despite_tui_output() {
+    let temp_home = tempfile::TempDir::new().unwrap();
+    let codex_dir = temp_home.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let hooks_content = serde_json::json!({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "/bin/a state-report working || true"}]}
+            ],
+            "Stop": [
+                {"hooks": [{"type": "command", "command": "/bin/a state-report idle || true"}]}
+            ],
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": "/bin/a state-report working || true"}]}
+            ]
+        }
+    });
+    std::fs::write(
+        codex_dir.join("hooks.json"),
+        serde_json::to_string_pretty(&hooks_content).unwrap(),
+    )
+    .unwrap();
+
+    let mut case = Case::new(false, "zcodex");
+    case.recipient.reported_state = Some("idle".into());
+    case.recipient.reported_state_at_ms = Some(1000);
+    case.recipient.last_activity_ms = Some(3001);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    status(&output, "submitted");
+    assert_eq!(server.finish().len(), 4);
+}
+
+#[test]
+fn zcodex_multi_turn_working_and_idle_transitions_preserve_delivery_integrity() {
+    let temp_home = tempfile::TempDir::new().unwrap();
+    let codex_dir = temp_home.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let hooks_content = serde_json::json!({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "/bin/a state-report working || true"}]}
+            ],
+            "Stop": [
+                {"hooks": [{"type": "command", "command": "/bin/a state-report idle || true"}]}
+            ],
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": "/bin/a state-report working || true"}]}
+            ]
+        }
+    });
+    std::fs::write(
+        codex_dir.join("hooks.json"),
+        serde_json::to_string_pretty(&hooks_content).unwrap(),
+    )
+    .unwrap();
+
+    let mut case = Case::new(false, "zcodex");
+
+    // Turn 1 active working: delivery must be rejected
+    case.recipient.reported_state = Some("working".into());
+    case.recipient.reported_state_at_ms = Some(aplexer::now_ms());
+    case.recipient.last_activity_ms = None;
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    status(&output, "not-ready");
+    assert!(server.finish().is_empty());
+
+    // Turn 1 finishes: reported idle, subsequent PTY activity: delivery must succeed
+    case.recipient.reported_state = Some("idle".into());
+    case.recipient.reported_state_at_ms = Some(1000);
+    case.recipient.last_activity_ms = Some(3001);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    status(&output, "submitted");
+    assert_eq!(server.finish().len(), 4);
+
+    // Turn 2 active working (UserPromptSubmit): delivery must be blocked again
+    let mut case2 = Case::new(false, "zcodex");
+    case2.recipient.reported_state = Some("working".into());
+    case2.recipient.reported_state_at_ms = Some(aplexer::now_ms());
+    case2.recipient.last_activity_ms = None;
+    let server = worker::Worker::start(&case2.recipient, false);
+    let output = case2
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case2.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case2.id().to_string(),
+            "--workspace",
+            case2.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    status(&output, "not-ready");
+    assert!(server.finish().is_empty());
+}
+
+#[test]
+fn opencode_multi_turn_working_and_idle_transitions_preserve_delivery_integrity() {
+    let temp_home = tempfile::TempDir::new().unwrap();
+    let plugin_dir = temp_home.path().join(".config").join("opencode").join("plugin");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    let plugin_code = aplexer::hooks::opencode_plugin_source("/bin/a");
+    std::fs::write(plugin_dir.join("aplexer-state-report.js"), plugin_code).unwrap();
+
+    let mut case = Case::new(false, "opencode");
+
+    // Turn 1 active working: delivery must be rejected
+    case.recipient.reported_state = Some("working".into());
+    case.recipient.reported_state_at_ms = Some(aplexer::now_ms());
+    case.recipient.last_activity_ms = None;
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    status(&output, "not-ready");
+    assert!(server.finish().is_empty());
+
+    // Turn 1 finishes: reported idle, subsequent PTY activity: delivery must succeed
+    case.recipient.reported_state = Some("idle".into());
+    case.recipient.reported_state_at_ms = Some(1000);
+    case.recipient.last_activity_ms = Some(3001);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    status(&output, "submitted");
+    assert_eq!(server.finish().len(), 4);
+
+    // Turn 2 active working: delivery must be blocked again
+    let mut case2 = Case::new(false, "opencode");
+    case2.recipient.reported_state = Some("working".into());
+    case2.recipient.reported_state_at_ms = Some(aplexer::now_ms());
+    case2.recipient.last_activity_ms = None;
+    let server = worker::Worker::start(&case2.recipient, false);
+    let output = case2
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case2.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case2.id().to_string(),
+            "--workspace",
+            case2.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    status(&output, "not-ready");
+    assert!(server.finish().is_empty());
+}
+
+
+
 

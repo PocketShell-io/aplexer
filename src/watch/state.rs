@@ -108,7 +108,11 @@ pub(super) fn fresh_reported_state_with_hooks(
 /// Why a semantic report is unusable now, or None when it remains valid.
 /// This assesses report evidence only; callers must also check lifecycle.
 pub fn reported_state_rejection(record: &SessionRecord, now: u64) -> Option<&'static str> {
-    reported_state_rejection_with_hooks(record, now, crate::hooks::antigravity_has_lifecycle_hooks())
+    reported_state_rejection_with_hooks(
+        record,
+        now,
+        crate::hooks::session_engine_has_lifecycle_hooks(&record.engine),
+    )
 }
 
 pub fn reported_state_rejection_with_hooks(
@@ -139,13 +143,14 @@ pub(crate) fn idle_was_contradicted_with_hooks(
     at: u64,
     has_lifecycle_hooks: bool,
 ) -> bool {
-    // Antigravity's TUI keeps producing output while idle.
-    // Hook-gated exemption: only when native lifecycle hooks are installed
-    // (PreInvocation -> working, Stop -> idle) do terminal redraws not override
-    // the Stop hook's semantic rest, because PreInvocation will report working
-    // when active execution resumes. If hooks are missing, PTY output retracts idle
-    // to prevent unhooked sessions from being stuck in false-idle.
-    if record.engine == "antigravity" && has_lifecycle_hooks {
+    // When native lifecycle hooks are installed for the session's engine
+    // (Stop / session.idle -> idle, and PreInvocation / UserPromptSubmit /
+    // BeforeAgent / tool.execute.before -> working), terminal redraws and PTY
+    // output do not override the semantic rest reported by the engine's Stop
+    // hook, because active execution will report working when resumed.
+    // If hooks are missing, PTY output retracts idle to prevent unhooked sessions
+    // from being stuck in false-idle.
+    if has_lifecycle_hooks {
         return false;
     }
     // Idle has no clock TTL: only PTY activity beyond the render grace
@@ -179,7 +184,7 @@ pub fn derive_agent_state_with_source(
     derive_agent_state_with_source_and_hooks(
         record,
         now,
-        crate::hooks::antigravity_has_lifecycle_hooks(),
+        crate::hooks::session_engine_has_lifecycle_hooks(&record.engine),
     )
 }
 

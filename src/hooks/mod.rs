@@ -317,12 +317,29 @@ pub(crate) use files::*;
 pub use nested::*;
 use notice::*;
 
-pub fn antigravity_has_lifecycle_hooks() -> bool {
+pub fn session_engine_has_lifecycle_hooks(engine: &str) -> bool {
     resolve_targets_from_env(&[])
-        .map(|t| files::check_antigravity_lifecycle_file(&t.antigravity_hooks))
+        .map(|t| session_engine_has_lifecycle_hooks_at(engine, &t))
         .unwrap_or(false)
+}
+
+pub fn session_engine_has_lifecycle_hooks_at(engine: &str, targets: &HookTargets) -> bool {
+    match engine {
+        "antigravity" => files::check_antigravity_lifecycle_file(&targets.antigravity_hooks),
+        "opencode" => files::check_opencode_lifecycle(&targets.opencode_plugin_dir),
+        "codex" | "zcodex" => files::check_codex_lifecycle(&targets.codex_dirs),
+        "claude" => files::check_claude_lifecycle(&targets.claude_settings),
+        "grok" => files::check_grok_lifecycle(&targets.grok_dir),
+        "gemini" => files::check_gemini_lifecycle(&targets.gemini_settings),
+        _ => false,
+    }
+}
+
+pub fn antigravity_has_lifecycle_hooks() -> bool {
+    session_engine_has_lifecycle_hooks("antigravity")
 }
 
 pub fn antigravity_has_lifecycle_hooks_at(path: &std::path::Path) -> bool {
     files::check_antigravity_lifecycle_file(path)
 }
+

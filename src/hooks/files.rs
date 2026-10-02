@@ -196,3 +196,57 @@ pub fn check_antigravity_lifecycle_file(path: &Path) -> bool {
                 })
     })
 }
+
+pub fn check_opencode_lifecycle(plugin_dir: &Path) -> bool {
+    let path = plugin_dir.join(OPENCODE_PLUGIN_FILENAME);
+    fs::read_to_string(&path).is_ok_and(|text| {
+        let has_idle = text.contains("report(\"idle\")") || text.contains("state-report idle");
+        let has_working =
+            text.contains("report(\"working\")") || text.contains("state-report working");
+        let has_per_turn = text.contains("session.status") || text.contains("tool.execute.before");
+        has_idle && has_working && has_per_turn
+    })
+}
+
+pub fn check_codex_lifecycle(dirs: &[PathBuf]) -> bool {
+    let lifecycle_events = [("Stop", "idle"), ("UserPromptSubmit", "working")];
+    dirs.iter().any(|dir| {
+        let path = dir.join(CODEX_HOOKS_FILENAME);
+        if !path.exists() {
+            return false;
+        }
+        read_json_or_default(&path)
+            .is_ok_and(|doc| missing_nested_hooks(&doc, &lifecycle_events).is_empty())
+    })
+}
+
+pub fn check_claude_lifecycle(settings: &[PathBuf]) -> bool {
+    let lifecycle_events = [("Stop", "idle"), ("UserPromptSubmit", "working")];
+    settings.iter().any(|path| {
+        if !path.exists() {
+            return false;
+        }
+        read_json_or_default(path)
+            .is_ok_and(|doc| missing_nested_hooks(&doc, &lifecycle_events).is_empty())
+    })
+}
+
+pub fn check_grok_lifecycle(grok_dir: &Path) -> bool {
+    let lifecycle_events = [("Stop", "idle"), ("UserPromptSubmit", "working")];
+    let path = grok_dir.join("hooks").join(GROK_HOOKS_FILENAME);
+    if !path.exists() {
+        return false;
+    }
+    read_json_or_default(&path)
+        .is_ok_and(|doc| missing_nested_hooks(&doc, &lifecycle_events).is_empty())
+}
+
+pub fn check_gemini_lifecycle(gemini_settings: &Path) -> bool {
+    let lifecycle_events = [("AfterAgent", "idle"), ("BeforeAgent", "working")];
+    if !gemini_settings.exists() {
+        return false;
+    }
+    read_json_or_default(gemini_settings)
+        .is_ok_and(|doc| missing_nested_hooks(&doc, &lifecycle_events).is_empty())
+}
+

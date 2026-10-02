@@ -19,6 +19,7 @@ pub(super) struct Worker {
 impl Worker {
     pub(super) fn start(record: &SessionRecord, lose_response: bool) -> Self {
         std::fs::create_dir_all(record.socket_path.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&record.socket_path);
         let listener = UnixListener::bind(&record.socket_path).unwrap();
         listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));

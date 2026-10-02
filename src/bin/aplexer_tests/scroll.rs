@@ -457,6 +457,7 @@ fn pane_delivery_appends_enter_by_default_and_no_enter_drops_it() {
         to: Recipient::Tag {
             tag: "target".into(),
             session_id: None,
+            rerouted_from: None,
         },
         kind: "note".into(),
         reply_to: None,
