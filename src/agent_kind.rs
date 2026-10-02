@@ -95,16 +95,18 @@ pub enum AgentKind {
     Codex,
     Opencode,
     Grok,
+    Antigravity,
 }
 
 impl AgentKind {
     /// Every kind there is a canonical token rule for, in the rules' own
     /// order -- the vocabulary `a agent`'s refusal suggests.
-    pub const ALL: [AgentKind; 4] = [
+    pub const ALL: [AgentKind; 5] = [
         AgentKind::Claude,
         AgentKind::Codex,
         AgentKind::Opencode,
         AgentKind::Grok,
+        AgentKind::Antigravity,
     ];
 
     /// The wire/display name, identical to this enum's serde representation.
@@ -114,6 +116,7 @@ impl AgentKind {
             AgentKind::Codex => "codex",
             AgentKind::Opencode => "opencode",
             AgentKind::Grok => "grok",
+            AgentKind::Antigravity => "antigravity",
         }
     }
 

@@ -119,3 +119,54 @@ fn install_writes_through_a_symlinked_settings_file() {
         0o600
     );
 }
+
+#[test]
+fn antigravity_uses_named_hooks_and_preserves_other_definitions() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let targets = resolve_targets(dir.path(), None, None, &[]);
+    let path = &targets.antigravity_hooks;
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let foreign = serde_json::json!({"PreInvocation": [{"command": "echo hello"}]});
+    fs::write(
+        path,
+        serde_json::to_string(&serde_json::json!({"my-hook": foreign})).unwrap(),
+    )
+    .unwrap();
+    assert!(install(&targets, A_BIN, Some("antigravity"))[0].installed);
+    let mut doc: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(doc["my-hook"], foreign);
+    assert!(doc["aplexer-state-report"]["PreInvocation"][0]["command"]
+        .as_str()
+        .unwrap()
+        .contains("state-report working"));
+    assert!(doc["aplexer-state-report"]["Stop"][0]["command"]
+        .as_str()
+        .unwrap()
+        .contains("state-report idle"));
+    doc["aplexer-state-report"]["enabled"] = Value::Bool(false);
+    fs::write(path, serde_json::to_string(&doc).unwrap()).unwrap();
+    assert!(!check(&targets, Some("antigravity"))[0].installed);
+    assert_eq!(
+        uninstall(&targets, Some("antigravity"))[0].action,
+        "removed"
+    );
+    let doc: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(doc, serde_json::json!({"my-hook": foreign}));
+    assert_eq!(normalize_engine_filter("agy").unwrap(), "antigravity");
+}
+
+#[test]
+fn antigravity_refuses_to_overwrite_malformed_hooks() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let targets = resolve_targets(dir.path(), None, None, &[]);
+    let path = &targets.antigravity_hooks;
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    for original in ["{broken", "[]"] {
+        fs::write(path, original).unwrap();
+        assert_eq!(
+            install(&targets, A_BIN, Some("antigravity"))[0].action,
+            "error"
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+    }
+}

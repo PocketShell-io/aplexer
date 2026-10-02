@@ -58,7 +58,7 @@ impl Config {
         // must stay in sync (see `every_engine_with_a_skip_flag_declares_one`).
         // gemini is an aplexer-only extra with no pocketshell source, so it
         // stays empty.
-        let engines: [(&str, &[&str], &[&str]); 6] = [
+        let engines: [(&str, &[&str], &[&str]); 7] = [
             ("shell", &[shell.as_str(), "-l"], &[]),
             (
                 "codex",
@@ -67,6 +67,7 @@ impl Config {
             ),
             ("claude", &["claude"], &["--dangerously-skip-permissions"]),
             ("gemini", &["gemini"], &[]),
+            ("antigravity", &["agy"], &["--dangerously-skip-permissions"]),
             ("grok", &["grok"], &["--always-approve"]),
             ("opencode", &["opencode"], &["--auto"]),
         ];

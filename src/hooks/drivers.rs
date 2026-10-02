@@ -453,7 +453,7 @@ pub(crate) struct EngineDriver {
 }
 
 /// In `HOOK_ENGINES` order, which is also the order statuses are reported.
-pub(crate) const ENGINE_DRIVERS: [EngineDriver; 5] = [
+pub(crate) const ENGINE_DRIVERS: [EngineDriver; 6] = [
     EngineDriver {
         engine: "claude",
         install: install_claude,
@@ -479,6 +479,12 @@ pub(crate) const ENGINE_DRIVERS: [EngineDriver; 5] = [
         uninstall: uninstall_gemini,
     },
     EngineDriver {
+        engine: "antigravity",
+        install: install_antigravity,
+        check: check_antigravity,
+        uninstall: uninstall_antigravity,
+    },
+    EngineDriver {
         engine: "opencode",
         install: install_opencode,
         check: check_opencode,
@@ -494,9 +500,10 @@ pub fn normalize_engine_filter(engine: &str) -> Result<&'static str> {
         "codex" | "zcodex" => Ok("codex"),
         "grok" => Ok("grok"),
         "gemini" => Ok("gemini"),
+        "antigravity" | "agy" => Ok("antigravity"),
         "opencode" => Ok("opencode"),
         other => anyhow::bail!(
-            "unknown engine {other:?} for hook installation; expected one of claude, codex, zcodex, grok, gemini, opencode"
+            "unknown engine {other:?} for hook installation; expected one of claude, codex, zcodex, grok, gemini, antigravity, opencode"
         ),
     }
 }
@@ -528,4 +535,32 @@ pub fn uninstall(targets: &HookTargets, engine: Option<&str>) -> Vec<EngineInitS
     selected_drivers(engine)
         .map(|driver| (driver.uninstall)(targets))
         .collect()
+}
+
+fn install_antigravity(targets: &HookTargets, a_bin: &str) -> EngineInitStatus {
+    let path = &targets.antigravity_hooks;
+    EngineInitStatus::installed(
+        "antigravity",
+        vec![named(
+            path,
+            files::update_antigravity_file(path, Some(a_bin)),
+        )],
+        display_paths([path]),
+    )
+}
+fn check_antigravity(targets: &HookTargets) -> EngineInitStatus {
+    let path = &targets.antigravity_hooks;
+    EngineInitStatus::checked(
+        "antigravity",
+        vec![files::check_antigravity_file(path)],
+        display_paths([path]),
+    )
+}
+fn uninstall_antigravity(targets: &HookTargets) -> EngineInitStatus {
+    let path = &targets.antigravity_hooks;
+    EngineInitStatus::uninstalled(
+        "antigravity",
+        vec![named(path, files::update_antigravity_file(path, None))],
+        display_paths([path]),
+    )
 }

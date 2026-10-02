@@ -48,6 +48,12 @@ struct TokenRule {
 /// boundary inside another.
 const TOKEN_RULES: &[TokenRule] = &[
     TokenRule {
+        kind: AgentKind::Antigravity,
+        stems: &["agy", "antigravity"],
+        literal_suffixes: &[],
+        alnum_suffix: false,
+    },
+    TokenRule {
         kind: AgentKind::Claude,
         stems: &["claude"],
         literal_suffixes: &["code", "-code"],

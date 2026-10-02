@@ -37,6 +37,7 @@ fn every_prompting_builtin_engine_declares_a_skip_permissions_flag() {
     let config = load_config_text("").unwrap();
     let expected = [
         ("claude", "--dangerously-skip-permissions"),
+        ("antigravity", "--dangerously-skip-permissions"),
         ("codex", "--dangerously-bypass-approvals-and-sandbox"),
         ("grok", "--always-approve"),
         ("opencode", "--auto"),
@@ -524,4 +525,10 @@ fn skip_permissions_argv_ported_values() {
         launch.skip_permissions_argv,
         vec!["--dangerously-skip-permissions".to_string()]
     );
+}
+
+#[test]
+fn antigravity_builtin_launches_the_google_cli() {
+    let config = load_config_text("").unwrap();
+    assert_eq!(config.engines["antigravity"].command, vec!["agy"]);
 }

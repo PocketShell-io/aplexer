@@ -103,7 +103,14 @@ use std::path::{Path, PathBuf};
 /// Engines `a init` manages. `zcodex` is intentionally absent: it is a
 /// codex-family variant sharing the `CODEX_HOME` mechanism, so every codex
 /// config dir installed here already covers it.
-pub const HOOK_ENGINES: [&str; 5] = ["claude", "codex", "grok", "gemini", "opencode"];
+pub const HOOK_ENGINES: [&str; 6] = [
+    "claude",
+    "codex",
+    "grok",
+    "gemini",
+    "antigravity",
+    "opencode",
+];
 /// (hook event, reported state) wirings per engine. The state words are `a
 /// state-report`'s vocabulary; the event names are each engine's own.
 ///
@@ -217,6 +224,8 @@ pub struct HookTargets {
     pub grok_dir: PathBuf,
     /// Gemini user settings gaining hooks.
     pub gemini_settings: PathBuf,
+    /// Antigravity named lifecycle hooks in the Google customization dir.
+    pub antigravity_hooks: PathBuf,
     /// OpenCode global plugin dir holding our plugin file.
     pub opencode_plugin_dir: PathBuf,
 }
@@ -260,6 +269,7 @@ pub fn resolve_targets(
             None => home.join(".grok"),
         },
         gemini_settings: home.join(".gemini").join("settings.json"),
+        antigravity_hooks: home.join(".gemini").join("config").join("hooks.json"),
         opencode_plugin_dir: config_base.join("opencode").join("plugin"),
     }
 }

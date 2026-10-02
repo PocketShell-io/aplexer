@@ -123,3 +123,42 @@ pub(crate) fn uninstall_nested_file(path: &Path) -> Result<(bool, String)> {
     write_if_changed(path, &render_json(&doc)?)?;
     Ok((true, format!("removed hook from {}", path.display())))
 }
+
+// Antigravity hooks.json maps named definitions, unlike Gemini settings.
+// https://www.antigravity.google/docs/hooks/ documents direct handlers for
+// non-tool events. Only our reserved definition is owned by aplexer.
+const ANTIGRAVITY_HOOK_KEY: &str = "aplexer-state-report";
+pub(crate) fn update_antigravity_file(path: &Path, a_bin: Option<&str>) -> Result<(bool, String)> {
+    let mut doc = read_json_or_default(path)?;
+    let object = doc
+        .as_object_mut()
+        .context("hooks.json must be an object (left untouched)")?;
+    if let Some(a_bin) = a_bin {
+        object.insert(ANTIGRAVITY_HOOK_KEY.into(), serde_json::json!({
+            "PreInvocation": [{"type": "command", "command": state_report_command(a_bin, "working")}],
+            "Stop": [{"type": "command", "command": state_report_command(a_bin, "idle")}]
+        }));
+    } else if object.remove(ANTIGRAVITY_HOOK_KEY).is_none() {
+        return Ok((false, format!("no hook in {}", path.display())));
+    }
+    let changed = write_if_changed(path, &render_json(&doc)?)?;
+    Ok((changed, format!("lifecycle hooks in {}", path.display())))
+}
+pub(crate) fn check_antigravity_file(path: &Path) -> (bool, String) {
+    let installed = read_json_or_default(path).is_ok_and(|doc| {
+        let hook = &doc[ANTIGRAVITY_HOOK_KEY];
+        hook.get("enabled").and_then(Value::as_bool) != Some(false)
+            && [("PreInvocation", "working"), ("Stop", "idle")]
+                .iter()
+                .all(|(event, state)| {
+                    hook[*event].as_array().is_some_and(|handlers| {
+                        handlers.iter().any(|handler| {
+                            handler["command"]
+                                .as_str()
+                                .is_some_and(|command| reports_state(command, state))
+                        })
+                    })
+                })
+    });
+    (installed, format!("lifecycle hooks in {}", path.display()))
+}

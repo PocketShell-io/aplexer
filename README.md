@@ -6,7 +6,7 @@
 
 **Durable PTY sessions for coding agents - no daemon required.**
 
-Run `claude`, `codex`, `gemini`, a plain shell, or any command. Sessions
+Run `claude`, `codex`, `agy` (Antigravity), `gemini`, a plain shell, or any command. Sessions
 keep running when you detach, survive a dropped connection, and stay
 addressable by *project* and *name* from any terminal.
 
@@ -296,7 +296,7 @@ a ack myrepo:review  # clear one (works after the record is pruned)
 ## Engines, profiles & configuration
 
 An **engine** is a command template: a coding agent like `claude`, `codex`,
-`gemini`, `grok`, or `opencode`, or the plain `shell`. aplexer discovers
+`gemini`, `antigravity`, `grok`, or `opencode`, or the plain `shell`. aplexer discovers
 agents on your `PATH` automatically - run `a engines` to see what it found.
 A **profile** is a named variant of an engine (another account, another
 config), listed with `a profiles`.
@@ -530,3 +530,16 @@ The Rust core lives in `src/`, the thin Python CLI wrapper in
 ## License
 
 Licensed under Apache-2.0 - see [LICENSE](LICENSE).
+
+
+Antigravity CLI is registered as the `antigravity` engine and runs `agy`.
+To auto-approve tools, use `a new --engine antigravity` (the default).
+Use `a new --engine antigravity --no-skip-permissions` to keep approval prompts.
+For a headless run, use a custom command such as
+`a start -- agy --dangerously-skip-permissions -p "your task" --output-format json`. Authenticate with `agy` first.
+
+`a init --engine antigravity` merges lifecycle reporting into
+`~/.gemini/config/hooks.json`: `PreInvocation` reports working and `Stop`
+reports idle. Existing named hooks are preserved. Antigravity sessions support
+PTY capture and process detection; native structured `a transcript` parsing is
+currently available only for Claude, Codex, and Grok.

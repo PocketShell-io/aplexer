@@ -397,6 +397,18 @@ fn command_tokens_are_matched_as_whole_words() {
         ("opencode-dev run", Some(AgentKind::Opencode)),
         ("grok --always-approve", Some(AgentKind::Grok)),
         ("(grok)", Some(AgentKind::Grok)),
+        (
+            "agy --dangerously-skip-permissions",
+            Some(AgentKind::Antigravity),
+        ),
+        (
+            "/home/u/.local/bin/agy -p prompt",
+            Some(AgentKind::Antigravity),
+        ),
+        ("ANTIGRAVITY", Some(AgentKind::Antigravity)),
+        ("agy-helper", None),
+        ("my-agy", None),
+        ("antigravity-helper", None),
         ("bash -l", None),
         ("claudette", None),
         ("my-claude", None),
@@ -602,6 +614,7 @@ fn agent_kind_serialises_to_its_lowercase_name() {
         AgentKind::Codex,
         AgentKind::Opencode,
         AgentKind::Grok,
+        AgentKind::Antigravity,
     ] {
         assert_eq!(
             serde_json::to_value(kind).unwrap(),
