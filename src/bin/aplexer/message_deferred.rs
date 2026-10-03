@@ -52,12 +52,63 @@ fn require_ready_prompt(record: &SessionRecord) -> Result<()> {
     let raw = rpc_simple(record, Operation::Status, None)?;
     let live: SessionRecord = serde_json::from_value(raw).context("read live recipient status")?;
     let now = now_ms();
-    let (state, source) = session_ui_state(&live, now);
-    if source != "reported" || !matches!(state, "waiting" | "idle") {
-        bail!("{}", readiness_detail(&live, state, source, now));
+
+    let screen_bytes = rpc_capture_screen(record, true)
+        .context("capture screen to verify recipient composer is ready")?;
+    let screen_text = String::from_utf8_lossy(&screen_bytes);
+    let prompt_state = classify_composer_prompt(&screen_text, &record.engine);
+
+    match evaluate_readiness_verdict(&prompt_state, &live, now) {
+        ReadinessVerdict::Ready => Ok(()),
+        ReadinessVerdict::Reject(err) => bail!("{err}"),
     }
-    check_prompt_empty(record)?;
-    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReadinessVerdict {
+    Ready,
+    Reject(String),
+}
+
+pub(crate) fn evaluate_readiness_verdict(
+    prompt_state: &PromptState,
+    record: &SessionRecord,
+    now: u64,
+) -> ReadinessVerdict {
+    match prompt_state {
+        PromptState::Draft(draft) => {
+            return ReadinessVerdict::Reject(format!(
+                "recipient composer has an unsubmitted draft in progress ({draft}); delivery fail-closed"
+            ));
+        }
+        PromptState::Unknown(reason) => {
+            return ReadinessVerdict::Reject(format!(
+                "recipient composer prompt state is unknown ({reason}); delivery fail-closed"
+            ));
+        }
+        PromptState::Empty => {}
+    }
+
+    let (state, source) = session_ui_state(record, now);
+    if state == "running" && source == "reported" {
+        return ReadinessVerdict::Reject(readiness_detail(record, state, source, now));
+    }
+
+    if source == "reported" && matches!(state, "waiting" | "idle") {
+        return ReadinessVerdict::Ready;
+    }
+
+    // If reported state has expired (source == "inferred"), but the session has lifecycle hooks
+    // installed AND its last reported state was resting ("idle" or "waiting") AND physical prompt
+    // composer is proven Empty: the session is resting at prompt and ready for delivery.
+    // Read-only inspection: do NOT mutate recipient state via ReportState RPC!
+    if aplexer::hooks::session_record_has_lifecycle_hooks(record)
+        && matches!(record.reported_state.as_deref(), Some("idle" | "waiting"))
+    {
+        return ReadinessVerdict::Ready;
+    }
+
+    ReadinessVerdict::Reject(readiness_detail(record, state, source, now))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -65,21 +116,6 @@ pub(crate) enum PromptState {
     Empty,
     Draft(String),
     Unknown(String),
-}
-
-fn check_prompt_empty(record: &SessionRecord) -> Result<()> {
-    let screen_bytes = rpc_capture_screen(record, true)
-        .context("capture screen to verify recipient composer is ready")?;
-    let screen_text = String::from_utf8_lossy(&screen_bytes);
-    match classify_composer_prompt(&screen_text, &record.engine) {
-        PromptState::Empty => Ok(()),
-        PromptState::Draft(draft) => {
-            bail!("recipient composer has an unsubmitted draft in progress ({draft}); delivery fail-closed");
-        }
-        PromptState::Unknown(reason) => {
-            bail!("recipient composer prompt state is unknown ({reason}); delivery fail-closed");
-        }
-    }
 }
 
 #[allow(dead_code)]
@@ -551,6 +587,125 @@ mod tests {
             classify_composer_prompt(screen, "codex"),
             PromptState::Unknown(_)
         ));
+    }
+
+    #[test]
+    fn test_readiness_verdict_rejects_draft() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/tmp",
+            "tag": "test",
+            "engine": "opencode",
+            "command": ["opencode"],
+            "cwd": "/tmp",
+            "phase": "running",
+            "history_bytes": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "reported_state": "idle",
+            "reported_state_at_ms": 1000,
+        }))
+        .unwrap();
+        let prompt_state = PromptState::Draft("my draft".into());
+        let verdict = evaluate_readiness_verdict(&prompt_state, &record, 1000);
+        assert!(
+            matches!(verdict, ReadinessVerdict::Reject(err) if err.contains("unsubmitted draft in progress"))
+        );
+    }
+
+    #[test]
+    fn test_readiness_verdict_rejects_unknown() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/tmp",
+            "tag": "test",
+            "engine": "opencode",
+            "command": ["opencode"],
+            "cwd": "/tmp",
+            "phase": "running",
+            "history_bytes": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "reported_state": "idle",
+            "reported_state_at_ms": 1000,
+        }))
+        .unwrap();
+        let prompt_state = PromptState::Unknown("garbled screen".into());
+        let verdict = evaluate_readiness_verdict(&prompt_state, &record, 1000);
+        assert!(
+            matches!(verdict, ReadinessVerdict::Reject(err) if err.contains("prompt state is unknown"))
+        );
+    }
+
+    #[test]
+    fn test_readiness_verdict_rejects_active_running() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/tmp",
+            "tag": "test",
+            "engine": "opencode",
+            "command": ["opencode"],
+            "cwd": "/tmp",
+            "phase": "running",
+            "history_bytes": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "reported_state": "running",
+            "reported_state_at_ms": 1000,
+        }))
+        .unwrap();
+        let prompt_state = PromptState::Empty;
+        let verdict = evaluate_readiness_verdict(&prompt_state, &record, 1500);
+        assert!(matches!(verdict, ReadinessVerdict::Reject(_)));
+    }
+
+    #[test]
+    fn test_readiness_verdict_accepts_fresh_idle() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/tmp",
+            "tag": "test",
+            "engine": "opencode",
+            "command": ["opencode"],
+            "cwd": "/tmp",
+            "phase": "running",
+            "history_bytes": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "reported_state": "idle",
+            "reported_state_at_ms": 1000,
+        }))
+        .unwrap();
+        let prompt_state = PromptState::Empty;
+        let verdict = evaluate_readiness_verdict(&prompt_state, &record, 1500);
+        assert_eq!(verdict, ReadinessVerdict::Ready);
+    }
+
+    #[test]
+    fn test_readiness_verdict_accepts_fresh_waiting() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/tmp",
+            "tag": "test",
+            "engine": "opencode",
+            "command": ["opencode"],
+            "cwd": "/tmp",
+            "phase": "running",
+            "history_bytes": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "reported_state": "waiting",
+            "reported_state_at_ms": 1000,
+        }))
+        .unwrap();
+        let prompt_state = PromptState::Empty;
+        let verdict = evaluate_readiness_verdict(&prompt_state, &record, 1500);
+        assert_eq!(verdict, ReadinessVerdict::Ready);
     }
 }
 
