@@ -65,31 +65,62 @@ const SAFE_ARG_KEYS = {{
 // Pending per-call state, keyed "sessionID|callID" and deleted on the
 // matching after-callback; bounded so a pathological stream of before
 // events without afters cannot grow it without limit.
+// Pending per-call state, keyed "sessionID|callID" and deleted on the
+// matching after-callback; bounded so a pathological stream of before
+// events without afters cannot grow it without limit.
 const PENDING_LIMIT = 512;
 const pending = new Map();
 
-// Pending per-session idle debounces so terminal redraws settle before
-// stamping reported_state_at_ms (OpenCode TUI redraws for up to ~3.3s after
-// session.status becomes idle). Keyed by sessionID to isolate concurrent sessions.
-const idleTimers = new Map();
+// Aggregate active session states: Map<sessionID, "working" | "waiting" | "idle">.
+// Prevents cross-session idle races where a child/subagent session idle debounce
+// overwrites the main head's working state while the main session is active.
+const sessionStates = new Map();
+let idleTimer = null;
 
-function cancelIdle(sessionID) {{
-  const key = String(sessionID ?? "");
-  const timer = idleTimers.get(key);
-  if (timer) {{
-    clearTimeout(timer);
-    idleTimers.delete(key);
+function cancelGlobalIdle() {{
+  if (idleTimer) {{
+    clearTimeout(idleTimer);
+    idleTimer = null;
   }}
 }}
 
-function scheduleIdle(sessionID) {{
+function setSessionState(sessionID, state) {{
   const key = String(sessionID ?? "");
-  cancelIdle(key);
-  const timer = setTimeout(() => {{
-    idleTimers.delete(key);
-    report("idle");
-  }}, 3500);
-  idleTimers.set(key, timer);
+  if (key.length > 0) {{
+    sessionStates.set(key, state);
+  }}
+  evaluateAggregateState();
+}}
+
+function evaluateAggregateState() {{
+  let anyWorking = false;
+  let anyWaiting = false;
+  let allIdle = true;
+  for (const s of sessionStates.values()) {{
+    if (s === "working") anyWorking = true;
+    if (s === "waiting") anyWaiting = true;
+    if (s !== "idle") allIdle = false;
+  }}
+  if (anyWorking) {{
+    cancelGlobalIdle();
+    report("working");
+  }} else if (anyWaiting) {{
+    cancelGlobalIdle();
+    report("waiting");
+  }} else if (allIdle && sessionStates.size > 0) {{
+    if (!idleTimer) {{
+      idleTimer = setTimeout(() => {{
+        idleTimer = null;
+        let stillAllIdle = true;
+        for (const s of sessionStates.values()) {{
+          if (s !== "idle") stillAllIdle = false;
+        }}
+        if (stillAllIdle && sessionStates.size > 0) {{
+          report("idle");
+        }}
+      }}, 3500);
+    }}
+  }}
 }}
 
 function callKey(input) {{
@@ -153,27 +184,27 @@ export const AplexerStateReport = async () => {{
       if (event.type === "session.status") {{
         const s = event.properties?.status?.type ?? event.properties?.status;
         if (s === "busy" || s === "retry") {{
-          cancelIdle(sid);
-          report("working");
+          setSessionState(sid, "working");
         }} else if (s === "idle") {{
-          scheduleIdle(sid);
+          setSessionState(sid, "idle");
         }}
       }} else if (event.type === "session.idle") {{
-        scheduleIdle(sid);
+        setSessionState(sid, "idle");
       }} else if (event.type === "step-start" || event.type === "session.created") {{
-        cancelIdle(sid);
-        report("working");
+        cancelGlobalIdle();
+        setSessionState(sid, "working");
       }} else if (event.type === "permission.asked") {{
-        cancelIdle(sid);
-        report("waiting");
+        cancelGlobalIdle();
+        setSessionState(sid, "waiting");
       }} else if (event.type === "session.error") {{
-        cancelIdle(sid);
-        report("waiting");
+        cancelGlobalIdle();
+        setSessionState(sid, "waiting");
       }}
     }},
     "tool.execute.before": async (input) => {{
       const sid = String(input?.sessionID ?? input?.session_id ?? "");
-      cancelIdle(sid);
+      cancelGlobalIdle();
+      setSessionState(sid, "working");
       report("working");
       try {{
         const entry = {{
