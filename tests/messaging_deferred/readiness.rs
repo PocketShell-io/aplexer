@@ -237,7 +237,11 @@ fn opencode_missing_hooks_idle_is_contradicted_by_later_activity() {
 #[test]
 fn opencode_with_installed_hooks_permits_idle_delivery_despite_tui_output() {
     let temp_home = tempfile::TempDir::new().unwrap();
-    let plugin_dir = temp_home.path().join(".config").join("opencode").join("plugin");
+    let plugin_dir = temp_home
+        .path()
+        .join(".config")
+        .join("opencode")
+        .join("plugin");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     let plugin_code = aplexer::hooks::opencode_plugin_source("/bin/a");
     std::fs::write(plugin_dir.join("aplexer-state-report.js"), plugin_code).unwrap();
@@ -270,7 +274,11 @@ fn opencode_with_installed_hooks_permits_idle_delivery_despite_tui_output() {
 #[test]
 fn opencode_with_installed_hooks_activity_past_grace_retracts_idle() {
     let temp_home = tempfile::TempDir::new().unwrap();
-    let plugin_dir = temp_home.path().join(".config").join("opencode").join("plugin");
+    let plugin_dir = temp_home
+        .path()
+        .join(".config")
+        .join("opencode")
+        .join("plugin");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     let plugin_code = aplexer::hooks::opencode_plugin_source("/bin/a");
     std::fs::write(plugin_dir.join("aplexer-state-report.js"), plugin_code).unwrap();
@@ -309,7 +317,11 @@ fn opencode_with_installed_hooks_activity_past_grace_retracts_idle() {
 #[test]
 fn opencode_pure_flag_disables_lifecycle_hooks_and_retracts_idle_on_activity() {
     let temp_home = tempfile::TempDir::new().unwrap();
-    let plugin_dir = temp_home.path().join(".config").join("opencode").join("plugin");
+    let plugin_dir = temp_home
+        .path()
+        .join(".config")
+        .join("opencode")
+        .join("plugin");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     let plugin_code = aplexer::hooks::opencode_plugin_source("/bin/a");
     std::fs::write(plugin_dir.join("aplexer-state-report.js"), plugin_code).unwrap();
@@ -587,7 +599,11 @@ fn zcodex_multi_turn_working_and_idle_transitions_preserve_delivery_integrity() 
 #[test]
 fn opencode_multi_turn_working_and_idle_transitions_preserve_delivery_integrity() {
     let temp_home = tempfile::TempDir::new().unwrap();
-    let plugin_dir = temp_home.path().join(".config").join("opencode").join("plugin");
+    let plugin_dir = temp_home
+        .path()
+        .join(".config")
+        .join("opencode")
+        .join("plugin");
     std::fs::create_dir_all(&plugin_dir).unwrap();
     let plugin_code = aplexer::hooks::opencode_plugin_source("/bin/a");
     std::fs::write(plugin_dir.join("aplexer-state-report.js"), plugin_code).unwrap();
@@ -667,7 +683,3 @@ fn opencode_multi_turn_working_and_idle_transitions_preserve_delivery_integrity(
     status(&output, "not-ready");
     assert!(server.finish().is_empty());
 }
-
-
-
-

@@ -44,9 +44,9 @@ pub(crate) enum MessageCommand {
 
 #[derive(Args)]
 pub(crate) struct MessageDeliverArgs {
-    /// Original durable message ID; delivery never creates another envelope.
+    /// Original durable message ID; if omitted, delivers the oldest queued inbox message.
     #[arg(value_name = "MESSAGE_ID")]
-    pub(crate) message_id: Uuid,
+    pub(crate) message_id: Option<Uuid>,
     /// Destination mailbox (defaults to the calling session workspace).
     #[arg(long, value_name = "PATH")]
     pub(crate) workspace: Option<PathBuf>,
@@ -135,7 +135,11 @@ pub(crate) struct MessageSendArgs {
         help = "Sender identity override (default: APLEXER_TAG or anonymous)"
     )]
     pub(crate) from: Option<String>,
-    #[arg(long, value_name = "KEY", help = "Idempotency key to prevent duplicate sends on retries")]
+    #[arg(
+        long,
+        value_name = "KEY",
+        help = "Idempotency key to prevent duplicate sends on retries"
+    )]
     pub(crate) idempotency_key: Option<String>,
     /// The message body
     #[arg(value_name = "TEXT")]
@@ -157,7 +161,11 @@ pub(crate) struct MessageReplyArgs {
     pub(crate) data: Option<String>,
     #[arg(long, value_name = "KIND", help = "Defaults to \"reply\"")]
     pub(crate) kind: Option<String>,
-    #[arg(long, value_name = "KEY", help = "Idempotency key to prevent duplicate sends on retries")]
+    #[arg(
+        long,
+        value_name = "KEY",
+        help = "Idempotency key to prevent duplicate sends on retries"
+    )]
     pub(crate) idempotency_key: Option<String>,
     /// The reply body
     #[arg(value_name = "TEXT")]

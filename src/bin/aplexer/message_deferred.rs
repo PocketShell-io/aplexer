@@ -56,7 +56,39 @@ fn require_ready_prompt(record: &SessionRecord) -> Result<()> {
     if source != "reported" || !matches!(state, "waiting" | "idle") {
         bail!("{}", readiness_detail(&live, state, source, now));
     }
+    check_prompt_empty(record)?;
     Ok(())
+}
+
+fn check_prompt_empty(record: &SessionRecord) -> Result<()> {
+    let screen_bytes = match rpc_capture_screen(record, true) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(()),
+    };
+    let screen_text = String::from_utf8_lossy(&screen_bytes);
+    if let Some(draft) = detect_composer_draft(&screen_text, &record.engine) {
+        bail!("recipient composer has an unsubmitted draft in progress ({draft}); delivery fail-closed");
+    }
+    Ok(())
+}
+
+pub(crate) fn detect_composer_draft(screen_text: &str, _engine: &str) -> Option<String> {
+    for line in screen_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("[draft in progress]") {
+            return Some("unsubmitted user draft detected".into());
+        }
+        if let Some(pos) = trimmed.find('❯') {
+            let after = trimmed[pos + '❯'.len_utf8()..]
+                .trim()
+                .trim_end_matches('│')
+                .trim();
+            if !after.is_empty() && after != "Ask Codex to do anything" {
+                return Some(after.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn readiness_detail(record: &SessionRecord, state: &str, source: &str, now: u64) -> String {
@@ -81,8 +113,11 @@ fn readiness_reason(record: &SessionRecord, state: &str, source: &str, now: u64)
 fn deliver_existing(paths: &Paths, args: MessageDeliverArgs) -> Result<SubmissionOutcome> {
     let workspace = resolve_message_workspace(args.workspace.as_deref())?;
     let mp = ensure_workspace(paths, &workspace)?;
-    let message = read_message_in(&mp, &workspace, args.message_id)?;
     let records = list_records(paths)?;
+    let message = match args.message_id {
+        Some(id) => read_message_in(&mp, &workspace, id)?,
+        None => find_next_queued_message(paths, &records)?,
+    };
     authorize_delivery(&records, &message)?;
     delivery_recipient(&message)?;
     submit_message_in(
@@ -99,9 +134,30 @@ fn deliver_existing(paths: &Paths, args: MessageDeliverArgs) -> Result<Submissio
                 target,
                 &pane_input_bytes(current, false, false),
                 SubmissionKind::FramedMessage,
-            )
+            )?;
+            verify_pane_delivery(target, current, false)
         },
     )
+}
+
+fn find_next_queued_message(paths: &Paths, records: &[SessionRecord]) -> Result<MessageEnvelope> {
+    let caller_id = discover_session_id()
+        .ok_or_else(|| anyhow!("continuation queue delivery requires a session identity"))?;
+    let caller = records
+        .iter()
+        .find(|r| r.id == caller_id)
+        .ok_or_else(|| anyhow!("calling session is no longer recorded"))?;
+
+    let unread = aplexer::coordination::unread_messages(paths, caller.id)?;
+    for msg in unread {
+        let mp = message_paths(paths, &msg.workspace);
+        if msg.delivery == Delivery::Inbox
+            && !mp.msgs_dir.join(format!("{}.attempt", msg.id)).exists()
+        {
+            return Ok(msg);
+        }
+    }
+    bail!("no queued inbox messages found for session {}", caller.tag);
 }
 
 pub(crate) fn cmd_message_deliver(

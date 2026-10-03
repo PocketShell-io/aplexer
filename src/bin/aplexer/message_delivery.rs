@@ -63,7 +63,71 @@ pub(crate) fn deliver_pane(
         SubmissionKind::FramedMessage
     };
     rpc_send_submitted(record, &input, kind)
-        .with_context(|| format!("submit message in session {tag:?}'s PTY"))
+        .with_context(|| format!("submit message in session {tag:?}'s PTY"))?;
+    verify_pane_delivery(record, envelope, raw)
+}
+
+pub(crate) fn verify_pane_delivery(
+    record: &SessionRecord,
+    envelope: &MessageEnvelope,
+    raw: bool,
+) -> Result<()> {
+    let needle = if raw {
+        envelope
+            .body
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| line.trim())
+            .unwrap_or("")
+    } else {
+        &envelope.id.to_string()
+    };
+
+    let timeout_ms = std::env::var("APLEXER_PANE_VERIFY_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(1000);
+    let timeout = Duration::from_millis(timeout_ms);
+    let poll_interval = Duration::from_millis(25);
+    let start = Instant::now();
+
+    while start.elapsed() < timeout {
+        // 1. Check plain screen capture for echo of needle
+        if let Ok(screen_bytes) = rpc_capture_screen(record, true) {
+            let screen_text = String::from_utf8_lossy(&screen_bytes);
+            if !needle.is_empty() && screen_text.contains(needle) {
+                return Ok(());
+            }
+        }
+
+        // 2. Check recent PTY capture for echo of needle
+        if let Ok(pty_bytes) = rpc_capture(record, Some(4096)) {
+            let pty_text = String::from_utf8_lossy(&pty_bytes);
+            if !needle.is_empty() && pty_text.contains(needle) {
+                return Ok(());
+            }
+        }
+
+        // 3. Check live status for transition to working
+        if let Ok(raw_status) = rpc_simple(record, Operation::Status, None) {
+            if let Ok(live) = serde_json::from_value::<SessionRecord>(raw_status) {
+                let now = now_ms();
+                let (state, _) = session_ui_state(&live, now);
+                if matches!(state, "running" | "working")
+                    || live.reported_state.as_deref() == Some("working")
+                {
+                    return Ok(());
+                }
+            }
+        }
+
+        thread::sleep(poll_interval);
+    }
+
+    bail!(
+        "pane submission not confirmed: message id or text was not observed in target session screen/PTY and session did not transition to working within {:?}",
+        timeout
+    )
 }
 
 /// The bytes `--pane` delivery injects: the message, framed with its sender

@@ -237,3 +237,179 @@ fn queue_message(harness: &Harness, sender: &SessionRecord, recipient: &SessionR
     assert!(sent.status.success(), "{sent:?}");
     serde_json::from_slice(&sent.stdout).unwrap()
 }
+
+#[test]
+fn startup_pane_race_dropped_input_fails_uncertain_and_preserves_inbox_copy() {
+    let case = Case::new(true, "codex");
+    let server = worker::Worker::start_with_config(
+        &case.recipient,
+        worker::WorkerConfig {
+            drop_screen_echo: true,
+            ..Default::default()
+        },
+    );
+    let output = case
+        .harness
+        .command()
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .env("APLEXER_PANE_VERIFY_TIMEOUT_MS", "150")
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    status(&output, "delivery-uncertain");
+    let mp = message_paths(&case.harness.paths(), &case.recipient.workspace);
+    assert!(mp.msgs_dir.join(format!("{}.attempt", case.id())).exists());
+    assert_eq!(case.stored(), case.envelope);
+
+    // Subsequent delivery attempt is rejected as delivery-uncertain without re-writing
+    let second = case.deliver(&case.sender);
+    status(&second, "delivery-uncertain");
+    let writes = server.finish();
+    assert_eq!(writes.len(), 4); // Only the initial attempt wrote bytes
+}
+
+#[test]
+fn draft_in_composer_rejects_delivery_failclosed() {
+    let case = Case::new(false, "codex");
+    let server = worker::Worker::start_with_config(
+        &case.recipient,
+        worker::WorkerConfig {
+            draft_in_composer: Some("active user draft".into()),
+            ..Default::default()
+        },
+    );
+    let output = case.deliver(&case.sender);
+    assert!(!output.status.success());
+    status(&output, "not-ready");
+    let val: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let detail = val["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("recipient composer has an unsubmitted draft in progress"),
+        "{detail}"
+    );
+    assert!(server.finish().is_empty());
+    let mp = message_paths(&case.harness.paths(), &case.recipient.workspace);
+    assert!(!mp.msgs_dir.join(format!("{}.attempt", case.id())).exists());
+    assert_eq!(case.stored(), case.envelope);
+}
+
+#[test]
+fn duplicate_completion_trigger_is_idempotent() {
+    let case = Case::new(false, "codex");
+    let server = worker::Worker::start(&case.recipient, false);
+    let first = case.deliver(&case.sender);
+    assert!(first.status.success());
+    status(&first, "submitted");
+
+    // Duplicate completion delivery attempt: returns already-submitted
+    let second = case.deliver(&case.sender);
+    status(&second, "already-submitted");
+
+    let writes = server.finish();
+    assert_eq!(writes.len(), 4); // Exactly one submission
+}
+
+#[test]
+fn continuation_queue_delivery_delivers_next_inbox_message() {
+    let case = Case::new(false, "codex");
+    let server = worker::Worker::start(&case.recipient, false);
+
+    // Call deliver without message_id from recipient session
+    let output = case
+        .harness
+        .command()
+        .env("APLEXER_SESSION_ID", case.recipient.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    status(&output, "submitted");
+    let mut expected = case.envelope.clone();
+    expected["delivery"] = "pane".into();
+    assert_eq!(case.stored(), expected);
+    assert_eq!(server.finish().len(), 4);
+}
+
+#[test]
+fn fake_tui_late_input_enabling_race_fails_then_succeeds() {
+    let case = Case::new(true, "codex");
+    // Start with input dropped (simulating TUI initializing)
+    let server = worker::Worker::start_with_config(
+        &case.recipient,
+        worker::WorkerConfig {
+            drop_screen_echo: true,
+            ..Default::default()
+        },
+    );
+    let first = case
+        .harness
+        .command()
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .env("APLEXER_PANE_VERIFY_TIMEOUT_MS", "150")
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!first.status.success());
+    status(&first, "delivery-uncertain");
+    assert_eq!(case.stored(), case.envelope);
+
+    let writes = server.finish();
+    assert_eq!(writes.len(), 4);
+
+    // Now TUI finishes initialization and enables input
+    let ready_server = worker::Worker::start_with_config(
+        &case.recipient,
+        worker::WorkerConfig {
+            drop_screen_echo: false,
+            ..Default::default()
+        },
+    );
+    // Queue a second message
+    let case2_envelope = queue_message(&case.harness, &case.sender, &case.recipient);
+    let id2 = Uuid::parse_str(case2_envelope["id"].as_str().unwrap()).unwrap();
+    let second = case
+        .harness
+        .command()
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &id2.to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(second.status.success(), "{second:?}");
+    status(&second, "submitted");
+    let mut expected2 = case2_envelope.clone();
+    expected2["delivery"] = "pane".into();
+    let stored2: Value = serde_json::to_value(
+        read_message(&case.harness.paths(), &case.recipient.workspace, id2).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored2, expected2);
+    assert_eq!(ready_server.finish().len(), 4);
+}

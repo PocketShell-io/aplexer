@@ -16,15 +16,32 @@ pub(super) struct Worker {
     thread: JoinHandle<Vec<Vec<u8>>>,
 }
 
+#[derive(Default, Clone)]
+pub(super) struct WorkerConfig {
+    pub(super) lose_response: bool,
+    pub(super) drop_screen_echo: bool,
+    pub(super) draft_in_composer: Option<String>,
+}
+
 impl Worker {
     pub(super) fn start(record: &SessionRecord, lose_response: bool) -> Self {
+        Self::start_with_config(
+            record,
+            WorkerConfig {
+                lose_response,
+                ..Default::default()
+            },
+        )
+    }
+
+    pub(super) fn start_with_config(record: &SessionRecord, config: WorkerConfig) -> Self {
         std::fs::create_dir_all(record.socket_path.parent().unwrap()).unwrap();
         let _ = std::fs::remove_file(&record.socket_path);
         let listener = UnixListener::bind(&record.socket_path).unwrap();
         listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let (signal, record) = (stop.clone(), record.clone());
-        let thread = thread::spawn(move || serve(listener, signal, record, lose_response));
+        let thread = thread::spawn(move || serve(listener, signal, record, config));
         Self { stop, thread }
     }
 
@@ -38,7 +55,7 @@ fn serve(
     listener: UnixListener,
     stop: Arc<AtomicBool>,
     record: SessionRecord,
-    lose_response: bool,
+    config: WorkerConfig,
 ) -> Vec<Vec<u8>> {
     let mut writes = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -48,7 +65,7 @@ fn serve(
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
-                respond(&mut stream, &record, &mut writes, lose_response);
+                respond(&mut stream, &record, &mut writes, &config);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(5))
@@ -63,7 +80,7 @@ fn respond(
     stream: &mut UnixStream,
     record: &SessionRecord,
     writes: &mut Vec<Vec<u8>>,
-    lose_response: bool,
+    config: &WorkerConfig,
 ) {
     let request: Request = frame_json(read_frame(stream).unwrap().unwrap()).unwrap();
     assert_eq!(request.session_id, Some(record.id));
@@ -73,17 +90,48 @@ fn respond(
             &Response::ok(request.request_id, serde_json::to_value(record).unwrap()),
         )
         .unwrap(),
-        Operation::CaptureScreen { .. } => {
+        Operation::CaptureScreen { plain } => {
+            let mut payload = Vec::new();
+            if !plain {
+                payload.extend_from_slice(b"\x1b[?2004h");
+            }
+            if let Some(draft) = &config.draft_in_composer {
+                payload.extend_from_slice(format!("│ ❯ {draft} │\n").as_bytes());
+            } else if !config.drop_screen_echo {
+                for w in writes.iter() {
+                    payload.extend_from_slice(w);
+                }
+            } else {
+                payload.extend_from_slice(b"Ask Codex to do anything\n");
+            }
             write_json(
                 stream,
-                &Response::ok(request.request_id, json!({"bytes": 8})),
+                &Response::ok(request.request_id, json!({"bytes": payload.len()})),
             )
             .unwrap();
-            write_frame(stream, FrameKind::Data, b"\x1b[?2004h").unwrap();
+            write_frame(stream, FrameKind::Data, &payload).unwrap();
         }
-        Operation::Send { bytes } => {
-            record_input(stream, request.request_id, bytes, writes, lose_response)
+        Operation::Capture { .. } => {
+            let mut payload = Vec::new();
+            if !config.drop_screen_echo {
+                for w in writes.iter() {
+                    payload.extend_from_slice(w);
+                }
+            }
+            write_json(
+                stream,
+                &Response::ok(request.request_id, json!({"bytes": payload.len()})),
+            )
+            .unwrap();
+            write_frame(stream, FrameKind::Data, &payload).unwrap();
         }
+        Operation::Send { bytes } => record_input(
+            stream,
+            request.request_id,
+            bytes,
+            writes,
+            config.lose_response,
+        ),
         unexpected => panic!("unexpected RPC: {unexpected:?}"),
     }
 }
