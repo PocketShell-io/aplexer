@@ -22,6 +22,15 @@ fn opencode_plugin_embeds_the_a_binary_and_maps_events() {
     for status in ["busy", "retry"] {
         assert!(source.contains(status), "missing {status}");
     }
+    assert!(source.contains("idleTimers"), "must have per-session idle debounces");
+    assert!(source.contains("cancelIdle"), "must cancel idle on busy/tool/error/permission");
+    assert!(source.contains("scheduleIdle"), "must schedule debounced idle");
+}
+
+#[test]
+fn grok_events_exclude_notification_to_prevent_idle_clobber() {
+    assert!(!GROK_EVENTS.iter().any(|(event, _)| *event == "Notification"));
+    assert!(GROK_EVENTS.iter().any(|(event, state)| *event == "Stop" && *state == "idle"));
 }
 
 #[test]

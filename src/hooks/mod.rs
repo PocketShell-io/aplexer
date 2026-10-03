@@ -147,9 +147,11 @@ pub const CODEX_EVENTS: [(&str, &str); 6] = [
 /// Grok's personal-hooks dir speaks the Claude-compatible nested format.
 /// Its startup hooks ignore hook stdout, so awareness rides PostToolUse
 /// alone; the state-report hooks are unaffected by that limitation.
-pub const GROK_EVENTS: [(&str, &str); 5] = [
+/// Notification is excluded because Grok fires desktop notifications on
+/// turn completion, which would clobber Stop's idle state with an expiring
+/// waiting state.
+pub const GROK_EVENTS: [(&str, &str); 4] = [
     ("Stop", "idle"),
-    ("Notification", "waiting"),
     ("UserPromptSubmit", "working"),
     ("SessionStart", "working"),
     ("PostToolUse", "awareness:grok"),

@@ -606,24 +606,52 @@ mod tests {
         ));
     }
 
+    fn test_record(
+        tag: &str,
+        engine: &str,
+        state: Option<&str>,
+        state_at: Option<u64>,
+        last_act: Option<u64>,
+    ) -> SessionRecord {
+        SessionRecord {
+            parent_session: None,
+            schema_version: aplexer::SCHEMA_VERSION,
+            id: Uuid::new_v4(),
+            workspace: PathBuf::from("/tmp/ws"),
+            tag: tag.to_string(),
+            engine: engine.to_string(),
+            profile: None,
+            command: Vec::new(),
+            cwd: PathBuf::from("/tmp/ws"),
+            env: BTreeMap::new(),
+            env_unset: Vec::new(),
+            limits: Limits::default(),
+            history_bytes: 0,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            last_activity_ms: last_act,
+            last_accessed_ms: None,
+            reported_state: state.map(|s| s.to_string()),
+            reported_state_at_ms: state_at,
+            phase: Phase::Running,
+            worker_pid: Some(std::process::id()),
+            agent_override: None,
+            workload_pid: None,
+            worker_cgroup: None,
+            workload_cgroup: None,
+            containment_cgroup: None,
+            containment_cgroup_identity: None,
+            containment_empty: Some(false),
+            socket_path: PathBuf::from("/tmp/test.sock"),
+            history_path: PathBuf::from("/tmp/test.bin"),
+            exit: None,
+            error: None,
+        }
+    }
+
     #[test]
     fn test_readiness_verdict_rejects_draft() {
-        let record: SessionRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000001",
-            "workspace": "/tmp",
-            "tag": "test",
-            "engine": "opencode",
-            "command": ["opencode"],
-            "cwd": "/tmp",
-            "phase": "running",
-            "history_bytes": 0,
-            "created_at_ms": 0,
-            "updated_at_ms": 0,
-            "reported_state": "idle",
-            "reported_state_at_ms": 1000,
-        }))
-        .unwrap();
+        let record = test_record("test", "opencode", Some("idle"), Some(1000), None);
         let prompt_state = PromptState::Draft("my draft".into());
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 1000);
         assert!(
@@ -633,22 +661,7 @@ mod tests {
 
     #[test]
     fn test_readiness_verdict_rejects_unknown() {
-        let record: SessionRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000001",
-            "workspace": "/tmp",
-            "tag": "test",
-            "engine": "opencode",
-            "command": ["opencode"],
-            "cwd": "/tmp",
-            "phase": "running",
-            "history_bytes": 0,
-            "created_at_ms": 0,
-            "updated_at_ms": 0,
-            "reported_state": "idle",
-            "reported_state_at_ms": 1000,
-        }))
-        .unwrap();
+        let record = test_record("test", "opencode", Some("idle"), Some(1000), None);
         let prompt_state = PromptState::Unknown("garbled screen".into());
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 1000);
         assert!(
@@ -658,22 +671,7 @@ mod tests {
 
     #[test]
     fn test_readiness_verdict_rejects_active_running() {
-        let record: SessionRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000001",
-            "workspace": "/tmp",
-            "tag": "test",
-            "engine": "opencode",
-            "command": ["opencode"],
-            "cwd": "/tmp",
-            "phase": "running",
-            "history_bytes": 0,
-            "created_at_ms": 0,
-            "updated_at_ms": 0,
-            "reported_state": "running",
-            "reported_state_at_ms": 1000,
-        }))
-        .unwrap();
+        let record = test_record("test", "opencode", Some("running"), Some(1000), None);
         let prompt_state = PromptState::Empty;
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 1500);
         assert!(matches!(verdict, ReadinessVerdict::Reject(_)));
@@ -681,22 +679,7 @@ mod tests {
 
     #[test]
     fn test_readiness_verdict_accepts_fresh_idle() {
-        let record: SessionRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000001",
-            "workspace": "/tmp",
-            "tag": "test",
-            "engine": "opencode",
-            "command": ["opencode"],
-            "cwd": "/tmp",
-            "phase": "running",
-            "history_bytes": 0,
-            "created_at_ms": 0,
-            "updated_at_ms": 0,
-            "reported_state": "idle",
-            "reported_state_at_ms": 1000,
-        }))
-        .unwrap();
+        let record = test_record("test", "opencode", Some("idle"), Some(1000), None);
         let prompt_state = PromptState::Empty;
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 1500);
         assert_eq!(verdict, ReadinessVerdict::Ready);
@@ -704,22 +687,7 @@ mod tests {
 
     #[test]
     fn test_readiness_verdict_accepts_fresh_waiting() {
-        let record: SessionRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000001",
-            "workspace": "/tmp",
-            "tag": "test",
-            "engine": "opencode",
-            "command": ["opencode"],
-            "cwd": "/tmp",
-            "phase": "running",
-            "history_bytes": 0,
-            "created_at_ms": 0,
-            "updated_at_ms": 0,
-            "reported_state": "waiting",
-            "reported_state_at_ms": 1000,
-        }))
-        .unwrap();
+        let record = test_record("test", "opencode", Some("waiting"), Some(1000), None);
         let prompt_state = PromptState::Empty;
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 1500);
         assert_eq!(verdict, ReadinessVerdict::Ready);
@@ -727,47 +695,17 @@ mod tests {
 
     #[test]
     fn test_readiness_verdict_rejects_old_idle_with_subsequent_pty_activity() {
-        let record: SessionRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000001",
-            "workspace": "/tmp",
-            "tag": "test",
-            "engine": "opencode",
-            "command": ["opencode"],
-            "cwd": "/tmp",
-            "phase": "running",
-            "history_bytes": 0,
-            "created_at_ms": 0,
-            "updated_at_ms": 0,
-            "reported_state": "idle",
-            "reported_state_at_ms": 1000,
-            "last_activity_ms": 4000,
-        }))
-        .unwrap();
+        let record = test_record("test", "opencode", Some("idle"), Some(1000), Some(4000));
         let prompt_state = PromptState::Empty;
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 5000);
         assert!(
-            matches!(verdict, ReadinessVerdict::Reject(err) if err.contains("resting state contradicted"))
+            matches!(verdict, ReadinessVerdict::Reject(err) if err.contains("idle report contradicted") || err.contains("contradicted resting state"))
         );
     }
 
     #[test]
     fn test_readiness_verdict_rejects_inferred_running_with_empty_composer() {
-        let record: SessionRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000001",
-            "workspace": "/tmp",
-            "tag": "test",
-            "engine": "shell",
-            "command": ["bash"],
-            "cwd": "/tmp",
-            "phase": "running",
-            "history_bytes": 0,
-            "created_at_ms": 0,
-            "updated_at_ms": 0,
-            "last_activity_ms": 9500,
-        }))
-        .unwrap();
+        let record = test_record("test", "shell", None, None, Some(9500));
         let prompt_state = PromptState::Empty;
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 10000);
         assert!(matches!(verdict, ReadinessVerdict::Reject(_)));
@@ -775,23 +713,7 @@ mod tests {
 
     #[test]
     fn test_readiness_verdict_rejects_old_waiting_with_newer_activity() {
-        let record: SessionRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000001",
-            "workspace": "/tmp",
-            "tag": "test",
-            "engine": "opencode",
-            "command": ["opencode"],
-            "cwd": "/tmp",
-            "phase": "running",
-            "history_bytes": 0,
-            "created_at_ms": 0,
-            "updated_at_ms": 0,
-            "reported_state": "waiting",
-            "reported_state_at_ms": 1000,
-            "last_activity_ms": 4500,
-        }))
-        .unwrap();
+        let record = test_record("test", "opencode", Some("waiting"), Some(1000), Some(4500));
         let prompt_state = PromptState::Empty;
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 5000);
         assert!(
@@ -801,23 +723,7 @@ mod tests {
 
     #[test]
     fn test_readiness_verdict_rejects_expired_waiting_without_hooks() {
-        let record: SessionRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000001",
-            "workspace": "/tmp",
-            "tag": "test",
-            "engine": "shell",
-            "command": ["bash"],
-            "cwd": "/tmp",
-            "phase": "running",
-            "history_bytes": 0,
-            "created_at_ms": 0,
-            "updated_at_ms": 0,
-            "reported_state": "waiting",
-            "reported_state_at_ms": 1000,
-            "last_activity_ms": 1000,
-        }))
-        .unwrap();
+        let record = test_record("test", "shell", Some("waiting"), Some(1000), Some(1000));
         let prompt_state = PromptState::Empty;
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 20000);
         assert!(matches!(verdict, ReadinessVerdict::Reject(_)));
@@ -825,23 +731,7 @@ mod tests {
 
     #[test]
     fn test_readiness_verdict_accepts_antigravity_idle_with_background_timer_redraw() {
-        let record: SessionRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000001",
-            "workspace": "/tmp",
-            "tag": "test",
-            "engine": "antigravity",
-            "command": ["agy"],
-            "cwd": "/tmp",
-            "phase": "running",
-            "history_bytes": 0,
-            "created_at_ms": 0,
-            "updated_at_ms": 0,
-            "reported_state": "idle",
-            "reported_state_at_ms": 1000,
-            "last_activity_ms": 5000,
-        }))
-        .unwrap();
+        let record = test_record("test", "antigravity", Some("idle"), Some(1000), Some(5000));
         let prompt_state = PromptState::Empty;
         // Antigravity TUI continuous background timer/cursor redraws are exempted from contradicting idle
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 5500);
@@ -850,23 +740,7 @@ mod tests {
 
     #[test]
     fn test_readiness_verdict_rejects_expired_waiting_even_with_empty_composer_and_hooks() {
-        let record: SessionRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000001",
-            "workspace": "/tmp",
-            "tag": "test",
-            "engine": "opencode",
-            "command": ["opencode"],
-            "cwd": "/tmp",
-            "phase": "running",
-            "history_bytes": 0,
-            "created_at_ms": 0,
-            "updated_at_ms": 0,
-            "reported_state": "waiting",
-            "reported_state_at_ms": 1000,
-            "last_activity_ms": 1000,
-        }))
-        .unwrap();
+        let record = test_record("test", "opencode", Some("waiting"), Some(1000), Some(1000));
         let prompt_state = PromptState::Empty;
         // After 20 seconds, waiting report is expired (>8s). Even with empty composer and hooks,
         // it must reject because silent background tool execution can share an empty composer footer.

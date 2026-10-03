@@ -68,6 +68,30 @@ const SAFE_ARG_KEYS = {{
 const PENDING_LIMIT = 512;
 const pending = new Map();
 
+// Pending per-session idle debounces so terminal redraws settle before
+// stamping reported_state_at_ms (OpenCode TUI redraws for up to ~3.3s after
+// session.status becomes idle). Keyed by sessionID to isolate concurrent sessions.
+const idleTimers = new Map();
+
+function cancelIdle(sessionID) {{
+  const key = String(sessionID ?? "");
+  const timer = idleTimers.get(key);
+  if (timer) {{
+    clearTimeout(timer);
+    idleTimers.delete(key);
+  }}
+}}
+
+function scheduleIdle(sessionID) {{
+  const key = String(sessionID ?? "");
+  cancelIdle(key);
+  const timer = setTimeout(() => {{
+    idleTimers.delete(key);
+    report("idle");
+  }}, 3500);
+  idleTimers.set(key, timer);
+}}
+
 function callKey(input) {{
   return String(input?.sessionID ?? input?.session_id ?? "") + "|" +
     String(input?.callID ?? input?.call?.id ?? input?.id ?? "");
@@ -120,24 +144,36 @@ export const AplexerStateReport = async () => {{
   return {{
     event: async ({{ event }}) => {{
       if (!event || typeof event.type !== "string") return;
+      const sid = String(
+        event.properties?.sessionID ??
+        event.properties?.session_id ??
+        event.properties?.id ??
+        ""
+      );
       if (event.type === "session.status") {{
         const s = event.properties?.status?.type ?? event.properties?.status;
         if (s === "busy" || s === "retry") {{
+          cancelIdle(sid);
           report("working");
         }} else if (s === "idle") {{
-          report("idle");
+          scheduleIdle(sid);
         }}
       }} else if (event.type === "session.idle") {{
-        report("idle");
+        scheduleIdle(sid);
       }} else if (event.type === "step-start" || event.type === "session.created") {{
+        cancelIdle(sid);
         report("working");
       }} else if (event.type === "permission.asked") {{
+        cancelIdle(sid);
         report("waiting");
       }} else if (event.type === "session.error") {{
+        cancelIdle(sid);
         report("waiting");
       }}
     }},
     "tool.execute.before": async (input) => {{
+      const sid = String(input?.sessionID ?? input?.session_id ?? "");
+      cancelIdle(sid);
       report("working");
       try {{
         const entry = {{
