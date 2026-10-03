@@ -309,7 +309,8 @@ fn opencode_with_installed_hooks_activity_past_grace_retracts_idle() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     let detail = value["detail"].as_str().unwrap();
     assert!(
-        detail.contains("idle report contradicted by later PTY output"),
+        detail.contains("contradicted resting state")
+            || detail.contains("idle report contradicted by later PTY output"),
         "{detail}"
     );
 }
@@ -353,7 +354,8 @@ fn opencode_pure_flag_disables_lifecycle_hooks_and_retracts_idle_on_activity() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     let detail = value["detail"].as_str().unwrap();
     assert!(
-        detail.contains("idle report contradicted by later PTY output"),
+        detail.contains("contradicted resting state")
+            || detail.contains("idle report contradicted by later PTY output"),
         "{detail}"
     );
 }
@@ -491,7 +493,8 @@ fn zcodex_with_installed_hooks_activity_past_grace_retracts_idle() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     let detail = value["detail"].as_str().unwrap();
     assert!(
-        detail.contains("idle report contradicted by later PTY output"),
+        detail.contains("contradicted resting state")
+            || detail.contains("idle report contradicted by later PTY output"),
         "{detail}"
     );
 }

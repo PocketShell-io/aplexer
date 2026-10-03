@@ -62,14 +62,13 @@ const SAFE_ARG_KEYS = {{
   path: "path",
 }};
 
-// Pending per-call state, keyed "sessionID|callID" and deleted on the
-// matching after-callback; bounded so a pathological stream of before
-// events without afters cannot grow it without limit.
-// Pending per-call state, keyed "sessionID|callID" and deleted on the
+// Pending per-call state, keyed "sessionID|callID|tool" and deleted on the
 // matching after-callback; bounded so a pathological stream of before
 // events without afters cannot grow it without limit.
 const PENDING_LIMIT = 512;
 const pending = new Map();
+const unkeyedPending = new Map();
+let callSeq = 0;
 
 // Aggregate active session states: Map<sessionID, "working" | "waiting" | "idle">.
 // Prevents cross-session idle races where a child/subagent session idle debounce
@@ -128,6 +127,54 @@ function evaluateAggregateState() {{
         }}
       }}, 3500);
     }}
+  }}
+}}
+
+function resolveCallKey(input, isBefore) {{
+  const sid = String(input?.sessionID ?? input?.session_id ?? "");
+  const tool = String(input?.tool ?? input?.tool_name ?? "");
+  let cid = input?.callID ?? input?.call?.id ?? input?.id ?? input?._aplexer_id;
+
+  if (cid) {{
+    const key = sid + "|" + String(cid) + "|" + tool;
+    if (!isBefore) {{
+      const qKey = sid + "|" + tool;
+      const q = unkeyedPending.get(qKey);
+      if (q) {{
+        const idx = q.indexOf(key);
+        if (idx !== -1) q.splice(idx, 1);
+        if (q.length === 0) unkeyedPending.delete(qKey);
+      }}
+    }}
+    return key;
+  }}
+
+  const qKey = sid + "|" + tool;
+  if (isBefore) {{
+    callSeq = (callSeq + 1) & 0x7fffffff;
+    const anonId = "anon_" + callSeq;
+    if (input && typeof input === "object") {{
+      try {{
+        input._aplexer_id = anonId;
+      }} catch (_) {{}}
+    }}
+    const fullKey = sid + "|" + anonId + "|" + tool;
+    let q = unkeyedPending.get(qKey);
+    if (!q) {{
+      q = [];
+      unkeyedPending.set(qKey, q);
+    }}
+    q.push(fullKey);
+    if (q.length > PENDING_LIMIT) q.shift();
+    return fullKey;
+  }} else {{
+    let q = unkeyedPending.get(qKey);
+    if (q && q.length > 0) {{
+      const fullKey = q.shift();
+      if (q.length === 0) unkeyedPending.delete(qKey);
+      return fullKey;
+    }}
+    return sid + "||" + tool;
   }}
 }}
 
@@ -220,7 +267,7 @@ export const AplexerStateReport = async () => {{
           sessionID: String(input?.sessionID ?? input?.session_id ?? ""),
           args: safeArgs(input?.arguments ?? input?.call?.arguments ?? input?.args),
         }};
-        const key = callKey(input) + "|" + entry.tool;
+        const key = resolveCallKey(input, true);
         pending.delete(key);
         pending.set(key, entry);
         if (pending.size > PENDING_LIMIT) {{
@@ -232,7 +279,7 @@ export const AplexerStateReport = async () => {{
     }},
     "tool.execute.after": async (input, output) => {{
       try {{
-        const key = callKey(input) + "|" + String(input?.tool ?? input?.tool_name ?? "");
+        const key = resolveCallKey(input, false);
         const entry = pending.get(key) ?? null;
         pending.delete(key);
         const sessionID = input?.sessionID ?? input?.session_id ?? entry?.sessionID;

@@ -25,6 +25,8 @@ fn opencode_plugin_embeds_the_a_binary_and_maps_events() {
     assert!(source.contains("sessionStates"), "must have aggregate active session states");
     assert!(source.contains("cancelGlobalIdle"), "must cancel global idle on busy/tool/error/permission");
     assert!(source.contains("evaluateAggregateState"), "must evaluate aggregate state across sessions");
+    assert!(source.contains("resolveCallKey"), "must resolve call key with disambiguation");
+    assert!(source.contains("unkeyedPending"), "must track unkeyed pending calls in FIFO queue");
 }
 
 #[test]
@@ -214,3 +216,70 @@ fn antigravity_refuses_to_overwrite_malformed_hooks() {
         assert_eq!(fs::read_to_string(path).unwrap(), original);
     }
 }
+
+#[test]
+fn opencode_plugin_handles_unkeyed_same_tool_concurrent_calls_runtime() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let module_path = dir.path().join("plugin.mjs");
+    let plugin_src = opencode_plugin_source("/bin/true");
+    fs::write(&module_path, plugin_src).unwrap();
+
+    let node_test = r#"
+import { pathToFileURL } from 'node:url';
+import assert from 'node:assert';
+
+const pluginModule = await import(pathToFileURL(process.argv[1]).href);
+const hooks = await pluginModule.AplexerStateReport();
+
+// Test 1: Two unkeyed calls to the same tool ('bash')
+const input1 = { tool: 'bash' };
+const input2 = { tool: 'bash' };
+
+await hooks['tool.execute.before'](input1);
+assert.ok(input1._aplexer_id, 'input1 should receive an assigned anon id');
+assert.strictEqual(input1._aplexer_id, 'anon_1');
+
+await hooks['tool.execute.before'](input2);
+assert.ok(input2._aplexer_id, 'input2 should receive an assigned anon id');
+assert.strictEqual(input2._aplexer_id, 'anon_2');
+
+// Finish tool 1: tool 2 is still running!
+const output1 = { output: 'result 1' };
+await hooks['tool.execute.after'](input1, output1);
+
+// Finish tool 2: now all are done!
+const output2 = { output: 'result 2' };
+await hooks['tool.execute.after'](input2, output2);
+
+// Test 2: Two unkeyed calls with detached objects on after
+const inputA = { tool: 'grep' };
+const inputB = { tool: 'grep' };
+await hooks['tool.execute.before'](inputA);
+await hooks['tool.execute.before'](inputB);
+
+// Passing fresh detached objects without _aplexer_id to after
+await hooks['tool.execute.after']({ tool: 'grep' }, { output: 'grep 1' });
+await hooks['tool.execute.after']({ tool: 'grep' }, { output: 'grep 2' });
+
+console.log('UNKEYED_CONCURRENT_OK');
+"#;
+
+    let test_path = dir.path().join("test.mjs");
+    fs::write(&test_path, node_test).unwrap();
+
+    let output = std::process::Command::new("node")
+        .arg(&test_path)
+        .arg(&module_path)
+        .output()
+        .expect("failed to execute node");
+
+    assert!(
+        output.status.success(),
+        "Node test failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("UNKEYED_CONCURRENT_OK"));
+}
+
