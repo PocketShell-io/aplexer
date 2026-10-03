@@ -218,7 +218,7 @@ fn antigravity_refuses_to_overwrite_malformed_hooks() {
 }
 
 #[test]
-fn opencode_plugin_handles_unkeyed_same_tool_concurrent_calls_runtime() {
+fn opencode_plugin_handles_unkeyed_and_duplicate_callid_same_tool_concurrent_calls_runtime() {
     let dir = tempfile::TempDir::new().unwrap();
     let module_path = dir.path().join("plugin.mjs");
     let plugin_src = opencode_plugin_source("/bin/true");
@@ -228,40 +228,55 @@ fn opencode_plugin_handles_unkeyed_same_tool_concurrent_calls_runtime() {
 import { pathToFileURL } from 'node:url';
 import assert from 'node:assert';
 
-const pluginModule = await import(pathToFileURL(process.argv[1]).href);
+const pluginModule = await import(pathToFileURL(process.argv[2]).href);
 const hooks = await pluginModule.AplexerStateReport();
 
-// Test 1: Two unkeyed calls to the same tool ('bash')
-const input1 = { tool: 'bash' };
-const input2 = { tool: 'bash' };
+// Variant A: Two concurrent same-tool calls with IDENTICAL callID ('dup-call')
+const inputA1 = { tool: 'bash', callID: 'dup-call' };
+const inputA2 = { tool: 'bash', callID: 'dup-call' };
 
-await hooks['tool.execute.before'](input1);
-assert.ok(input1._aplexer_id, 'input1 should receive an assigned anon id');
-assert.strictEqual(input1._aplexer_id, 'anon_1');
+await hooks['tool.execute.before'](inputA1);
+assert.ok(inputA1._aplexer_call_key, 'inputA1 should receive assigned key');
 
-await hooks['tool.execute.before'](input2);
-assert.ok(input2._aplexer_id, 'input2 should receive an assigned anon id');
-assert.strictEqual(input2._aplexer_id, 'anon_2');
+// Retransmitted before on inputA1 should be idempotent (same key)
+const origKeyA1 = inputA1._aplexer_call_key;
+await hooks['tool.execute.before'](inputA1);
+assert.strictEqual(inputA1._aplexer_call_key, origKeyA1, 'retransmitted before must be idempotent');
 
-// Finish tool 1: tool 2 is still running!
-const output1 = { output: 'result 1' };
-await hooks['tool.execute.after'](input1, output1);
+await hooks['tool.execute.before'](inputA2);
+assert.ok(inputA2._aplexer_call_key, 'inputA2 should receive assigned key');
+assert.notStrictEqual(inputA1._aplexer_call_key, inputA2._aplexer_call_key, 'identical callIDs must receive distinct keys');
 
-// Finish tool 2: now all are done!
-const output2 = { output: 'result 2' };
-await hooks['tool.execute.after'](input2, output2);
+// Finish tool A1: tool A2 is STILL ACTIVE!
+await hooks['tool.execute.after'](inputA1, { output: 'result A1' });
 
-// Test 2: Two unkeyed calls with detached objects on after
-const inputA = { tool: 'grep' };
-const inputB = { tool: 'grep' };
-await hooks['tool.execute.before'](inputA);
-await hooks['tool.execute.before'](inputB);
+// Finish tool A2: now all are done!
+await hooks['tool.execute.after'](inputA2, { output: 'result A2' });
 
-// Passing fresh detached objects without _aplexer_id to after
-await hooks['tool.execute.after']({ tool: 'grep' }, { output: 'grep 1' });
-await hooks['tool.execute.after']({ tool: 'grep' }, { output: 'grep 2' });
+// Variant B: Two concurrent same-tool calls with ABSENT callID
+const inputB1 = { tool: 'bash' };
+const inputB2 = { tool: 'bash' };
 
-console.log('UNKEYED_CONCURRENT_OK');
+await hooks['tool.execute.before'](inputB1);
+assert.ok(inputB1._aplexer_id, 'inputB1 should receive assigned anon id');
+
+await hooks['tool.execute.before'](inputB2);
+assert.ok(inputB2._aplexer_id, 'inputB2 should receive assigned anon id');
+assert.notStrictEqual(inputB1._aplexer_id, inputB2._aplexer_id, 'absent callIDs must receive distinct anon ids');
+
+// Finish tool B1: tool B2 is STILL ACTIVE!
+await hooks['tool.execute.after'](inputB1, { output: 'result B1' });
+
+// Finish tool B2: now both done!
+await hooks['tool.execute.after'](inputB2, { output: 'result B2' });
+
+// Detached objects on after:
+await hooks['tool.execute.before']({ tool: 'grep', callID: 'same-detached' });
+await hooks['tool.execute.before']({ tool: 'grep', callID: 'same-detached' });
+await hooks['tool.execute.after']({ tool: 'grep', callID: 'same-detached' }, { output: 'grep 1' });
+await hooks['tool.execute.after']({ tool: 'grep', callID: 'same-detached' }, { output: 'grep 2' });
+
+console.log('VARIANT_A_AND_B_CONCURRENT_OK');
 "#;
 
     let test_path = dir.path().join("test.mjs");
@@ -280,6 +295,6 @@ console.log('UNKEYED_CONCURRENT_OK');
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("UNKEYED_CONCURRENT_OK"));
+    assert!(stdout.contains("VARIANT_A_AND_B_CONCURRENT_OK"));
 }
 

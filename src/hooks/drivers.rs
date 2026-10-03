@@ -67,7 +67,8 @@ const SAFE_ARG_KEYS = {{
 // events without afters cannot grow it without limit.
 const PENDING_LIMIT = 512;
 const pending = new Map();
-const unkeyedPending = new Map();
+const callQueues = new Map();
+const unkeyedPending = callQueues;
 let callSeq = 0;
 
 // Aggregate active session states: Map<sessionID, "working" | "waiting" | "idle">.
@@ -133,48 +134,54 @@ function evaluateAggregateState() {{
 function resolveCallKey(input, isBefore) {{
   const sid = String(input?.sessionID ?? input?.session_id ?? "");
   const tool = String(input?.tool ?? input?.tool_name ?? "");
-  let cid = input?.callID ?? input?.call?.id ?? input?.id ?? input?._aplexer_id;
+  const cidRaw = input?.callID ?? input?.call?.id ?? input?.id ?? "";
+  const cid = (cidRaw !== null && cidRaw !== undefined) ? String(cidRaw) : "";
+  const qKey = sid + "|" + cid + "|" + tool;
 
-  if (cid) {{
-    const key = sid + "|" + String(cid) + "|" + tool;
-    if (!isBefore) {{
-      const qKey = sid + "|" + tool;
-      const q = unkeyedPending.get(qKey);
-      if (q) {{
-        const idx = q.indexOf(key);
-        if (idx !== -1) q.splice(idx, 1);
-        if (q.length === 0) unkeyedPending.delete(qKey);
-      }}
-    }}
-    return key;
-  }}
-
-  const qKey = sid + "|" + tool;
   if (isBefore) {{
+    // Idempotent retransmit guard: if the exact same input object is already registered in pending,
+    // reuse its assigned key rather than double-counting.
+    if (input && typeof input === "object" && input._aplexer_call_key && pending.has(input._aplexer_call_key)) {{
+      return input._aplexer_call_key;
+    }}
     callSeq = (callSeq + 1) & 0x7fffffff;
-    const anonId = "anon_" + callSeq;
+    const tag = (cid.length > 0) ? (cid + "_" + callSeq) : ("anon_" + callSeq);
+    const fullKey = sid + "|" + tag + "|" + tool;
     if (input && typeof input === "object") {{
       try {{
-        input._aplexer_id = anonId;
+        input._aplexer_call_key = fullKey;
+        input._aplexer_id = tag;
       }} catch (_) {{}}
     }}
-    const fullKey = sid + "|" + anonId + "|" + tool;
-    let q = unkeyedPending.get(qKey);
+    let q = callQueues.get(qKey);
     if (!q) {{
       q = [];
-      unkeyedPending.set(qKey, q);
+      callQueues.set(qKey, q);
     }}
     q.push(fullKey);
     if (q.length > PENDING_LIMIT) q.shift();
     return fullKey;
   }} else {{
-    let q = unkeyedPending.get(qKey);
-    if (q && q.length > 0) {{
-      const fullKey = q.shift();
-      if (q.length === 0) unkeyedPending.delete(qKey);
+    // In tool.execute.after:
+    // 1. If input object retained its assigned key, match directly and purge from queue.
+    if (input && typeof input === "object" && input._aplexer_call_key) {{
+      const fullKey = input._aplexer_call_key;
+      let q = callQueues.get(qKey);
+      if (q) {{
+        const idx = q.indexOf(fullKey);
+        if (idx !== -1) q.splice(idx, 1);
+        if (q.length === 0) callQueues.delete(qKey);
+      }}
       return fullKey;
     }}
-    return sid + "||" + tool;
+    // 2. Otherwise shift FIFO by arrival order for (sid, callID, tool).
+    let q = callQueues.get(qKey);
+    if (q && q.length > 0) {{
+      const fullKey = q.shift();
+      if (q.length === 0) callQueues.delete(qKey);
+      return fullKey;
+    }}
+    return sid + "|" + cid + "|" + tool;
   }}
 }}
 
