@@ -59,12 +59,15 @@ pub(super) const REPORTED_STATE_STALE_MS: u64 = 8_000;
 /// fires right as the turn's last render completes, and the hook process
 /// (`sh -c` + a client RPC) can lose that race by a beat: tail output
 /// stamped a few hundred ms after the push is still the turn ending, not
-/// the agent (or the user at a prompt) doing something new. Modern TUIs
-/// (OpenCode, Grok, ZCodex) perform multi-pass terminal redraws (clearing lines,
-/// drawing borders, reformatting markdown), which can take 2-4 seconds.
-/// 6_000 ms accommodates this post-idle render grace while ensuring genuine
-/// subsequent input/activity is not masked.
-pub(super) const IDLE_ACTIVITY_GRACE_MS: u64 = 6_000;
+/// the agent (or the user at a prompt) doing something new. Anything
+/// stamped later than this grace means real activity happened after the
+/// agent said it was resting, and the push stops being authoritative --
+/// the heuristic takes over and says `running`/`waiting` from actual PTY
+/// recency. (This is PocketShell issue #1570's "a resting push is
+/// invalidated the moment newer PTY activity appears", with a grace so
+/// the invalidation cannot be tripped by the very output that ended the
+/// turn.)
+pub(super) const IDLE_ACTIVITY_GRACE_MS: u64 = 2_000;
 
 /// Reads a fresh `a state-report` push off `record` and maps it onto `a
 /// watch`'s wire vocabulary, or `None` when there is nothing to trust (no

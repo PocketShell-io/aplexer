@@ -89,25 +89,45 @@ pub(crate) fn evaluate_readiness_verdict(
         PromptState::Empty => {}
     }
 
+    // 2. Active running (whether reported or inferred/heuristic) fails closed
     let (state, source) = session_ui_state(record, now);
-    if state == "running" && source == "reported" {
+    if state == "running" {
         return ReadinessVerdict::Reject(readiness_detail(record, state, source, now));
     }
 
+    // 3. Contradicted resting state check:
+    // If the agent reported resting ('idle' or 'waiting'), did newer PTY activity land after the push?
+    // Any activity beyond the grace window invalidates the resting report.
+    if let (Some(rep), Some(at)) = (record.reported_state.as_deref(), record.reported_state_at_ms) {
+        if matches!(rep, "idle" | "waiting") {
+            if let Some(last_act) = record.last_activity_ms {
+                if last_act > at.saturating_add(aplexer::watch::IDLE_ACTIVITY_GRACE_MS) {
+                    return ReadinessVerdict::Reject(format!(
+                        "recipient reported {rep} at {at}ms, but subsequent PTY activity occurred at {last_act}ms (+{}ms); resting state contradicted, delivery fail-closed",
+                        last_act.saturating_sub(at)
+                    ));
+                }
+            }
+        }
+    }
+
+    // 4. Fresh resting report:
     if source == "reported" && matches!(state, "waiting" | "idle") {
         return ReadinessVerdict::Ready;
     }
 
-    // If reported state has expired (source == "inferred"), but the session has lifecycle hooks
-    // installed AND its last reported state was resting ("idle" or "waiting") AND physical prompt
-    // composer is proven Empty: the session is resting at prompt and ready for delivery.
-    // Read-only inspection: do NOT mutate recipient state via ReportState RPC!
+    // 5. Expired waiting with lifecycle hooks and NO contradictory activity:
+    // A waiting report expires after REPORTED_STATE_STALE_MS (8s), but if the session has lifecycle hooks,
+    // its last report was 'waiting', no subsequent activity has occurred, and the composer is proven Empty,
+    // the agent is quiescently waiting at the prompt.
     if aplexer::hooks::session_record_has_lifecycle_hooks(record)
-        && matches!(record.reported_state.as_deref(), Some("idle" | "waiting"))
+        && record.reported_state.as_deref() == Some("waiting")
+        && state == "waiting"
     {
         return ReadinessVerdict::Ready;
     }
 
+    // All other states (e.g. no hooks installed, expired running, unsupported states) fail closed
     ReadinessVerdict::Reject(readiness_detail(record, state, source, now))
 }
 
@@ -706,6 +726,104 @@ mod tests {
         let prompt_state = PromptState::Empty;
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 1500);
         assert_eq!(verdict, ReadinessVerdict::Ready);
+    }
+
+    #[test]
+    fn test_readiness_verdict_rejects_old_idle_with_subsequent_pty_activity() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/tmp",
+            "tag": "test",
+            "engine": "opencode",
+            "command": ["opencode"],
+            "cwd": "/tmp",
+            "phase": "running",
+            "history_bytes": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "reported_state": "idle",
+            "reported_state_at_ms": 1000,
+            "last_activity_ms": 4000,
+        }))
+        .unwrap();
+        let prompt_state = PromptState::Empty;
+        let verdict = evaluate_readiness_verdict(&prompt_state, &record, 5000);
+        assert!(
+            matches!(verdict, ReadinessVerdict::Reject(err) if err.contains("resting state contradicted"))
+        );
+    }
+
+    #[test]
+    fn test_readiness_verdict_rejects_inferred_running_with_empty_composer() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/tmp",
+            "tag": "test",
+            "engine": "shell",
+            "command": ["bash"],
+            "cwd": "/tmp",
+            "phase": "running",
+            "history_bytes": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "last_activity_ms": 9500,
+        }))
+        .unwrap();
+        let prompt_state = PromptState::Empty;
+        let verdict = evaluate_readiness_verdict(&prompt_state, &record, 10000);
+        assert!(matches!(verdict, ReadinessVerdict::Reject(_)));
+    }
+
+    #[test]
+    fn test_readiness_verdict_rejects_old_waiting_with_newer_activity() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/tmp",
+            "tag": "test",
+            "engine": "opencode",
+            "command": ["opencode"],
+            "cwd": "/tmp",
+            "phase": "running",
+            "history_bytes": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "reported_state": "waiting",
+            "reported_state_at_ms": 1000,
+            "last_activity_ms": 4500,
+        }))
+        .unwrap();
+        let prompt_state = PromptState::Empty;
+        let verdict = evaluate_readiness_verdict(&prompt_state, &record, 5000);
+        assert!(
+            matches!(verdict, ReadinessVerdict::Reject(err) if err.contains("resting state contradicted"))
+        );
+    }
+
+    #[test]
+    fn test_readiness_verdict_rejects_expired_waiting_without_hooks() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/tmp",
+            "tag": "test",
+            "engine": "shell",
+            "command": ["bash"],
+            "cwd": "/tmp",
+            "phase": "running",
+            "history_bytes": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "reported_state": "waiting",
+            "reported_state_at_ms": 1000,
+            "last_activity_ms": 1000,
+        }))
+        .unwrap();
+        let prompt_state = PromptState::Empty;
+        let verdict = evaluate_readiness_verdict(&prompt_state, &record, 20000);
+        assert!(matches!(verdict, ReadinessVerdict::Reject(_)));
     }
 }
 
