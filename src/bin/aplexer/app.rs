@@ -59,6 +59,8 @@ mod diagnostics;
 mod doctor;
 #[path = "handoff_commands.rs"]
 mod handoff_commands;
+#[path = "handoff_schedule_commands.rs"]
+mod handoff_schedule_commands;
 #[path = "input_scanner.rs"]
 mod input_scanner;
 #[path = "key_overlay.rs"]

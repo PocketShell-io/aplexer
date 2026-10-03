@@ -20,8 +20,69 @@ pub(crate) enum TaskCommand {
     /// identity). Host a task in a durable session with
     /// `a start -- a task run …`; this is the worker side.
     #[command(after_help = TASK_EXAMPLES)]
-    Run(TaskRunArgs),
+    Run(Box<TaskRunArgs>),
+    /// Opt-in scheduled launches over `task run` (the handoff plugin's
+    /// wrapper). Nothing is scheduled until `enable` writes its single owned
+    /// state file, and no timer is ever installed: `fire` is what your own
+    /// scheduler (cron, systemd timer, …) calls.
+    Handoff(TaskHandoffArgs),
 }
+
+/// `a task handoff` verbs: enable/disable/status over one owned state
+/// directory (`<state>/task-handoff/`), plus `fire` for the user's timer.
+#[derive(Args)]
+pub(crate) struct TaskHandoffArgs {
+    #[command(subcommand)]
+    pub(crate) command: TaskHandoffCommand,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum TaskHandoffCommand {
+    /// Enable the opt-in handoff schedule: validates the arguments and
+    /// writes `<state>/task-handoff/schedule.json`. Installs nothing — a
+    /// recurring trigger must come from your own scheduler calling
+    /// `a task handoff fire`. Omitting `--engine` uses the configured
+    /// default engine at fire time
+    Enable(Box<TaskHandoffEnableArgs>),
+    /// Remove the owned handoff schedule directory and nothing else.
+    /// Idempotent: already-removed reports success. Never signals a
+    /// process — a launch that already started runs to natural completion —
+    /// and leaves no automatic engine cutoff behind, since a cutoff only
+    /// ever lived inside the removed schedule
+    Disable(TaskHandoffDisableArgs),
+    /// Show the schedule, its fired slots, and the next due instant
+    /// (read-only)
+    Status(TaskHandoffStatusArgs),
+    /// Called by your own scheduler: launch the scheduled task if due. With
+    /// no schedule this is a successful no-op, so removing the schedule
+    /// never breaks an existing timer entry. At most one launch per slot
+    /// (the local day at/after `--at`; otherwise one per local minute),
+    /// claimed atomically before spawning
+    Fire(TaskHandoffFireArgs),
+}
+
+/// Arguments of `a task handoff enable`: the daily time plus the exact
+/// `a task run` argument set to launch (flattened).
+#[derive(Args)]
+pub(crate) struct TaskHandoffEnableArgs {
+    /// Daily local time `HH:MM` (machine timezone, DST-aware) after which
+    /// at most one launch fires per local day. Omit to launch whenever
+    /// `fire` runs — at most once per local minute — with your timer alone
+    /// deciding when
+    #[arg(long, value_name = "HH:MM")]
+    pub(crate) at: Option<String>,
+    #[command(flatten)]
+    pub(crate) task: TaskRunArgs,
+}
+
+#[derive(Args)]
+pub(crate) struct TaskHandoffDisableArgs {}
+
+#[derive(Args)]
+pub(crate) struct TaskHandoffStatusArgs {}
+
+#[derive(Args)]
+pub(crate) struct TaskHandoffFireArgs {}
 
 /// Arguments of `a task run` (see the `Run` variant above for the contract).
 #[derive(Args)]

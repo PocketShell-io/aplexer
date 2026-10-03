@@ -447,6 +447,12 @@ faked identity). Host a task in a durable session with
 Timeouts kill only the task's own process group. See
 [docs/delegated-tasks.md](docs/delegated-tasks.md) for the full contract.
 
+Need the old fixed-time handoff back (a daily launch, opt-in and removable)?
+That is the handoff plugin: `a task handoff enable|status|disable|fire` —
+one owned state directory, your own timer as the trigger, no daemon, and
+disable that never cancels running tasks. See
+[plugins/handoff/README.md](plugins/handoff/README.md).
+
 ## From Python
 
 The `aplexer` package (installed alongside the CLI) talks to the same

@@ -102,6 +102,55 @@ Two things routing deliberately does **not** do:
   file, then launch the follow-up with a prompt file that includes it.
   Don't imply that routing itself preserves context.
 
+## Scheduled handoffs (`a task handoff`) — the optional plugin
+
+The old homemade orchestration was a fixed daily launch (e.g. "03:00 Berlin
+to Antigravity"). The handoff plugin restores exactly that, opt-in and
+removable, as a thin wrapper over `task run` — no daemon, no registry, no
+global hooks:
+
+```
+a [--json] task handoff enable --prompt-file FILE [--at HH:MM]
+    [<any `task run` option except --output-dir/--overwrite>]
+a [--json] task handoff disable
+a [--json] task handoff status
+a [--json] task handoff fire
+```
+
+- **Absent by default.** Nothing is scheduled until `enable` writes one
+  owned file, `<state>/task-handoff/schedule.json`; `disable` removes that
+  directory and nothing else, and is a success when it is already gone.
+- **Engine is your default unless you say otherwise.** A schedule without
+  `--engine` launches with the *configured default engine at fire time*
+  (e.g. `zcodex`); enable/disable never write engine, profile, or
+  credential config.
+- **The trigger is your timer, not aplexer's.** Enable installs nothing
+  periodic. `fire` is what cron/systemd/… call; with no schedule, or after
+  disable, it is a successful no-op — removing the plugin can never break
+  an existing timer entry. With `--at HH:MM` (machine-local, DST-aware), at
+  most one launch fires per local day, claimed atomically
+  (`fired/<slot>.json`, `create_new`) so overlapping timer runs cannot
+  double-launch; without `--at`, at most one launch fires per local minute
+  and your timer alone decides when. `fire` exits with the task's real exit
+  code, and a launch that is not due, already fired, or disabled exits 0
+  having launched nothing.
+- **Nothing running is ever cancelled.** Disable does not signal any
+  process: an in-flight launch runs to natural completion and keeps its
+  RESULT.json; foreign processes and unrelated state are unreachable from
+  it. Task evidence and worktrees are never deleted.
+- **Routing ≠ handoff.** A schedule can carry `--cutoff`/`--cutoff-engine`
+  passthrough, and the same distinction as above applies: that routes which
+  engine a *new* launch uses. It is not a context handoff — carry context in
+  the prompt file (or via `a handoff`, the read-only recovery bundle, which
+  is a different command about a different thing).
+
+The plugin's package sources (add/remove steps, timer examples, an example
+schedule) live in `plugins/handoff/`; the supported host-plugin packaging
+for awareness hooks remains the upstream `plugins/coordination` bundle model
+(commit bc0d3d7 on branches carrying it, not part of this branch's history)
+— a scheduled launch is not an engine-plugin concern, so the handoff pairs
+the CLI with your own timer instead of a host manifest.
+
 ## Record schema
 
 `TASK_RECORD_SCHEMA_VERSION = 1` (`src/task.rs`). `START.json` /
