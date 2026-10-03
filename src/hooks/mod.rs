@@ -335,6 +335,23 @@ pub fn session_engine_has_lifecycle_hooks_at(engine: &str, targets: &HookTargets
     }
 }
 
+pub fn session_record_has_lifecycle_hooks(record: &crate::record::SessionRecord) -> bool {
+    resolve_targets_from_env(&[])
+        .map(|t| session_record_has_lifecycle_hooks_at(record, &t))
+        .unwrap_or(false)
+}
+
+pub fn session_record_has_lifecycle_hooks_at(
+    record: &crate::record::SessionRecord,
+    targets: &HookTargets,
+) -> bool {
+    // If opencode was launched with `--pure`, external plugins are disabled.
+    if record.engine == "opencode" && record.command.iter().any(|arg| arg == "--pure") {
+        return false;
+    }
+    session_engine_has_lifecycle_hooks_at(&record.engine, targets)
+}
+
 pub fn antigravity_has_lifecycle_hooks() -> bool {
     session_engine_has_lifecycle_hooks("antigravity")
 }

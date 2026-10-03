@@ -75,7 +75,10 @@ function callKey(input) {{
 
 function report(state) {{
   try {{
-    child_process.spawnSync(A, ["state-report", state], {{ stdio: "ignore" }});
+    const res = child_process.spawnSync(A, ["state-report", state], {{ stdio: "ignore" }});
+    if (res.error && A !== "a") {{
+      child_process.spawnSync("a", ["state-report", state], {{ stdio: "ignore" }});
+    }}
   }} catch (e) {{
     // best-effort; never throw out of a plugin hook
   }}
@@ -126,12 +129,12 @@ export const AplexerStateReport = async () => {{
         }}
       }} else if (event.type === "session.idle") {{
         report("idle");
+      }} else if (event.type === "step-start" || event.type === "session.created") {{
+        report("working");
       }} else if (event.type === "permission.asked") {{
         report("waiting");
       }} else if (event.type === "session.error") {{
         report("waiting");
-      }} else if (event.type === "session.created") {{
-        report("working");
       }}
     }},
     "tool.execute.before": async (input) => {{

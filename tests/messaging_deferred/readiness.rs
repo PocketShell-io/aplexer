@@ -245,7 +245,7 @@ fn opencode_with_installed_hooks_permits_idle_delivery_despite_tui_output() {
     let mut case = Case::new(false, "opencode");
     case.recipient.reported_state = Some("idle".into());
     case.recipient.reported_state_at_ms = Some(1000);
-    case.recipient.last_activity_ms = Some(3001);
+    case.recipient.last_activity_ms = Some(1500); // within 2000ms render grace
     let server = worker::Worker::start(&case.recipient, false);
     let output = case
         .harness
@@ -265,6 +265,85 @@ fn opencode_with_installed_hooks_permits_idle_delivery_despite_tui_output() {
     assert!(output.status.success(), "{output:?}");
     status(&output, "submitted");
     assert_eq!(server.finish().len(), 4);
+}
+
+#[test]
+fn opencode_with_installed_hooks_activity_past_grace_retracts_idle() {
+    let temp_home = tempfile::TempDir::new().unwrap();
+    let plugin_dir = temp_home.path().join(".config").join("opencode").join("plugin");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    let plugin_code = aplexer::hooks::opencode_plugin_source("/bin/a");
+    std::fs::write(plugin_dir.join("aplexer-state-report.js"), plugin_code).unwrap();
+
+    let mut case = Case::new(false, "opencode");
+    case.recipient.reported_state = Some("idle".into());
+    case.recipient.reported_state_at_ms = Some(1000);
+    case.recipient.last_activity_ms = Some(3001);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    status(&output, "not-ready");
+    assert!(server.finish().is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let detail = value["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("idle report contradicted by later PTY output"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn opencode_pure_flag_disables_lifecycle_hooks_and_retracts_idle_on_activity() {
+    let temp_home = tempfile::TempDir::new().unwrap();
+    let plugin_dir = temp_home.path().join(".config").join("opencode").join("plugin");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    let plugin_code = aplexer::hooks::opencode_plugin_source("/bin/a");
+    std::fs::write(plugin_dir.join("aplexer-state-report.js"), plugin_code).unwrap();
+
+    let mut case = Case::new(false, "opencode");
+    case.recipient.command = vec!["opencode".into(), "--pure".into(), "--auto".into()];
+    case.recipient.reported_state = Some("idle".into());
+    case.recipient.reported_state_at_ms = Some(1000);
+    case.recipient.last_activity_ms = Some(3001);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    status(&output, "not-ready");
+    assert!(server.finish().is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let detail = value["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("idle report contradicted by later PTY output"),
+        "{detail}"
+    );
 }
 
 #[test]
@@ -328,7 +407,7 @@ fn zcodex_with_installed_hooks_permits_idle_delivery_despite_tui_output() {
     let mut case = Case::new(false, "zcodex");
     case.recipient.reported_state = Some("idle".into());
     case.recipient.reported_state_at_ms = Some(1000);
-    case.recipient.last_activity_ms = Some(3001);
+    case.recipient.last_activity_ms = Some(1500); // within 2000ms render grace
     let server = worker::Worker::start(&case.recipient, false);
     let output = case
         .harness
@@ -348,6 +427,61 @@ fn zcodex_with_installed_hooks_permits_idle_delivery_despite_tui_output() {
     assert!(output.status.success(), "{output:?}");
     status(&output, "submitted");
     assert_eq!(server.finish().len(), 4);
+}
+
+#[test]
+fn zcodex_with_installed_hooks_activity_past_grace_retracts_idle() {
+    let temp_home = tempfile::TempDir::new().unwrap();
+    let codex_dir = temp_home.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let hooks_content = serde_json::json!({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "/bin/a state-report working || true"}]}
+            ],
+            "Stop": [
+                {"hooks": [{"type": "command", "command": "/bin/a state-report idle || true"}]}
+            ],
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": "/bin/a state-report working || true"}]}
+            ]
+        }
+    });
+    std::fs::write(
+        codex_dir.join("hooks.json"),
+        serde_json::to_string_pretty(&hooks_content).unwrap(),
+    )
+    .unwrap();
+
+    let mut case = Case::new(false, "zcodex");
+    case.recipient.reported_state = Some("idle".into());
+    case.recipient.reported_state_at_ms = Some(1000);
+    case.recipient.last_activity_ms = Some(3001);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case
+        .harness
+        .command()
+        .env("HOME", temp_home.path())
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    status(&output, "not-ready");
+    assert!(server.finish().is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let detail = value["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("idle report contradicted by later PTY output"),
+        "{detail}"
+    );
 }
 
 #[test]
@@ -400,10 +534,10 @@ fn zcodex_multi_turn_working_and_idle_transitions_preserve_delivery_integrity() 
     status(&output, "not-ready");
     assert!(server.finish().is_empty());
 
-    // Turn 1 finishes: reported idle, subsequent PTY activity: delivery must succeed
+    // Turn 1 finishes: reported idle, trailing PTY activity within grace: delivery must succeed
     case.recipient.reported_state = Some("idle".into());
     case.recipient.reported_state_at_ms = Some(1000);
-    case.recipient.last_activity_ms = Some(3001);
+    case.recipient.last_activity_ms = Some(1500); // within render grace
     let server = worker::Worker::start(&case.recipient, false);
     let output = case
         .harness
@@ -484,10 +618,10 @@ fn opencode_multi_turn_working_and_idle_transitions_preserve_delivery_integrity(
     status(&output, "not-ready");
     assert!(server.finish().is_empty());
 
-    // Turn 1 finishes: reported idle, subsequent PTY activity: delivery must succeed
+    // Turn 1 finishes: reported idle, trailing PTY activity within grace: delivery must succeed
     case.recipient.reported_state = Some("idle".into());
     case.recipient.reported_state_at_ms = Some(1000);
-    case.recipient.last_activity_ms = Some(3001);
+    case.recipient.last_activity_ms = Some(1500); // within render grace
     let server = worker::Worker::start(&case.recipient, false);
     let output = case
         .harness

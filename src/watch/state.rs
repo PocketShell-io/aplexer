@@ -111,7 +111,7 @@ pub fn reported_state_rejection(record: &SessionRecord, now: u64) -> Option<&'st
     reported_state_rejection_with_hooks(
         record,
         now,
-        crate::hooks::session_engine_has_lifecycle_hooks(&record.engine),
+        crate::hooks::session_record_has_lifecycle_hooks(record),
     )
 }
 
@@ -143,21 +143,21 @@ pub(crate) fn idle_was_contradicted_with_hooks(
     at: u64,
     has_lifecycle_hooks: bool,
 ) -> bool {
-    // When native lifecycle hooks are installed for the session's engine
-    // (Stop / session.idle -> idle, and PreInvocation / UserPromptSubmit /
-    // BeforeAgent / tool.execute.before -> working), terminal redraws and PTY
-    // output do not override the semantic rest reported by the engine's Stop
-    // hook, because active execution will report working when resumed.
-    // If hooks are missing, PTY output retracts idle to prevent unhooked sessions
-    // from being stuck in false-idle.
-    if has_lifecycle_hooks {
+    let Some(last_activity) = record.last_activity_ms else {
+        return false;
+    };
+    if last_activity <= at.saturating_add(IDLE_ACTIVITY_GRACE_MS) {
         return false;
     }
-    // Idle has no clock TTL: only PTY activity beyond the render grace
-    // retracts it. Quiet resting sessions have no follow-up refresh event.
-    record
-        .last_activity_ms
-        .is_some_and(|activity| activity > at.saturating_add(IDLE_ACTIVITY_GRACE_MS))
+    if !has_lifecycle_hooks {
+        return true;
+    }
+    // With lifecycle hooks:
+    // Only Antigravity's interactive TUI produces continuous background cursor/timer redraws
+    // while resting at the prompt.
+    // For other engines (opencode, codex, claude, grok, gemini), idle composers are silent;
+    // PTY activity after the post-idle render grace indicates active input or execution.
+    record.engine != "antigravity"
 }
 
 
@@ -184,7 +184,7 @@ pub fn derive_agent_state_with_source(
     derive_agent_state_with_source_and_hooks(
         record,
         now,
-        crate::hooks::session_engine_has_lifecycle_hooks(&record.engine),
+        crate::hooks::session_record_has_lifecycle_hooks(record),
     )
 }
 
