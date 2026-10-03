@@ -222,3 +222,67 @@ fn zcodex_rides_the_codex_machinery() {
     let found = locate_transcript("zcodex", Path::new("/tmp/zcodex-work"), now_ms(), &env).unwrap();
     assert_eq!(found, rollout);
 }
+
+#[test]
+fn codex_session_roots_pin_one_home_and_default_by_engine() {
+    // A recorded CODEX_HOME is authoritative whatever the engine: a profile
+    // that pins the fork onto codex's home keeps working.
+    let mut pinned = BTreeMap::new();
+    pinned.insert(
+        "CODEX_HOME".to_string(),
+        "/pinned/codex-home".to_string(),
+    );
+    let home = Path::new("/home/u");
+    assert_eq!(
+        codex_session_roots("codex", &pinned, Some(home)),
+        vec![PathBuf::from("/pinned/codex-home/sessions")]
+    );
+    assert_eq!(
+        codex_session_roots("zcodex", &pinned, Some(home)),
+        vec![PathBuf::from("/pinned/codex-home/sessions")]
+    );
+
+    // Without one, codex keeps its own home; the zcodex fork defaults to
+    // ~/.zcodex (its builds bake it in), searched first, with the legacy
+    // shared ~/.codex second.
+    let empty = BTreeMap::new();
+    assert_eq!(
+        codex_session_roots("codex", &empty, Some(home)),
+        vec![PathBuf::from("/home/u/.codex/sessions")]
+    );
+    assert_eq!(
+        codex_session_roots("zcodex", &empty, Some(home)),
+        vec![
+            PathBuf::from("/home/u/.zcodex/sessions"),
+            PathBuf::from("/home/u/.codex/sessions"),
+        ]
+    );
+    assert!(codex_session_roots("zcodex", &empty, None).is_empty());
+}
+
+#[test]
+fn zcodex_default_home_rollout_is_found_without_codex_home_env() {
+    // The real-world failure shape: a zcodex session whose record env is
+    // empty (the engine table pins no CODEX_HOME) and a rollout in the
+    // fork's own date-partitioned home.
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().join("reply-identity");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let sessions = dir
+        .path()
+        .join(".zcodex/sessions/2026/10/02")
+        .join("rollout-2026-10-02T22-09-43-thread.jsonl");
+    std::fs::create_dir_all(sessions.parent().unwrap()).unwrap();
+    let meta = json!({"type": "session_meta", "payload": {
+        "id": "thread",
+        "cwd": cwd.display().to_string()
+    }});
+    std::fs::write(&sessions, format!("{meta}\n")).unwrap();
+
+    let found = codex_candidates_in(
+        codex_session_roots("zcodex", &BTreeMap::new(), Some(dir.path())),
+        &cwd,
+        crate::now_ms(),
+    );
+    assert_eq!(found, vec![sessions]);
+}

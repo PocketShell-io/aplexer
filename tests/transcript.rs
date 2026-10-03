@@ -258,6 +258,52 @@ fn transcript_last_and_whoami() {
 }
 
 #[test]
+fn zcodex_session_without_codex_home_finds_its_own_rollouts() {
+    // The real-world shape that failed 2026-10-02: an `[engines.zcodex]`
+    // launch records no `CODEX_HOME` (the profile's env belongs to the
+    // profile, not the engine), so the session's env map is empty -- and
+    // the zcodex fork writes its rollouts under
+    // `~/.zcodex/sessions/<y>/<m>/<d>/rollout-*.jsonl`, not `~/.codex`.
+    // Discovery must search the variant's own default home.
+    let h = Harness::new();
+    let cwd = h.home.path().join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+    let id = "00000000-0000-0000-0000-000000000004";
+    write_session(&h, id, &cwd, "zcodex");
+    let rollout = h
+        .home
+        .path()
+        .join(".zcodex/sessions/2026/10/02")
+        .join("rollout-2026-10-02T22-09-43-thread.jsonl");
+    write_codex_log(&rollout, &cwd, "found in the zcodex home");
+    // The box also runs plain codex: its home holds in-window rollouts of
+    // other sessions. They name a different cwd, so they must neither be
+    // picked nor shadow the zcodex one.
+    let codex_home_rollout = h
+        .home
+        .path()
+        .join(".codex/sessions/2026/10/02")
+        .join("rollout-2026-10-02T20-00-00-other.jsonl");
+    write_codex_log(&codex_home_rollout, &h.home.path().join("other"), "not ours");
+
+    let stdout = h.run_ok(&["--json", "transcript", id, "--last", "1"]);
+    let events = parse_jsonl(&stdout);
+    assert_eq!(events.len(), 1, "{stdout}");
+    assert_eq!(events[0]["content"], "found in the zcodex home");
+    assert_eq!(events[0]["engine"], "zcodex");
+
+    // And the locate wrote the bind, so later reads survive the fork's
+    // rollout rotation.
+    let bind = h
+        .state_dir
+        .path()
+        .join("sessions")
+        .join(id)
+        .join("transcript.json");
+    assert!(bind.is_file(), "expected bind sidecar at {}", bind.display());
+}
+
+#[test]
 fn explicit_zcodex_path_reads_shell_session_without_changing_existing_bind() {
     let h = Harness::new();
     let cwd = h.home.path().join("proj");

@@ -390,7 +390,7 @@ pub fn transcript_candidates(
 ) -> Vec<PathBuf> {
     match engine_family(engine) {
         "claude" => claude_transcript_candidates(cwd, created_at_ms, env),
-        "codex" => codex_transcript_candidates(cwd, created_at_ms, env),
+        "codex" => codex_transcript_candidates(engine, cwd, created_at_ms, env),
         "grok" => grok_transcript_candidates(cwd, created_at_ms, env),
         _ => Vec::new(),
     }
@@ -468,7 +468,8 @@ pub fn claude_transcript_candidates(
     candidates_newest_first(children, since)
 }
 
-/// Codex: `~/.codex/sessions/<YYYY>/<MM>/<DD>/<session>.jsonl`, date-
+/// Codex: `$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/<rollout>.jsonl` (default
+/// `~/.codex`; the `zcodex` fork defaults to `~/.zcodex`), date-
 /// partitioned so the tree is walked rather than computed directly
 /// (`agent_log.py::_resolve_codex_path`). Each rollout file's first line is
 /// a `session_meta` row carrying its own `cwd`, which lets this disambiguate
@@ -478,37 +479,63 @@ pub fn locate_codex_transcript(
     created_at_ms: u64,
     env: &BTreeMap<String, String>,
 ) -> Option<PathBuf> {
-    codex_transcript_candidates(cwd, created_at_ms, env)
+    codex_transcript_candidates("codex", cwd, created_at_ms, env)
         .into_iter()
         .next()
 }
 
-/// Every codex candidate under the sessions root, newest first: recent
-/// enough to be the session's, and (when the rollout's `session_meta` is
-/// readable) naming the session's cwd.
+/// Every codex candidate under the family's session roots, newest first:
+/// recent enough to be the session's, and (when the rollout's `session_meta`
+/// is readable) naming the session's cwd.
 pub fn codex_transcript_candidates(
+    engine: &str,
     cwd: &Path,
     created_at_ms: u64,
     env: &BTreeMap<String, String>,
 ) -> Vec<PathBuf> {
-    let root = env
-        .get("CODEX_HOME")
-        .map(|h| PathBuf::from(h).join("sessions"))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex/sessions")));
-    let Some(root) = root else {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let roots = codex_session_roots(engine, env, home.as_deref());
+    codex_candidates_in(roots, cwd, created_at_ms)
+}
+
+/// The session roots the codex family searches, in order. A `CODEX_HOME`
+/// recorded in the session's env pins exactly one root, whatever the
+/// engine. Without one the variant decides the default: `zcodex` is a
+/// codex-rs fork whose builds default their home to `~/.zcodex` (the
+/// engine's launch env records no `CODEX_HOME` -- the profile that pins one
+/// is optional), so its own home is searched first, the shared-with-codex
+/// `~/.codex` second; plain `codex` keeps its single default. The
+/// mtime + `session_meta`-cwd filters keep the other home's sessions out,
+/// and a genuine two-home ambiguity is refused by the caller, never guessed.
+pub(crate) fn codex_session_roots(
+    engine: &str,
+    env: &BTreeMap<String, String>,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
+    if let Some(dir) = env.get("CODEX_HOME") {
+        return vec![PathBuf::from(dir).join("sessions")];
+    }
+    let Some(home) = home else {
         return Vec::new();
     };
-    if !root.is_dir() {
-        return Vec::new();
+    match engine {
+        "zcodex" => vec![home.join(".zcodex/sessions"), home.join(".codex/sessions")],
+        _ => vec![home.join(".codex/sessions")],
     }
+}
+
+/// Rollouts under `roots` that could be the session's: mtime not earlier
+/// than its creation (with slack), and -- when the rollout's `session_meta`
+/// is readable -- its own cwd naming the session's. One whose session_meta
+/// names a different cwd is not ours, whatever its mtime, while one without
+/// a readable session_meta stays a candidate on mtime alone.
+pub(crate) fn codex_candidates_in(roots: Vec<PathBuf>, cwd: &Path, created_at_ms: u64) -> Vec<PathBuf> {
     let since = created_at_ms.saturating_sub(5_000);
     let cwd_str = cwd.display().to_string();
     let mut rollouts = Vec::new();
-    walk_jsonl(&root, &mut |path| rollouts.push(path.to_path_buf()));
-    // Only rollouts recent enough to matter are opened: one whose
-    // session_meta names a different cwd is not ours, whatever its mtime,
-    // while one without a readable session_meta stays a candidate on
-    // mtime alone.
+    for root in &roots {
+        walk_jsonl(root, &mut |path| rollouts.push(path.to_path_buf()));
+    }
     let ours = rollouts
         .into_iter()
         .filter(|path| file_mtime_ms(path).is_some_and(|mtime| mtime >= since))

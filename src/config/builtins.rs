@@ -7,14 +7,14 @@ use super::{Config, EngineConfig};
 
 /// Transcript-family normalization: a variant engine -- a fork of a built-in
 /// engine CLI with the same wire format and the same native conversation-log
-/// location -- is identified with that engine's family for parsing, while
+/// format -- is identified with that engine's family for parsing, while
 /// sessions and emitted events keep the variant's own id. `zcodex` (a
-/// codex-rs fork: same `-c` overrides, same rollout JSONL under
-/// `CODEX_HOME`/`~/.codex`) is the one shipped alias, so a user config that
-/// defines its own `zcodex` engine rides the codex machinery; everything
-/// else is its own family. aplexer ships no `zcodex` engine itself -- the
-/// fork is one box's setup, defined in that box's config file (README,
-/// "A real config").
+/// codex-rs fork: same `-c` overrides, same rollout JSONL, default home
+/// `~/.zcodex` where codex has `~/.codex`) is the one shipped alias, so a
+/// user config that defines its own `zcodex` engine rides the codex
+/// machinery; everything else is its own family. aplexer ships no `zcodex`
+/// engine itself -- the fork is one box's setup, defined in that box's
+/// config file (README, "A real config").
 pub fn engine_family(engine: &str) -> &str {
     match engine {
         "zcodex" => "codex",
