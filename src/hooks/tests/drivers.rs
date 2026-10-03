@@ -298,3 +298,153 @@ console.log('VARIANT_A_AND_B_CONCURRENT_OK');
     assert!(stdout.contains("VARIANT_A_AND_B_CONCURRENT_OK"));
 }
 
+#[test]
+fn opencode_plugin_reasoning_gap_after_tool_does_not_falsely_report_idle_runtime() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::TempDir::new().unwrap();
+    let module_path = dir.path().join("plugin.mjs");
+    let log_path = dir.path().join("mock_a.log");
+    let mock_bin = dir.path().join("mock_a.sh");
+
+    let mock_script = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"state-report\" ]; then\n  echo \"$1 $2\" >> \"{}\"\nfi\nexit 0\n",
+        log_path.display()
+    );
+    fs::write(&mock_bin, mock_script).unwrap();
+    let mut perms = fs::metadata(&mock_bin).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&mock_bin, perms).unwrap();
+
+    let plugin_src = opencode_plugin_source(&mock_bin.to_string_lossy());
+    fs::write(&module_path, plugin_src).unwrap();
+
+    let node_test = r#"
+import { pathToFileURL } from 'node:url';
+import assert from 'node:assert';
+import fs from 'node:fs';
+
+const pluginModule = await import(pathToFileURL(process.argv[2]).href);
+const logFile = process.argv[3];
+const hooks = await pluginModule.AplexerStateReport();
+
+function readLog() {
+  if (!fs.existsSync(logFile)) return [];
+  return fs.readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean);
+}
+
+// 1. Session starts and goes busy
+await hooks.event({
+  event: {
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses-main',
+      status: { type: 'busy' }
+    }
+  }
+});
+assert.deepStrictEqual(readLog(), ['state-report working']);
+
+// 2. Tool starts (tool.execute.before)
+await hooks['tool.execute.before']({
+  sessionID: 'ses-main',
+  tool: 'bash',
+  callID: 'call-101'
+});
+assert.deepStrictEqual(readLog(), ['state-report working', 'state-report working']);
+
+// 3. Tool finishes (tool.execute.after) - pending drains to 0
+await hooks['tool.execute.after'](
+  { sessionID: 'ses-main', tool: 'bash', callID: 'call-101' },
+  { output: 'tool finished successfully' }
+);
+// Crucial invariant: pending-drain NEVER sets session state to idle!
+// It must NOT arm the 3500ms debounce timer, and must NOT report idle.
+assert.deepStrictEqual(readLog(), ['state-report working', 'state-report working', 'state-report working']);
+
+// 4. Simulate a long reasoning gap > 3500 ms (e.g. 4000ms delay with no tool activity)
+await new Promise(r => setTimeout(r, 4000));
+const logAfterGap = readLog();
+assert.ok(
+  !logAfterGap.some(line => line.includes('idle')),
+  'During multi-second model reasoning gap after tool finish, plugin must NEVER report idle!'
+);
+
+// 5. Late step-start part arrives during reasoning
+await hooks.event({
+  event: {
+    type: 'step-start',
+    properties: { sessionID: 'ses-main' }
+  }
+});
+await new Promise(r => setTimeout(r, 1000));
+assert.ok(
+  !readLog().some(line => line.includes('idle')),
+  'After late step-start, state must still remain working and never report idle'
+);
+
+// 6. Second tool runs and finishes
+await hooks['tool.execute.before']({
+  sessionID: 'ses-main',
+  tool: 'bash',
+  callID: 'call-102'
+});
+await hooks['tool.execute.after'](
+  { sessionID: 'ses-main', tool: 'bash', callID: 'call-102' },
+  { output: 'second tool finished' }
+);
+// Another gap > 3500 ms
+await new Promise(r => setTimeout(r, 4000));
+assert.ok(
+  !readLog().some(line => line.includes('idle')),
+  'After second tool and subsequent reasoning gap, plugin must still NOT report idle'
+);
+
+// 7. Real turn end: OpenCode emits session.status idle
+await hooks.event({
+  event: {
+    type: 'session.status',
+    properties: {
+      sessionID: 'ses-main',
+      status: { type: 'idle' }
+    }
+  }
+});
+// Before 3500 ms debounce timer expires, it has NOT reported idle yet
+await new Promise(r => setTimeout(r, 1000));
+assert.ok(
+  !readLog().some(line => line.includes('idle')),
+  'Before 3500 ms debounce timeout, idle must not be reported prematurely'
+);
+
+// After full debounce timeout (3500ms + margin = 3000ms more -> 4000ms total), idle MUST be reported!
+await new Promise(r => setTimeout(r, 3000));
+const finalLog = readLog();
+assert.ok(
+  finalLog.some(line => line === 'state-report idle'),
+  'After full debounce timeout following genuine session.status idle, plugin must report idle'
+);
+
+console.log('REASONING_GAP_SAFETY_TEST_OK');
+"#;
+
+    let test_path = dir.path().join("test_gap.mjs");
+    fs::write(&test_path, node_test).unwrap();
+
+    let output = std::process::Command::new("node")
+        .arg(&test_path)
+        .arg(&module_path)
+        .arg(&log_path)
+        .output()
+        .expect("failed to execute node");
+
+    assert!(
+        output.status.success(),
+        "Node reasoning gap test failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("REASONING_GAP_SAFETY_TEST_OK"));
+}
+
+

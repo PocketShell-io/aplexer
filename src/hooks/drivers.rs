@@ -27,7 +27,12 @@ use super::*;
 ///   session + call id, so `tool.execute.after` can surface
 ///   foreign-workspace awareness from its own input identity — never from
 ///   a shared slot a concurrent call could overwrite.
-/// - `tool.execute.after` shells out to `a context hook --engine opencode`
+/// - `tool.execute.after` deletes the tool from pending and evaluates aggregate
+///   state. Crucially, pending-drain NEVER sets session state to idle; only
+///   genuine `session.status` (idle) and `session.idle` events are authoritative
+///   for turn completion. This guarantees that multi-second model reasoning gaps
+///   following a tool do not trigger premature idle reports before the turn ends.
+///   It shells out to `a context hook --engine opencode`
 ///   (argv, 5s timeout) with a flat JSON payload — `hook_event_name`,
 ///   `tool_name`, `session_id`, `tool_input` — and appends the returned
 ///   plain text to `output.output`. Append-only: the original tool result
@@ -267,7 +272,6 @@ export const AplexerStateReport = async () => {{
       const sid = String(input?.sessionID ?? input?.session_id ?? "");
       cancelGlobalIdle();
       setSessionState(sid, "working");
-      report("working");
       try {{
         const entry = {{
           tool: String(input?.tool ?? input?.tool_name ?? ""),
@@ -290,11 +294,7 @@ export const AplexerStateReport = async () => {{
         const entry = pending.get(key) ?? null;
         pending.delete(key);
         const sessionID = input?.sessionID ?? input?.session_id ?? entry?.sessionID;
-        if (pending.size === 0) {{
-          setSessionState(sessionID, "idle");
-        }} else {{
-          evaluateAggregateState();
-        }}
+        evaluateAggregateState();
         const tool = String(input?.tool ?? input?.tool_name ?? entry?.tool ?? "");
         if (!output || typeof output.output !== "string") return;
         const awareness = runAwareness(tool, String(sessionID ?? ""), entry?.args ?? {{}});
