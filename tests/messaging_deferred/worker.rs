@@ -97,12 +97,31 @@ fn respond(
             }
             if let Some(draft) = &config.draft_in_composer {
                 payload.extend_from_slice(format!("│ ❯ {draft} │\n").as_bytes());
-            } else if !config.drop_screen_echo {
+            } else if !config.drop_screen_echo && !writes.is_empty() {
                 for w in writes.iter() {
                     payload.extend_from_slice(w);
                 }
             } else {
-                payload.extend_from_slice(b"Ask Codex to do anything\n");
+                match record.engine.as_str() {
+                    "opencode" => {
+                        payload.extend_from_slice(
+                            "  ┃  Build auto · Muse Spark 1.3 Contributor OpenCode Go\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n   /home/alexey/git/test-ws  ctrl+p commands\n".as_bytes(),
+                        );
+                    }
+                    "grok" => {
+                        payload.extend_from_slice(
+                            "  ╭───────────────────────────────────────╮\n  │ ❯                                     │\n  ╰────────────── Grok 4.7 · always-approve ╯\n  Shift+Tab:mode │ Ctrl+.:shortcuts\n".as_bytes(),
+                        );
+                    }
+                    "shell" => {
+                        payload.extend_from_slice(b"alexey@host:~$ ");
+                    }
+                    _ => {
+                        payload.extend_from_slice(
+                            "› Ask Codex to do anything\n  glm-5.3-flash max · test-ws · Normal interactive session requested\n".as_bytes(),
+                        );
+                    }
+                }
             }
             write_json(
                 stream,

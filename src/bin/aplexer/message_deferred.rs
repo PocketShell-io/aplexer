@@ -60,24 +60,44 @@ fn require_ready_prompt(record: &SessionRecord) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PromptState {
+    Empty,
+    Draft(String),
+    Unknown(String),
+}
+
 fn check_prompt_empty(record: &SessionRecord) -> Result<()> {
     let screen_bytes = rpc_capture_screen(record, true)
         .context("capture screen to verify recipient composer is ready")?;
     let screen_text = String::from_utf8_lossy(&screen_bytes);
-    if let Some(draft) = detect_composer_draft(&screen_text, &record.engine) {
-        bail!("recipient composer has an unsubmitted draft in progress ({draft}); delivery fail-closed");
+    match classify_composer_prompt(&screen_text, &record.engine) {
+        PromptState::Empty => Ok(()),
+        PromptState::Draft(draft) => {
+            bail!("recipient composer has an unsubmitted draft in progress ({draft}); delivery fail-closed");
+        }
+        PromptState::Unknown(reason) => {
+            bail!("recipient composer prompt state is unknown ({reason}); delivery fail-closed");
+        }
     }
-    Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn detect_composer_draft(screen_text: &str, engine: &str) -> Option<String> {
+    match classify_composer_prompt(screen_text, engine) {
+        PromptState::Draft(draft) => Some(draft),
+        _ => None,
+    }
+}
+
+pub(crate) fn classify_composer_prompt(screen_text: &str, engine: &str) -> PromptState {
     if screen_text.contains("[draft in progress]") {
-        return Some("unsubmitted user draft detected".into());
+        return PromptState::Draft("unsubmitted user draft detected".into());
     }
 
     let all_lines: Vec<&str> = screen_text.lines().collect();
     if all_lines.is_empty() {
-        return None;
+        return PromptState::Unknown("screen capture is empty".into());
     }
 
     fn is_footer_or_status(line: &str) -> bool {
@@ -91,7 +111,8 @@ pub(crate) fn detect_composer_draft(screen_text: &str, engine: &str) -> Option<S
             || t.contains("ESC")
             || t.contains("commands")
             || t.contains("shortcuts")
-            || t.contains("Build auto")
+            || t.contains("Shift+Tab")
+            || t.contains("Normal interactive session requested")
             || t.starts_with("tokens:")
             || t.starts_with("model:")
             || t.starts_with("? help")
@@ -108,7 +129,7 @@ pub(crate) fn detect_composer_draft(screen_text: &str, engine: &str) -> Option<S
         }
     }
     if end_idx == 0 {
-        return None;
+        return PromptState::Unknown("screen only contains footers or empty lines".into());
     }
 
     let active_slice = &all_lines[..end_idx];
@@ -116,13 +137,18 @@ pub(crate) fn detect_composer_draft(screen_text: &str, engine: &str) -> Option<S
     match engine {
         "opencode" => {
             let mut box_lines = Vec::new();
+            let mut saw_bottom_border = false;
             for &line in active_slice.iter().rev() {
                 let trimmed = line.trim();
-                if trimmed.starts_with('┃')
-                    || trimmed.starts_with('│')
-                    || trimmed.ends_with('┃')
-                    || trimmed.ends_with('│')
+                if trimmed.starts_with('╹')
+                    || trimmed.starts_with('▀')
+                    || trimmed.starts_with('└')
+                    || trimmed.starts_with('╰')
                 {
+                    saw_bottom_border = true;
+                    continue;
+                }
+                if trimmed.starts_with('┃') || trimmed.starts_with('│') {
                     box_lines.push(line);
                 } else if trimmed.starts_with('┌')
                     || trimmed.starts_with('╭')
@@ -133,6 +159,11 @@ pub(crate) fn detect_composer_draft(screen_text: &str, engine: &str) -> Option<S
                     break;
                 }
             }
+
+            if box_lines.is_empty() && !saw_bottom_border {
+                return PromptState::Unknown("opencode composer box not recognized".into());
+            }
+
             for line in box_lines.iter().rev() {
                 let trimmed = line.trim();
                 let inner = trimmed
@@ -144,18 +175,22 @@ pub(crate) fn detect_composer_draft(screen_text: &str, engine: &str) -> Option<S
                             || c == '└'
                             || c == '┘'
                             || c == '─'
+                            || c == '╹'
+                            || c == '▀'
                     })
                     .trim();
-                if !inner.is_empty()
-                    && inner != "Ask a question..."
-                    && inner != "Type a message..."
-                    && !inner.contains("ctrl+p")
-                    && !inner.contains("commands")
+                if inner.is_empty()
+                    || inner == "Ask a question..."
+                    || inner == "Type a message..."
+                    || inner.starts_with("Build auto")
+                    || inner.contains("ctrl+p")
+                    || inner.contains("commands")
                 {
-                    return Some(inner.to_string());
+                    continue;
                 }
+                return PromptState::Draft(inner.to_string());
             }
-            None
+            PromptState::Empty
         }
         "codex" | "zcodex" => {
             let mut prompt_idx = None;
@@ -167,24 +202,32 @@ pub(crate) fn detect_composer_draft(screen_text: &str, engine: &str) -> Option<S
                 }
             }
 
-            if let Some(p_idx) = prompt_idx {
-                let prompt_line = active_slice[p_idx].trim();
-                let prompt_char = if prompt_line.contains('›') { '›' } else { '❯' };
-                let pos = prompt_line.find(prompt_char).unwrap();
-                let prompt_text = prompt_line[pos + prompt_char.len_utf8()..].trim();
+            let Some(p_idx) = prompt_idx else {
+                return PromptState::Unknown("codex prompt marker not found".into());
+            };
 
-                if !prompt_text.is_empty() && prompt_text != "Ask Codex to do anything" {
-                    return Some(prompt_text.to_string());
-                }
+            let prompt_line = active_slice[p_idx].trim();
+            let prompt_char = if prompt_line.contains('›') { '›' } else { '❯' };
+            let pos = prompt_line.find(prompt_char).unwrap();
+            let prompt_text = prompt_line[pos + prompt_char.len_utf8()..].trim();
 
-                for &line in &active_slice[p_idx + 1..] {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() && !is_footer_or_status(trimmed) {
-                        return Some(trimmed.to_string());
-                    }
-                }
+            if !prompt_text.is_empty() && prompt_text != "Ask Codex to do anything" {
+                return PromptState::Draft(prompt_text.to_string());
             }
-            None
+
+            for &line in &active_slice[p_idx + 1..] {
+                let trimmed = line.trim();
+                if trimmed.is_empty()
+                    || is_footer_or_status(trimmed)
+                    || trimmed.contains("glm-")
+                    || trimmed.contains("Normal interactive session")
+                {
+                    continue;
+                }
+                return PromptState::Draft(trimmed.to_string());
+            }
+
+            PromptState::Empty
         }
         "grok" => {
             let mut prompt_idx = None;
@@ -195,38 +238,58 @@ pub(crate) fn detect_composer_draft(screen_text: &str, engine: &str) -> Option<S
                     break;
                 }
             }
-            if let Some(p_idx) = prompt_idx {
-                let prompt_line = active_slice[p_idx].trim();
-                let pos = prompt_line.find('❯').unwrap();
-                let after = prompt_line[pos + '❯'.len_utf8()..]
-                    .trim()
-                    .trim_end_matches('│')
-                    .trim();
-                if !after.is_empty() {
-                    return Some(after.to_string());
+
+            let Some(p_idx) = prompt_idx else {
+                return PromptState::Unknown("grok prompt marker not found".into());
+            };
+
+            let prompt_line = active_slice[p_idx].trim();
+            let pos = prompt_line.find('❯').unwrap();
+            let after = prompt_line[pos + '❯'.len_utf8()..]
+                .trim()
+                .trim_end_matches('│')
+                .trim();
+            if !after.is_empty() {
+                return PromptState::Draft(after.to_string());
+            }
+
+            for &line in &active_slice[p_idx + 1..] {
+                let trimmed = line.trim();
+                if trimmed.is_empty()
+                    || is_footer_or_status(trimmed)
+                    || trimmed.starts_with('╰')
+                    || trimmed.contains("Grok")
+                    || trimmed.contains("always-approve")
+                {
+                    continue;
                 }
-                for &line in &active_slice[p_idx + 1..] {
-                    let trimmed = line.trim().trim_end_matches('│').trim();
-                    if !trimmed.is_empty() && !is_footer_or_status(trimmed) {
-                        return Some(trimmed.to_string());
-                    }
+                let inner = trimmed.trim_end_matches('│').trim();
+                if !inner.is_empty() {
+                    return PromptState::Draft(inner.to_string());
                 }
             }
-            None
+
+            PromptState::Empty
         }
         "shell" => {
+            let mut prompt_found = false;
             if let Some(&last_line) = active_slice.last() {
                 let trimmed = last_line.trim();
                 for prompt_char in ['$', '#', '%', '❯', '>'] {
                     if let Some(pos) = trimmed.rfind(prompt_char) {
+                        prompt_found = true;
                         let after = trimmed[pos + prompt_char.len_utf8()..].trim();
                         if !after.is_empty() {
-                            return Some(after.to_string());
+                            return PromptState::Draft(after.to_string());
                         }
                     }
                 }
             }
-            None
+            if prompt_found {
+                PromptState::Empty
+            } else {
+                PromptState::Unknown("shell prompt marker not found".into())
+            }
         }
         _ => {
             let mut prompt_idx = None;
@@ -241,27 +304,31 @@ pub(crate) fn detect_composer_draft(screen_text: &str, engine: &str) -> Option<S
                     break;
                 }
             }
-            if let Some(p_idx) = prompt_idx {
-                let prompt_line = active_slice[p_idx].trim();
-                for prompt_char in ['›', '❯', '$', '%', '>'] {
-                    if let Some(pos) = prompt_line.find(prompt_char) {
-                        let after = prompt_line[pos + prompt_char.len_utf8()..]
-                            .trim()
-                            .trim_end_matches('│')
-                            .trim();
-                        if !after.is_empty() && after != "Ask Codex to do anything" {
-                            return Some(after.to_string());
-                        }
-                    }
-                }
-                for &line in &active_slice[p_idx + 1..] {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() && !is_footer_or_status(trimmed) {
-                        return Some(trimmed.to_string());
+
+            let Some(p_idx) = prompt_idx else {
+                return PromptState::Unknown("generic prompt marker not found".into());
+            };
+
+            let prompt_line = active_slice[p_idx].trim();
+            for prompt_char in ['›', '❯', '$', '%', '>'] {
+                if let Some(pos) = prompt_line.find(prompt_char) {
+                    let after = prompt_line[pos + prompt_char.len_utf8()..]
+                        .trim()
+                        .trim_end_matches('│')
+                        .trim();
+                    if !after.is_empty() && after != "Ask Codex to do anything" {
+                        return PromptState::Draft(after.to_string());
                     }
                 }
             }
-            None
+            for &line in &active_slice[p_idx + 1..] {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !is_footer_or_status(trimmed) {
+                    return PromptState::Draft(trimmed.to_string());
+                }
+            }
+
+            PromptState::Empty
         }
     }
 }
@@ -364,17 +431,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_opencode_real_empty_capture() {
+        let screen = "  ┃  Build auto · Muse Spark 1.3 Contributor OpenCode Go                                     \n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  \n   /home/alexey/git/cloudflare-agent-git              434.1K (41%) · $0.52  ctrl+p commands  ";
+        assert_eq!(
+            classify_composer_prompt(screen, "opencode"),
+            PromptState::Empty
+        );
+    }
+
+    #[test]
     fn test_opencode_composer_empty_with_placeholder() {
         let screen = "│ Chat message 1 │\n│ Chat message 2 │\n┌────────────────┐\n│ Ask a question... │\n└────────────────┘\nctrl+p commands";
-        assert_eq!(detect_composer_draft(screen, "opencode"), None);
+        assert_eq!(
+            classify_composer_prompt(screen, "opencode"),
+            PromptState::Empty
+        );
     }
 
     #[test]
     fn test_opencode_composer_single_line_draft() {
         let screen = "│ Chat message 1 │\n┌────────────────┐\n│ my draft text  │\n└────────────────┘\nctrl+p commands";
         assert_eq!(
-            detect_composer_draft(screen, "opencode"),
-            Some("my draft text".into())
+            classify_composer_prompt(screen, "opencode"),
+            PromptState::Draft("my draft text".into())
         );
     }
 
@@ -386,22 +465,42 @@ mod tests {
         }
         screen.push_str("└────────────────┘\nctrl+p commands");
         assert_eq!(
-            detect_composer_draft(&screen, "opencode"),
-            Some("line 1 of draft".into())
+            classify_composer_prompt(&screen, "opencode"),
+            PromptState::Draft("line 1 of draft".into())
         );
     }
 
     #[test]
-    fn test_codex_composer_empty_with_placeholder() {
-        let screen =
-            "› cargo test\ntest result: ok\n› Ask Codex to do anything\n? for shortcuts";
-        assert_eq!(detect_composer_draft(screen, "codex"), None);
+    fn test_grok_real_empty_capture() {
+        let screen = "  ╭───────────────────────────────────────────────────────────────────────────────────────╮  \n  │ ❯                                                                                     │  \n  ╰────────────────────────────────────────────────── Grok 4.7 (medium) · always-approve ─╯  \n                                                                                             \n  Shift+Tab:mode  │  Ctrl+.:shortcuts                                                        ";
+        assert_eq!(classify_composer_prompt(screen, "grok"), PromptState::Empty);
+    }
+
+    #[test]
+    fn test_grok_draft_capture() {
+        let screen = "  ╭───────────────────────────────────────────────────────────────────────────────────────╮  \n  │ ❯ unsubmitted grok draft                                                              │  \n  ╰────────────────────────────────────────────────── Grok 4.7 (medium) · always-approve ─╯  \n                                                                                             \n  Shift+Tab:mode  │  Ctrl+.:shortcuts                                                        ";
+        assert_eq!(
+            classify_composer_prompt(screen, "grok"),
+            PromptState::Draft("unsubmitted grok draft".into())
+        );
+    }
+
+    #[test]
+    fn test_codex_real_empty_capture() {
+        let screen = "  Worked for 29m 26s · 4:04 AM\n \n \n› Ask Codex to do anything\n \n  glm-5.3-flash max · ~/git/cloudflare-agent-git · Normal interactive session requested";
+        assert_eq!(
+            classify_composer_prompt(screen, "codex"),
+            PromptState::Empty
+        );
     }
 
     #[test]
     fn test_codex_composer_empty_just_prompt() {
         let screen = "› cargo test\ntest result: ok\n› \n? for shortcuts";
-        assert_eq!(detect_composer_draft(screen, "codex"), None);
+        assert_eq!(
+            classify_composer_prompt(screen, "codex"),
+            PromptState::Empty
+        );
     }
 
     #[test]
@@ -409,8 +508,8 @@ mod tests {
         let screen =
             "› cargo test\ntest result: ok\n› refactor this module\n? for shortcuts";
         assert_eq!(
-            detect_composer_draft(screen, "codex"),
-            Some("refactor this module".into())
+            classify_composer_prompt(screen, "codex"),
+            PromptState::Draft("refactor this module".into())
         );
     }
 
@@ -422,24 +521,37 @@ mod tests {
         }
         screen.push_str("? for shortcuts");
         assert_eq!(
-            detect_composer_draft(&screen, "codex"),
-            Some("line 1 of draft".into())
+            classify_composer_prompt(&screen, "codex"),
+            PromptState::Draft("line 1 of draft".into())
         );
     }
 
     #[test]
     fn test_shell_engine_empty_prompt() {
         let screen = "alexey@host:~$ ls -la\ntotal 0\nalexey@host:~$ ";
-        assert_eq!(detect_composer_draft(screen, "shell"), None);
+        assert_eq!(
+            classify_composer_prompt(screen, "shell"),
+            PromptState::Empty
+        );
     }
 
     #[test]
     fn test_shell_engine_active_draft() {
         let screen = "alexey@host:~$ ls -la\ntotal 0\nalexey@host:~$ git status";
         assert_eq!(
-            detect_composer_draft(screen, "shell"),
-            Some("git status".into())
+            classify_composer_prompt(screen, "shell"),
+            PromptState::Draft("git status".into())
         );
     }
+
+    #[test]
+    fn test_unknown_unrecognized_screen() {
+        let screen = "just some random output with no recognizable prompt or borders\nanother line";
+        assert!(matches!(
+            classify_composer_prompt(screen, "codex"),
+            PromptState::Unknown(_)
+        ));
+    }
 }
+
 
