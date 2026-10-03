@@ -44,9 +44,12 @@ pub(crate) enum MessageCommand {
 
 #[derive(Args)]
 pub(crate) struct MessageDeliverArgs {
-    /// Original durable message ID; if omitted, delivers the oldest queued inbox message.
+    /// Original durable message ID; if omitted (or with --next), delivers the oldest queued inbox message.
     #[arg(value_name = "MESSAGE_ID")]
     pub(crate) message_id: Option<Uuid>,
+    /// Deliver the oldest unacknowledged queued inbox message for the calling session.
+    #[arg(long)]
+    pub(crate) next: bool,
     /// Destination mailbox (defaults to the calling session workspace).
     #[arg(long, value_name = "PATH")]
     pub(crate) workspace: Option<PathBuf>,

@@ -52,6 +52,7 @@ pub(crate) fn deliver_pane(
 ) -> Result<()> {
     let record = pane_target(records, workspace, envelope)?;
     let tag = &record.tag;
+    let pre_state = record.reported_state.as_deref().unwrap_or("idle");
     let input = pane_input_bytes(envelope, raw, no_enter);
     if no_enter {
         return rpc_send(record, &input)
@@ -64,13 +65,14 @@ pub(crate) fn deliver_pane(
     };
     rpc_send_submitted(record, &input, kind)
         .with_context(|| format!("submit message in session {tag:?}'s PTY"))?;
-    verify_pane_delivery(record, envelope, raw)
+    verify_pane_delivery(record, envelope, raw, pre_state)
 }
 
 pub(crate) fn verify_pane_delivery(
     record: &SessionRecord,
     envelope: &MessageEnvelope,
     raw: bool,
+    pre_state: &str,
 ) -> Result<()> {
     let needle = if raw {
         envelope
@@ -108,15 +110,17 @@ pub(crate) fn verify_pane_delivery(
             }
         }
 
-        // 3. Check live status for transition to working
-        if let Ok(raw_status) = rpc_simple(record, Operation::Status, None) {
-            if let Ok(live) = serde_json::from_value::<SessionRecord>(raw_status) {
-                let now = now_ms();
-                let (state, _) = session_ui_state(&live, now);
-                if matches!(state, "running" | "working")
-                    || live.reported_state.as_deref() == Some("working")
-                {
-                    return Ok(());
+        // 3. Check live status for correlated transition from idle/waiting to working
+        if pre_state != "working" {
+            if let Ok(raw_status) = rpc_simple(record, Operation::Status, None) {
+                if let Ok(live) = serde_json::from_value::<SessionRecord>(raw_status) {
+                    let now = now_ms();
+                    let (state, _) = session_ui_state(&live, now);
+                    if matches!(state, "running" | "working")
+                        || live.reported_state.as_deref() == Some("working")
+                    {
+                        return Ok(());
+                    }
                 }
             }
         }
