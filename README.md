@@ -428,6 +428,25 @@ includes the message id and reply command. A successful send proves storage
 or PTY injection, not that the recipient acted. Request a reply when receipt
 matters.
 
+## Delegated tasks
+
+Run one prompt noninteractively through any configured engine, with the
+evidence left behind and the exit code that tells the truth:
+
+```bash
+a task run --prompt-file ROLE.md --engine codex     # runs to completion, exits with the engine's code
+ls .aplexer-tasks/<...>/                            # START.json, RESULT.json, stdout.log, stderr.log
+a task run --prompt-file ROLE.md --engine zcodex \
+    --cutoff 2026-10-04T03:00:00+02:00 --cutoff-engine antigravity
+                                                    # route new launches after a timezone-aware cutoff
+```
+
+The completion notice is mailbox mail sent as the calling session (never a
+faked identity). Host a task in a durable session with
+`a start -- a task run …` and the session records the real parent lineage.
+Timeouts kill only the task's own process group. See
+[docs/delegated-tasks.md](docs/delegated-tasks.md) for the full contract.
+
 ## From Python
 
 The `aplexer` package (installed alongside the CLI) talks to the same

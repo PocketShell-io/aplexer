@@ -47,6 +47,8 @@ mod cli_examples;
 mod cli_message_args;
 #[path = "cli_session_args.rs"]
 mod cli_session_args;
+#[path = "cli_task_args.rs"]
+mod cli_task_args;
 #[path = "commands.rs"]
 mod commands;
 #[path = "completions.rs"]
@@ -111,6 +113,8 @@ mod switch_targets;
 mod switching;
 #[path = "system.rs"]
 mod system;
+#[path = "task_commands.rs"]
+mod task_commands;
 #[path = "terminal.rs"]
 mod terminal;
 #[path = "terminal_status.rs"]
@@ -125,6 +129,7 @@ pub(crate) use capture_commands::*;
 pub(crate) use cli::*;
 pub(crate) use cli_message_args::*;
 pub(crate) use cli_session_args::*;
+pub(crate) use cli_task_args::*;
 pub(crate) use commands::*;
 pub(crate) use completions::*;
 pub(crate) use diagnostics::*;

@@ -446,6 +446,7 @@ mod tests {
             env: BTreeMap::new(),
             env_unset: Vec::new(),
             skip_permissions_argv: Vec::new(),
+            task_argv: Vec::new(),
         }
     }
 
@@ -634,6 +635,7 @@ mod tests {
                     env: BTreeMap::from([("PINNED".to_string(), "1".to_string())]),
                     env_unset: Vec::new(),
                     skip_permissions_argv: vec!["--auto".into()],
+                    task_argv: Vec::new(),
                 },
             )]),
             ..Config::default()

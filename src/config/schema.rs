@@ -30,6 +30,14 @@ pub struct EngineConfig {
     /// `every_prompting_builtin_engine_declares_a_skip_permissions_flag`.
     #[serde(default)]
     pub skip_permissions_argv: Vec<String>,
+    /// Argv that turns this engine into a noninteractive one-prompt run for
+    /// `a task run` (appended after the engine/profile command, before the
+    /// prompt text as the final argv element): `["exec", "--json"]` for a
+    /// codex-style CLI, `["-p"]` for a print-mode CLI. Absent/empty falls
+    /// back to the built-in per-family defaults in `crate::task`; an engine
+    /// with neither refuses task runs rather than guessing its flags.
+    #[serde(default)]
+    pub task_argv: Vec<String>,
 }
 impl EngineConfig {
     /// Effective unset policy for one named engine. `shell` is the deliberate

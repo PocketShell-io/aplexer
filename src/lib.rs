@@ -9,6 +9,7 @@ pub mod placement;
 pub mod retired;
 pub mod screen;
 pub mod shell_prompt;
+pub mod task;
 pub mod warnings;
 pub mod watch;
 pub mod worker;

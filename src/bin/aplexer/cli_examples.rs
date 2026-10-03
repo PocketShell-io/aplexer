@@ -225,6 +225,33 @@ pub(crate) const HANDOFF_EXAMPLES: &str = r#"Examples:
                                   widen the embedded windows
 "#;
 
+pub(crate) const TASK_EXAMPLES: &str = r#"Examples:
+  a task run --prompt-file ROLE.md --engine codex
+                                    run one prompt noninteractively, capture
+                                    START/RESULT/stdout/stderr, exit with the
+                                    engine's real exit code
+  a --json start --workspace .tmp/case --tag fix-42 --engine shell -- \
+    a task run --prompt-file ROLE.md --engine zcodex --cwd .tmp/case \
+                --timeout-secs 14400 --notify-workspace ~/git/app
+                                    host a task in a durable session: the
+                                    session records this session as its real
+                                    parent and notices `main` on completion
+  a task run --prompt-file p.md --engine codex --engine-arg -o \
+      --engine-arg out/FINAL.md     keep the engine's last message as an artifact
+  a task run --prompt-file p.md --engine zcodex \
+      --cutoff 2026-10-04T03:00:00+02:00 --cutoff-engine antigravity
+                                    route new launches after a Berlin-cutoff
+                                    instant; nothing running is ever interrupted
+  a task run --prompt-file p.md --engine codex --no-notify
+                                    skip the completion notice entirely
+
+The notice is sent through the ordinary workspace mailbox as the calling
+session (never a faked identity) and a failed notice never discards the
+task result -- the outcome is recorded in RESULT.json. Cutoff routing
+picks an engine for new launches only and carries no application context;
+continuation needs the saved handoff file.
+"#;
+
 pub(crate) const COMPLETIONS_EXAMPLES: &str = r#"Examples:
   source <(COMPLETE=bash a)             bash: completes live sessions/engines too
   a completions bash > \

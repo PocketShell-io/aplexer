@@ -1,6 +1,7 @@
 use super::cli_examples::*;
 use super::cli_message_args::*;
 use super::cli_session_args::*;
+use super::cli_task_args::*;
 use super::commands::run;
 use clap::{Parser, Subcommand};
 
@@ -137,6 +138,11 @@ pub(crate) enum Commands {
     /// (identity, transcript, PTY tail, screen, workspace, gaps).
     #[command(after_help = HANDOFF_EXAMPLES)]
     Handoff(HandoffArgs),
+    /// Run one noninteractive delegated task: prompt file in, engine exec
+    /// out, evidence files and the real exit code left behind, completion
+    /// notice sent as the calling session.
+    #[command(after_help = TASK_EXAMPLES)]
+    Task(TaskArgs),
     /// Print a shell completion script for `a` to stdout.
     #[command(after_help = COMPLETIONS_EXAMPLES)]
     Completions(CompletionsArgs),
