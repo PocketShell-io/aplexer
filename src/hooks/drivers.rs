@@ -85,10 +85,13 @@ function cancelGlobalIdle() {{
 }}
 
 function setSessionState(sessionID, state) {{
-  const key = String(sessionID ?? "");
-  if (key.length > 0) {{
-    sessionStates.set(key, state);
+  let key = "_global";
+  if (typeof sessionID === "string" && sessionID.trim().length > 0) {{
+    key = sessionID.trim();
+  }} else if (typeof sessionID === "number" && !isNaN(sessionID)) {{
+    key = String(sessionID);
   }}
+  sessionStates.set(key, state);
   evaluateAggregateState();
 }}
 
@@ -101,13 +104,17 @@ function evaluateAggregateState() {{
     if (s === "waiting") anyWaiting = true;
     if (s !== "idle") allIdle = false;
   }}
+  if (pending.size > 0) {{
+    anyWorking = true;
+    allIdle = false;
+  }}
   if (anyWorking) {{
     cancelGlobalIdle();
     report("working");
   }} else if (anyWaiting) {{
     cancelGlobalIdle();
     report("waiting");
-  }} else if (allIdle && sessionStates.size > 0) {{
+  }} else if (allIdle && sessionStates.size > 0 && pending.size === 0) {{
     if (!idleTimer) {{
       idleTimer = setTimeout(() => {{
         idleTimer = null;
@@ -115,6 +122,7 @@ function evaluateAggregateState() {{
         for (const s of sessionStates.values()) {{
           if (s !== "idle") stillAllIdle = false;
         }}
+        if (pending.size > 0) stillAllIdle = false;
         if (stillAllIdle && sessionStates.size > 0) {{
           report("idle");
         }}
@@ -227,10 +235,15 @@ export const AplexerStateReport = async () => {{
         const key = callKey(input) + "|" + String(input?.tool ?? input?.tool_name ?? "");
         const entry = pending.get(key) ?? null;
         pending.delete(key);
-        const sessionID = String(input?.sessionID ?? input?.session_id ?? entry?.sessionID ?? "");
+        const sessionID = input?.sessionID ?? input?.session_id ?? entry?.sessionID;
+        if (pending.size === 0) {{
+          setSessionState(sessionID, "idle");
+        }} else {{
+          evaluateAggregateState();
+        }}
         const tool = String(input?.tool ?? input?.tool_name ?? entry?.tool ?? "");
         if (!output || typeof output.output !== "string") return;
-        const awareness = runAwareness(tool, sessionID, entry?.args ?? {{}});
+        const awareness = runAwareness(tool, String(sessionID ?? ""), entry?.args ?? {{}});
         if (awareness === null) return;
         // Append only: the original tool result is preserved byte-for-byte.
         output.output = output.output + "\n\n" + awareness.trim() + "\n";
