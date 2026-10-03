@@ -95,15 +95,22 @@ pub(crate) fn evaluate_readiness_verdict(
         return ReadinessVerdict::Reject(readiness_detail(record, state, source, now));
     }
 
+    let has_hooks = aplexer::hooks::session_record_has_lifecycle_hooks(record);
+
     // 3. Contradicted resting state check:
     // If the agent reported resting ('idle' or 'waiting'), did newer PTY activity land after the push?
-    // Any activity beyond the grace window invalidates the resting report.
+    // Engine-specific: Antigravity background cursor/timer redraws are exempted; all other engines fail closed.
     if let (Some(rep), Some(at)) = (record.reported_state.as_deref(), record.reported_state_at_ms) {
-        if matches!(rep, "idle" | "waiting") {
+        if rep == "idle" && aplexer::watch::idle_was_contradicted_with_hooks(record, at, has_hooks) {
+            return ReadinessVerdict::Reject(format!(
+                "recipient reported idle at {at}ms, but subsequent PTY activity contradicted resting state; delivery fail-closed"
+            ));
+        }
+        if rep == "waiting" && record.engine != "antigravity" {
             if let Some(last_act) = record.last_activity_ms {
                 if last_act > at.saturating_add(aplexer::watch::IDLE_ACTIVITY_GRACE_MS) {
                     return ReadinessVerdict::Reject(format!(
-                        "recipient reported {rep} at {at}ms, but subsequent PTY activity occurred at {last_act}ms (+{}ms); resting state contradicted, delivery fail-closed",
+                        "recipient reported waiting at {at}ms, but subsequent PTY activity occurred at {last_act}ms (+{}ms); resting state contradicted, delivery fail-closed",
                         last_act.saturating_sub(at)
                     ));
                 }
@@ -111,23 +118,13 @@ pub(crate) fn evaluate_readiness_verdict(
         }
     }
 
-    // 4. Fresh resting report:
+    // 4. Only authentic fresh resting report (uncontradicted idle or waiting) is ready:
     if source == "reported" && matches!(state, "waiting" | "idle") {
         return ReadinessVerdict::Ready;
     }
 
-    // 5. Expired waiting with lifecycle hooks and NO contradictory activity:
-    // A waiting report expires after REPORTED_STATE_STALE_MS (8s), but if the session has lifecycle hooks,
-    // its last report was 'waiting', no subsequent activity has occurred, and the composer is proven Empty,
-    // the agent is quiescently waiting at the prompt.
-    if aplexer::hooks::session_record_has_lifecycle_hooks(record)
-        && record.reported_state.as_deref() == Some("waiting")
-        && state == "waiting"
-    {
-        return ReadinessVerdict::Ready;
-    }
-
-    // All other states (e.g. no hooks installed, expired running, unsupported states) fail closed
+    // All other states (stale reports, inferred/heuristic states without fresh report, no hooks) fail closed.
+    // Expired waiting + empty composer does NOT prove completed turn; fail closed.
     ReadinessVerdict::Reject(readiness_detail(record, state, source, now))
 }
 
@@ -822,6 +819,57 @@ mod tests {
         }))
         .unwrap();
         let prompt_state = PromptState::Empty;
+        let verdict = evaluate_readiness_verdict(&prompt_state, &record, 20000);
+        assert!(matches!(verdict, ReadinessVerdict::Reject(_)));
+    }
+
+    #[test]
+    fn test_readiness_verdict_accepts_antigravity_idle_with_background_timer_redraw() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/tmp",
+            "tag": "test",
+            "engine": "antigravity",
+            "command": ["agy"],
+            "cwd": "/tmp",
+            "phase": "running",
+            "history_bytes": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "reported_state": "idle",
+            "reported_state_at_ms": 1000,
+            "last_activity_ms": 5000,
+        }))
+        .unwrap();
+        let prompt_state = PromptState::Empty;
+        // Antigravity TUI continuous background timer/cursor redraws are exempted from contradicting idle
+        let verdict = evaluate_readiness_verdict(&prompt_state, &record, 5500);
+        assert_eq!(verdict, ReadinessVerdict::Ready);
+    }
+
+    #[test]
+    fn test_readiness_verdict_rejects_expired_waiting_even_with_empty_composer_and_hooks() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000001",
+            "workspace": "/tmp",
+            "tag": "test",
+            "engine": "opencode",
+            "command": ["opencode"],
+            "cwd": "/tmp",
+            "phase": "running",
+            "history_bytes": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+            "reported_state": "waiting",
+            "reported_state_at_ms": 1000,
+            "last_activity_ms": 1000,
+        }))
+        .unwrap();
+        let prompt_state = PromptState::Empty;
+        // After 20 seconds, waiting report is expired (>8s). Even with empty composer and hooks,
+        // it must reject because silent background tool execution can share an empty composer footer.
         let verdict = evaluate_readiness_verdict(&prompt_state, &record, 20000);
         assert!(matches!(verdict, ReadinessVerdict::Reject(_)));
     }

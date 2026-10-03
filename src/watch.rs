@@ -35,12 +35,11 @@ use serde_json::json;
 use state::derive_agent_state;
 pub use state::{
     derive_agent_state_with_source, derive_agent_state_with_source_and_hooks,
-    reported_state_rejection, reported_state_rejection_with_hooks,
+    idle_was_contradicted_with_hooks, reported_state_rejection, reported_state_rejection_with_hooks,
+    IDLE_ACTIVITY_GRACE_MS,
 };
 #[cfg(test)]
-use state::{
-    fresh_reported_state, ACTIVITY_THRESHOLD_MS, IDLE_ACTIVITY_GRACE_MS, REPORTED_STATE_STALE_MS,
-};
+use state::{fresh_reported_state, ACTIVITY_THRESHOLD_MS, REPORTED_STATE_STALE_MS};
 
 /// How often to re-scan session metadata. `list_records` is a directory scan
 /// over small JSON files -- spec.md section 30 calls this "milliseconds on

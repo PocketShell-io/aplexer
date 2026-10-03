@@ -67,7 +67,7 @@ pub(super) const REPORTED_STATE_STALE_MS: u64 = 8_000;
 /// invalidated the moment newer PTY activity appears", with a grace so
 /// the invalidation cannot be tripped by the very output that ended the
 /// turn.)
-pub(super) const IDLE_ACTIVITY_GRACE_MS: u64 = 2_000;
+pub const IDLE_ACTIVITY_GRACE_MS: u64 = 2_000;
 
 /// Reads a fresh `a state-report` push off `record` and maps it onto `a
 /// watch`'s wire vocabulary, or `None` when there is nothing to trust (no
@@ -138,7 +138,7 @@ pub fn reported_state_rejection_with_hooks(
     }
 }
 
-pub(crate) fn idle_was_contradicted_with_hooks(
+pub fn idle_was_contradicted_with_hooks(
     record: &SessionRecord,
     at: u64,
     has_lifecycle_hooks: bool,
