@@ -75,6 +75,12 @@ pub(crate) fn run() -> Result<()> {
         Commands::Watch(args) => cmd_watch(&paths, args),
         Commands::Transcript(args) => cmd_transcript(&paths, args, cli.json),
         Commands::Handoff(args) => cmd_handoff(&paths, args, cli.json),
+        Commands::Task(args) => match args.command {
+            TaskCommand::Run(run_args) => task_commands::cmd_task(&paths, *run_args, cli.json),
+            TaskCommand::Handoff(args) => {
+                handoff_schedule_commands::cmd_task_handoff(&paths, args.command, cli.json)
+            }
+        },
         Commands::Completions(args) => cmd_completions(args),
         Commands::Hotkeys => cmd_hotkeys(),
         Commands::QuickAttach(args) => cmd_quick_attach(&paths, args),

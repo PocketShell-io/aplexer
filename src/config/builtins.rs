@@ -40,6 +40,10 @@ impl Config {
                 env: BTreeMap::new(),
                 env_unset: Vec::new(),
                 skip_permissions_argv: strings(skip_permissions_argv),
+                // task_argv is resolved per engine/family by `crate::task`'s
+                // builtin table; builtins leave it empty so one table owns
+                // the noninteractive defaults.
+                task_argv: Vec::new(),
             }
         }
         let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
