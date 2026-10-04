@@ -3,12 +3,16 @@
 pub mod agent_events;
 pub mod agent_kind;
 pub mod api;
+pub mod awareness;
+pub mod coordination;
+pub mod handoff_schedule;
 pub mod hooks;
 pub mod messaging;
 pub mod placement;
 pub mod retired;
 pub mod screen;
 pub mod shell_prompt;
+pub mod task;
 pub mod warnings;
 pub mod watch;
 pub mod worker;

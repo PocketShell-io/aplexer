@@ -33,6 +33,9 @@ scripts/check-test-execution.sh --min 250 -- cargo test --all-targets
 scripts/check-test-execution.sh --min 12 -- cargo test --features startup-test-hooks \
   --test startup_rollback --test worker_startup_transaction --test lifecycle_failure
 
+printf '==> Coordination package generation\n'
+python3 -B tests/coordination_packages.py
+
 # Python suites must actually run. Skipping when pytest is missing is the
 # same "green that ran nothing" shape check-test-execution.sh exists to
 # reject, in this same script. Prefer system pytest; fall back to uv (what

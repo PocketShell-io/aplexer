@@ -1,6 +1,8 @@
+use super::cli_coordination_args::*;
 use super::cli_examples::*;
 use super::cli_message_args::*;
 use super::cli_session_args::*;
+use super::cli_task_args::*;
 use super::commands::run;
 use clap::{Parser, Subcommand};
 
@@ -116,6 +118,10 @@ pub(crate) enum Commands {
     /// Print the current session's identity (workspace/tag/engine/profile).
     #[command(visible_alias = "current", after_help = WHOAMI_EXAMPLES)]
     Whoami,
+    /// Show nearby agents, declared work scopes, and unread peer messages.
+    Context(ContextArgs),
+    /// Declare or release participation in a workspace without relocating the session.
+    Work(WorkArgs),
     /// Push the current session's semantic agent state, for a hook script
     /// to call from inside it (see `a state-report --help`).
     #[command(
@@ -137,6 +143,11 @@ pub(crate) enum Commands {
     /// (identity, transcript, PTY tail, screen, workspace, gaps).
     #[command(after_help = HANDOFF_EXAMPLES)]
     Handoff(HandoffArgs),
+    /// Run one noninteractive delegated task: prompt file in, engine exec
+    /// out, evidence files and the real exit code left behind, completion
+    /// notice sent as the calling session.
+    #[command(after_help = TASK_EXAMPLES)]
+    Task(TaskArgs),
     /// Print a shell completion script for `a` to stdout.
     #[command(after_help = COMPLETIONS_EXAMPLES)]
     Completions(CompletionsArgs),

@@ -413,6 +413,7 @@ fn env_unset_union_is_forced() {
             // (to exercise dedup) plus one new name.
             env_unset: vec!["ANTHROPIC_API_KEY".into(), "MY_CUSTOM_VAR".into()],
             skip_permissions_argv: Vec::new(),
+            task_argv: Vec::new(),
         },
     );
     let launch = config
@@ -505,6 +506,7 @@ fn skip_permissions_argv_ported_values() {
                 env: BTreeMap::new(),
                 env_unset: Vec::new(),
                 skip_permissions_argv: vec!["--dangerously-skip-permissions".into()],
+                task_argv: Vec::new(),
             },
         )]),
         ..Config::default()

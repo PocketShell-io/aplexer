@@ -1,0 +1,11 @@
+{
+  "aplexer-awareness": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "__APLEXER_BIN__ context hook --engine antigravity || true",
+        "timeout": 5
+      }
+    ]
+  }
+}

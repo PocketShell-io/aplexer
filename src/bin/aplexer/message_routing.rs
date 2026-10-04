@@ -205,7 +205,7 @@ fn reply_source(
         if args.from.is_some() {
             bail!("--from cannot be used with cross-workspace replies");
         }
-        current_session_sender(records, Some(workspace))
+        current_session_sender(records, None)
     } else {
         Ok(MessageFrom::from_identity(resolve_identity(
             records,
@@ -254,14 +254,15 @@ pub(crate) fn cmd_message_reply(
     check_body_size(&args.text)?;
     let workspace = resolve_message_workspace(None)?;
     let records = list_records(paths)?;
-    let mp = ensure_workspace(paths, &workspace)?;
-    let original = read_message_in(&mp, &workspace, args.message_id)
+    let original = read_consumer_message(paths, &workspace, args.message_id)
         .with_context(|| format!("no such message {}", args.message_id))?;
     let data = parse_data_arg(args.data.as_deref())?;
     let destination = original
         .from
-        .workspace
-        .clone()
+        .session_id
+        .and_then(|id| records.iter().find(|r| r.id == id))
+        .map(|record| record.workspace.clone())
+        .or_else(|| original.from.workspace.clone())
         .unwrap_or_else(|| workspace.clone());
     let from = reply_source(&args, &records, &workspace, &destination)?;
     let to = reply_target(&original, &records, &destination)?;

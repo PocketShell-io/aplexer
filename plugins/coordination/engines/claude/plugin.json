@@ -1,0 +1,8 @@
+{
+  "name": "aplexer-coordination",
+  "description": "aplexer cross-agent coordination: durable sibling inbox, work declarations, and awareness context hooks.",
+  "version": "0.1.0",
+  "author": {
+    "name": "aplexer"
+  }
+}

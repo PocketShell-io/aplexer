@@ -22,6 +22,8 @@ pub(crate) fn run() -> Result<()> {
     let command = cli.command.unwrap_or(Commands::List(ListArgs::default()));
     match command {
         Commands::Start(args) => cmd_start(&paths, args, cli.json),
+        Commands::Context(args) => cmd_context(&paths, args, cli.json),
+        Commands::Work(args) => cmd_work(&paths, args, cli.json),
         Commands::New(mut args) => {
             args.attach = true;
             // `new` is the "always creates" verb: a live session holding the
@@ -73,6 +75,12 @@ pub(crate) fn run() -> Result<()> {
         Commands::Watch(args) => cmd_watch(&paths, args),
         Commands::Transcript(args) => cmd_transcript(&paths, args, cli.json),
         Commands::Handoff(args) => cmd_handoff(&paths, args, cli.json),
+        Commands::Task(args) => match args.command {
+            TaskCommand::Run(run_args) => task_commands::cmd_task(&paths, *run_args, cli.json),
+            TaskCommand::Handoff(args) => {
+                handoff_schedule_commands::cmd_task_handoff(&paths, args.command, cli.json)
+            }
+        },
         Commands::Completions(args) => cmd_completions(args),
         Commands::Hotkeys => cmd_hotkeys(),
         Commands::QuickAttach(args) => cmd_quick_attach(&paths, args),
