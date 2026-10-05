@@ -254,6 +254,9 @@ a send review "cargo test" --enter
 # peek at what a session shows right now
 a capture review --screen
 
+# the same view as a standalone SVG picture (colors, cursor, status bar)
+a capture review --screen --svg -o review.svg
+
 # stream a file into a session
 a send review --stdin < patch.diff
 
@@ -502,7 +505,7 @@ print(a.capture("api:review").decode(errors="replace"))
 | `a snapshot` | `list`, always machine-readable |
 | `a attach` / `open` | attach to a session's live PTY |
 | `a send` | type into a session without attaching |
-| `a capture` | print captured output or the rendered screen |
+| `a capture` | print captured output or the rendered screen (`--screen --svg` for a picture of the session's view) |
 | `a status` / `show` | phase, exit info, liveness, live process/CPU usage |
 | `a kill` | signal a session's workload and clean up |
 | `a forget` | drop a dead session's records |

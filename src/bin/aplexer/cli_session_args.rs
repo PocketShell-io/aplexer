@@ -254,6 +254,14 @@ pub(crate) struct CaptureArgs {
     /// of the paintable escape-sequence form.
     #[arg(long, requires = "screen")]
     pub(crate) plain: bool,
+    /// With --screen, render the current screen as a standalone SVG
+    /// document instead of escape-sequence bytes: a dark-terminal picture
+    /// of the session's view (ANSI colors and attributes, cursor, plus the
+    /// attach status bar), the shape README screenshots and sharing a
+    /// session's look want. Rendered client-side, so it works against any
+    /// running worker.
+    #[arg(long, requires = "screen", conflicts_with = "plain")]
+    pub(crate) svg: bool,
 }
 #[derive(Args)]
 pub(crate) struct KillArgs {

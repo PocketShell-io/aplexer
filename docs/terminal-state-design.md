@@ -883,6 +883,17 @@ called "richer PocketShell previews" — a PocketShell session card can show
 the actual current screen text for a few hundred bytes). Dead-session
 fallback: `screen.txt` (§5.5).
 
+**Added:** `a capture --screen --svg` renders the same snapshot as a
+standalone SVG document — a dark-terminal picture of the session's view
+(ANSI colors and attributes, cursor, plus the status bar as the attach
+client would draw it right now). Entirely client-side (`capture_svg.rs`):
+the snapshot is replayed into an oversized local parser and trimmed to its
+content bounds, because the client never learns the session's geometry —
+no protocol or worker change, and it works against workers already
+running an older binary. Same dead-session semantics as the
+escape-sequence form: no `screen.txt` downgrade, the live grid died with
+the worker.
+
 ## 9. Performance
 
 The user's constraint is explicit ("we need faster"). Numbers from §3.3:
