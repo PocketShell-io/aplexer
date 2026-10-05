@@ -339,6 +339,18 @@ fn ack_participating_mailboxes(
 }
 
 pub(crate) fn cmd_message_gc(paths: &Paths, args: MessageGcArgs, json_output: bool) -> Result<()> {
+    if args.all {
+        let report = gc_all_workspaces(paths)?;
+        if json_output {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!(
+                "swept {} mailbox(s), removed {} message(s), reaped {} dead mailbox(s)",
+                report.swept, report.removed, report.reaped
+            );
+        }
+        return Ok(());
+    }
     let workspace = resolve_message_workspace(args.workspace.as_deref())?;
     let report = gc_workspace(paths, &workspace)?;
     if json_output {

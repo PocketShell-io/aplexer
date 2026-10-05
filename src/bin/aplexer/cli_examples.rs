@@ -197,6 +197,7 @@ pub(crate) const MESSAGE_ACK_EXAMPLES: &str = r#"Examples:
 
 pub(crate) const MESSAGE_GC_EXAMPLES: &str = r#"Examples:
   a message gc                  drop expired/over-cap messages from the mailbox
+  a message gc --all            sweep every mailbox; reap mailboxes whose workspace is gone
 "#;
 
 pub(crate) const WATCH_EXAMPLES: &str = r#"Examples:

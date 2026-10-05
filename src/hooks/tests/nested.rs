@@ -47,12 +47,13 @@ fn awareness_hook_is_bounded_and_installs_one_source_per_engine() {
                 command.contains(" || true # aplexer-managed-awareness-hook-v1"),
                 "{command}"
             );
-            // Seconds-budget hosts get 5.
-            assert_eq!(group["hooks"][0]["timeout"], 5);
+            // Seconds-budget hosts get 30.
+            assert_eq!(group["hooks"][0]["timeout"], 30);
         }
     }
     // Gemini's timeout unit is milliseconds (documented default 60000),
-    // so its budget is 5000ms -- a 5 there would kill the hook after 5ms.
+    // so its budget is 30000ms -- a bare 30 there would kill the hook
+    // after 30ms.
     let doc = merged(&GEMINI_EVENTS, json!({}));
     let group = doc["hooks"]["SessionStart"]
         .as_array()
@@ -60,7 +61,7 @@ fn awareness_hook_is_bounded_and_installs_one_source_per_engine() {
         .iter()
         .find(|g| group_reports(g, "awareness:gemini"))
         .unwrap();
-    assert_eq!(group["hooks"][0]["timeout"], 5000);
+    assert_eq!(group["hooks"][0]["timeout"], 30000);
     // State-report hooks carry no timeout: `|| true` is the guard.
     let working = doc["hooks"]["SessionStart"]
         .as_array()
@@ -177,7 +178,7 @@ fn post_tool_awareness_merges_and_unmerges_without_touching_foreign_hooks() {
             .iter()
             .find(|group| group_reports(group, &format!("awareness:{engine}")))
             .unwrap();
-        assert_eq!(awareness["hooks"][0]["timeout"], 5);
+        assert_eq!(awareness["hooks"][0]["timeout"], 30);
         assert_eq!(merge_nested_hooks(&mut doc, events, A_BIN).unwrap(), 0);
         assert!(missing_nested_hooks(&doc, events).is_empty());
         assert!(unmerge_nested_hooks(&mut doc));
@@ -335,4 +336,50 @@ fn uninstall_sweeps_every_managed_generation() {
         .filter_map(|h| h["command"].as_str())
         .collect();
     assert_eq!(commands, vec!["foreign-post-tool"]);
+}
+
+#[test]
+fn install_refreshes_stale_managed_timeout_and_binary_path() {
+    for (engine, events) in [
+        ("claude", &CLAUDE_EVENTS[..]),
+        ("codex", &CODEX_EVENTS[..]),
+        ("gemini", &GEMINI_EVENTS[..]),
+    ] {
+        let expected = if engine == "gemini" { 30000 } else { 30 };
+        let stale_budget = if engine == "gemini" { 5000 } else { 5 };
+        // An install from before a budget raise and before `a` moved: the
+        // wiring exists, with the old timeout and an old binary path, on
+        // an event this engine's table actually wires.
+        let (event, state) = events
+            .iter()
+            .copied()
+            .find(|(_, s)| s.strip_prefix("awareness:") == Some(engine))
+            .unwrap();
+        let stale_command = context_command(A_BIN, engine).replace(A_BIN, "/old/path/a");
+        assert_ne!(stale_command, context_command(A_BIN, engine));
+        let mut doc = json!({"hooks": {event: [{"hooks": [{
+            "type": "command",
+            "command": stale_command,
+            "timeout": stale_budget
+        }]}]}});
+        let awareness_group = |doc: &Value| {
+            doc["hooks"][event]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|g| group_reports(g, state))
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(awareness_group(&doc)["hooks"][0]["timeout"], stale_budget);
+        // The merge converges both instead of leaving them stale.
+        assert_ne!(merge_nested_hooks(&mut doc, events, A_BIN).unwrap(), 0);
+        assert_eq!(awareness_group(&doc)["hooks"][0]["timeout"], expected);
+        assert_eq!(
+            awareness_group(&doc)["hooks"][0]["command"],
+            context_command(A_BIN, engine)
+        );
+        // Converged: another merge changes nothing.
+        assert_eq!(merge_nested_hooks(&mut doc, events, A_BIN).unwrap(), 0);
+    }
 }

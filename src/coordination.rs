@@ -32,7 +32,7 @@ use uuid::Uuid;
 use crate::{canonical_workspace, now_ms, read_session_record, Paths};
 
 pub use gitinfo::GitInfo;
-pub use mail::{mailbox_workspaces, unread_messages};
+pub use mail::{inbox_snapshot, mailbox_workspaces, unread_messages};
 pub use state::Participation;
 pub use view::{
     context, render_context, DeclarationView, Overlap, PeerContext, Relation, SessionSnapshot,

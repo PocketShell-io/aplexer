@@ -316,3 +316,114 @@ pub fn maybe_gc_in(
     }
     Ok(())
 }
+
+/// Summary of one `gc_all_workspaces` sweep.
+#[derive(Debug, Serialize)]
+pub struct GcAllReport {
+    /// Live-workspace mailboxes TTL/quota-pruned.
+    pub swept: usize,
+    /// Messages removed across swept mailboxes.
+    pub removed: usize,
+    /// Mailboxes removed whole because their workspace no longer exists.
+    pub reaped: usize,
+}
+
+/// Upper bound on mailboxes examined per global sweep, mirroring the
+/// reader-side mailbox scan cap: an unusual number of workspaces must not
+/// turn maintenance into an unbounded walk.
+const MAX_GC_MAILBOX_SCAN: usize = 512;
+
+/// TTL/quota gc for every mailbox on this host, plus reaping mailboxes
+/// whose workspace no longer exists. Per-workspace opportunistic gc only
+/// ever reaches mailboxes someone still touches, so a dead workspace's
+/// mailbox would grow unbounded — and every mailbox scan (the awareness
+/// hook's inbox pass, `message ack`'s participating-mailbox walk) pays for
+/// it forever. Nonblocking throughout: a busy mailbox is skipped this
+/// sweep and picked up by the next one.
+pub fn gc_all_workspaces(paths: &Paths) -> Result<GcAllReport> {
+    let messages_root = paths.state_root.join("messages");
+    let mut directories: Vec<PathBuf> = match fs::read_dir(&messages_root) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect(),
+        // No mailboxes exist yet: nothing to sweep, and creating the
+        // messages root is `ensure_workspace`'s job, not maintenance's.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            return Err(error).with_context(|| format!("read {}", messages_root.display()))
+        }
+    };
+    directories.sort();
+    directories.truncate(MAX_GC_MAILBOX_SCAN);
+    let mut report = GcAllReport {
+        swept: 0,
+        removed: 0,
+        reaped: 0,
+    };
+    for directory in directories {
+        let Some(workspace) = reverse_metadata(&directory) else {
+            continue;
+        };
+        let mp = message_paths(paths, &workspace);
+        if !mp.msgs_dir.is_dir() {
+            continue;
+        }
+        let Ok(_mailbox) = FileLock::exclusive(&mailbox_lock_path(&mp), true) else {
+            continue;
+        };
+        if !workspace.exists() {
+            // Dead workspace: nothing can send, read, or ack there again.
+            // Whole-mailbox removal takes the cursors with it; a
+            // resurrected workspace simply starts a fresh mailbox.
+            match fs::remove_dir_all(&mp.workspace_dir) {
+                Ok(()) => report.reaped += 1,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("reap {}", mp.workspace_dir.display()));
+                }
+            }
+            continue;
+        }
+        let pruned = prune_workspace_locked(
+            &mp,
+            &workspace,
+            None,
+            MAX_MESSAGES_PER_WORKSPACE,
+            MAX_WORKSPACE_BYTES,
+            true,
+        )?;
+        // Cursor state is deliberately left alone here. This sweep runs
+        // from the shared read path (a snapshot a hook fires on the
+        // model-request path), and snapshots never rewrite cursors —
+        // migration belongs to the explicit ack path, stale-cursor reaping
+        // to `gc_workspace`/`maybe_gc_in`. Dead mailboxes take their
+        // cursors with them above; live cursors are compacted in memory by
+        // every read.
+        report.swept += 1;
+        report.removed += pruned.removed;
+    }
+    Ok(report)
+}
+
+/// `gc_all_workspaces` behind a global marker gate: at most one sweep per
+/// opportunistic interval no matter how often the shared read path (the
+/// awareness hook fires per tool call) asks. A marker mtime in the future
+/// saturates at zero, like `maybe_gc_in`.
+pub fn maybe_gc_all(paths: &Paths) -> Result<()> {
+    let marker = paths.state_root.join("messages").join(".gc-all-marker");
+    let due = modified_secs(&marker)
+        .ok()
+        .flatten()
+        .is_none_or(|modified| {
+            now_secs().saturating_sub(modified) > OPPORTUNISTIC_GC_INTERVAL_SECS
+        });
+    if !due {
+        return Ok(());
+    }
+    gc_all_workspaces(paths)?;
+    let _ = fs::write(&marker, now_secs().to_string());
+    Ok(())
+}

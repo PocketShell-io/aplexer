@@ -80,8 +80,11 @@ pub fn hook_context(paths: &Paths, engine: &str, input: impl Read) -> Result<Opt
     };
     let ctx = crate::coordination::context(paths, Some(session.id), &session.workspace)?;
     let rendered = crate::coordination::render_context(&ctx);
-    let unread: Vec<MessageEnvelope> = crate::coordination::unread_messages(paths, session.id)?;
-    let mailboxes = crate::coordination::mailbox_workspaces(paths, session.id)?;
+    // One pass answers both questions; the mailboxes the session reads and
+    // its unread envelopes are decided by the same listing per mailbox.
+    let snapshot = crate::coordination::inbox_snapshot(paths, session.id)?;
+    let unread = &snapshot.unread[..];
+    let mailboxes = &snapshot.mailboxes[..];
     let foreign = render::foreign_peers(paths, &session, &payload)?;
     let print = state::fingerprint(&rendered, &unread, &foreign);
     let admission = state::admit(

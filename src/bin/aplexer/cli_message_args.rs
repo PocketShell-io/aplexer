@@ -216,4 +216,9 @@ pub(crate) struct MessageGcArgs {
     /// Workspace whose mailbox to prune (default: the current workspace)
     #[arg(long, value_name = "PATH")]
     pub(crate) workspace: Option<PathBuf>,
+    /// Sweep every mailbox on this host: TTL/quota pruning per live
+    /// workspace, and removal of mailboxes whose workspace no longer
+    /// exists. Bypasses the opportunistic throttle.
+    #[arg(long, conflicts_with = "workspace")]
+    pub(crate) all: bool,
 }

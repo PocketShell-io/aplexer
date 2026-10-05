@@ -11,7 +11,7 @@ use super::*;
 /// One hook group in the nested format. `timeout` is in each engine's own
 /// unit -- seconds for the Claude family, milliseconds for Gemini (whose
 /// documented default is 60000 ms) -- so an awareness hook gets a real
-/// five-second budget on either host.
+/// thirty-second budget on either host.
 fn our_group(command: String, timeout: Option<i64>) -> Value {
     let mut hook = serde_json::json!({"type": "command", "command": command});
     if let Some(timeout) = timeout {
@@ -45,14 +45,63 @@ fn wiring_command(state: &str, a_bin: &str) -> String {
 }
 
 /// The timeout a `(event, state)` wiring carries: awareness hooks are
-/// bounded everywhere (the CLI itself is bounded too), in each host's
-/// unit; state-report hooks rely on `|| true` alone.
+/// bounded everywhere, but the budget must absorb host-wide load spikes
+/// (dozens of sessions firing hooks at once) and the throttled global mail
+/// sweep, so it is generous in each host's unit; state-report hooks rely
+/// on `|| true` alone.
 fn wiring_timeout(state: &str) -> Option<i64> {
     match state.strip_prefix("awareness:") {
-        Some("gemini") => Some(5000),
-        Some(_) => Some(5),
+        Some("gemini") => Some(30000),
+        Some(_) => Some(30),
         None => None,
     }
+}
+
+/// Aligns an existing group's managed entries with the current wiring:
+/// the timeout (`wiring_timeout`) and, for awareness hooks, the command's
+/// embedded binary path. Both must converge, or an install from before a
+/// budget raise -- or from before `a` moved to another path -- would stay
+/// stale forever (the merge would otherwise skip the group entirely, since
+/// idempotence keys on the group already existing). Only entries this
+/// wiring owns -- matched by content, path-independently -- are touched.
+/// Returns 1 when the document changed.
+fn refresh_managed_entry(group: &mut Value, state: &str, a_bin: &str) -> usize {
+    let timeout = wiring_timeout(state);
+    let current_command = match state.strip_prefix("awareness:") {
+        Some(engine) => Some(context_command(a_bin, engine)),
+        // State-report commands are not converged: `|| true` makes a stale
+        // path harmless, and rewriting them is not this wiring's business.
+        None => None,
+    };
+    let Some(inner) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let mut changed = 0;
+    for hook in inner.iter_mut() {
+        let ours = hook
+            .get("command")
+            .and_then(Value::as_str)
+            .map(|c| reports_state(c, state))
+            .unwrap_or(false);
+        if !ours {
+            continue;
+        }
+        let mut stale = false;
+        if let (Some(timeout), Some(want)) = (timeout, current_command.as_deref()) {
+            if hook.get("command").and_then(Value::as_str) != Some(want) {
+                hook["command"] = serde_json::json!(want);
+                stale = true;
+            }
+            if hook.get("timeout").and_then(Value::as_i64) != Some(timeout) {
+                hook["timeout"] = serde_json::json!(timeout);
+                stale = true;
+            }
+        }
+        if stale {
+            changed = 1;
+        }
+    }
+    changed
 }
 
 /// Merge our `(event, state)` wirings into a nested-hooks document.
@@ -91,10 +140,16 @@ pub fn merge_nested_hooks(doc: &mut Value, events: &[(&str, &str)], a_bin: &str)
                 slot.as_array_mut().expect("just set to array")
             }
         };
-        if !groups.iter().any(|g| group_reports(g, state)) {
-            let command = wiring_command(state, a_bin);
-            groups.push(our_group(command, wiring_timeout(state)));
-            changed += 1;
+        match groups.iter_mut().find(|g| group_reports(g, state)) {
+            // Already wired: converge stale managed wiring (a budget raise
+            // or a moved `a` must reach existing installs on their next
+            // install), leaving foreign groups untouched.
+            Some(group) => changed += refresh_managed_entry(group, state, a_bin),
+            None => {
+                let command = wiring_command(state, a_bin);
+                groups.push(our_group(command, wiring_timeout(state)));
+                changed += 1;
+            }
         }
     }
     Ok(changed)

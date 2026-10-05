@@ -117,3 +117,72 @@ fn opportunistic_gc_waits_out_a_future_marker_mtime() {
     maybe_gc(&paths, workspace).unwrap();
     assert!(list_messages(&paths, workspace).unwrap().is_empty());
 }
+
+#[test]
+fn gc_all_sweeps_live_mailboxes_and_reaps_dead_ones() {
+    let root = TempDir::new().unwrap();
+    let paths = test_paths(root.path());
+    let live_root = TempDir::new().unwrap();
+    let live = live_root.path().to_path_buf();
+    // A workspace whose directory is gone (never created) owns a mailbox
+    // nothing can ever send to, read, or ack again.
+    let dead = root.path().join("gone-workspace");
+    write_test_message(&paths, &live, Uuid::now_v7());
+    write_test_message(&paths, &dead, Uuid::now_v7());
+
+    let report = gc_all_workspaces(&paths).unwrap();
+    assert_eq!(report.swept, 1, "{report:?}");
+    assert_eq!(report.reaped, 1, "{report:?}");
+    assert_eq!(report.removed, 0, "{report:?}");
+    assert!(!message_paths(&paths, &dead).workspace_dir.exists());
+    assert_eq!(list_messages(&paths, &live).unwrap().len(), 1);
+}
+
+#[test]
+fn gc_all_applies_ttl_to_live_workspaces() {
+    let root = TempDir::new().unwrap();
+    let paths = test_paths(root.path());
+    let live_root = TempDir::new().unwrap();
+    let live = live_root.path().to_path_buf();
+    let mp = ensure_workspace(&paths, &live).unwrap();
+    let mut expired = test_message(&live, Uuid::now_v7());
+    expired.created_at = now_secs() - DEFAULT_TTL_SECS - 10;
+    write_message_file(&mp, &expired);
+    write_test_message(&paths, &live, Uuid::now_v7());
+
+    let report = gc_all_workspaces(&paths).unwrap();
+    assert_eq!(report.swept, 1, "{report:?}");
+    assert_eq!(report.removed, 1, "{report:?}");
+    let remaining = list_messages(&paths, &live).unwrap();
+    assert_eq!(remaining.len(), 1);
+}
+
+#[test]
+fn maybe_gc_all_respects_the_global_marker_gate() {
+    let root = TempDir::new().unwrap();
+    let paths = test_paths(root.path());
+    let live_root = TempDir::new().unwrap();
+    let live = live_root.path().to_path_buf();
+    let write_expired = |paths: &Paths| {
+        let mp = ensure_workspace(paths, &live).unwrap();
+        let mut expired = test_message(&live, Uuid::now_v7());
+        expired.created_at = now_secs() - DEFAULT_TTL_SECS - 10;
+        write_message_file(&mp, &expired);
+    };
+
+    // No marker yet: the first call sweeps.
+    write_expired(&paths);
+    maybe_gc_all(&paths).unwrap();
+    assert!(list_messages(&paths, &live).unwrap().is_empty());
+
+    // Fresh marker: the next expired message survives until the interval
+    // passes.
+    write_expired(&paths);
+    maybe_gc_all(&paths).unwrap();
+    assert_eq!(list_messages(&paths, &live).unwrap().len(), 1);
+
+    let marker = paths.state_root.join("messages").join(".gc-all-marker");
+    set_modified_secs(&marker, now_secs() - OPPORTUNISTIC_GC_INTERVAL_SECS - 1);
+    maybe_gc_all(&paths).unwrap();
+    assert!(list_messages(&paths, &live).unwrap().is_empty());
+}
