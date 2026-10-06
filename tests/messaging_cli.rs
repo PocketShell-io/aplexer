@@ -30,10 +30,13 @@ fn local_messages_follow_live_session_workspace_before_stale_environment() {
         .unwrap();
     assert!(sent.status.success(), "{sent:?}");
     let envelope: Value = serde_json::from_slice(&sent.stdout).unwrap();
-    assert_eq!(
-        envelope["workspace"],
-        current_workspace.path().to_str().unwrap()
-    );
+    // The CLI reports the canonical workspace; on Windows a raw TempDir path
+    // can be the 8.3 short form (C:\Users\RUNNER~1\...).
+    #[cfg(windows)]
+    let expected_workspace = aplexer::canonical_workspace(current_workspace.path()).unwrap();
+    #[cfg(not(windows))]
+    let expected_workspace = current_workspace.path().to_path_buf();
+    assert_eq!(envelope["workspace"], expected_workspace.to_str().unwrap());
 
     let inbox = harness
         .command()

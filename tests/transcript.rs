@@ -27,6 +27,15 @@ impl Harness {
     fn new() -> Self {
         let runtime_dir = TempDir::new().expect("runtime tempdir");
         let state_dir = TempDir::new().expect("state tempdir");
+        // Production records carry the canonical workspace; on Windows a raw
+        // TempDir can sit under the 8.3 short form (C:\Users\RUNNER~1\...), so
+        // create the home (and with it every workspace) under the long form.
+        #[cfg(windows)]
+        let home = tempfile::tempdir_in(
+            aplexer::canonical_workspace(&std::env::temp_dir()).expect("canonical temp dir"),
+        )
+        .expect("home tempdir");
+        #[cfg(not(windows))]
         let home = TempDir::new().expect("home tempdir");
         let config_file = runtime_dir.path().join("config.toml");
         Self {

@@ -23,11 +23,20 @@ if ($Bin) {
 }
 else {
     Push-Location $root
+    # Windows PowerShell 5.1 turns any native-command stderr text (cargo prints
+    # warnings there) into a terminating error under 'Stop'; judge the build by
+    # its exit code instead.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
         cargo build --release --bin aplexer
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $buildExit = $LASTEXITCODE
     }
-    finally { Pop-Location }
+    finally {
+        $ErrorActionPreference = $previousPreference
+        Pop-Location
+    }
+    if ($buildExit -ne 0) { exit $buildExit }
     $src = Join-Path $root 'target\release\aplexer.exe'
 }
 if (-not (Test-Path -PathType Leaf $src)) { throw "binary not found: $src" }

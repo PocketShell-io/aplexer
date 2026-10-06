@@ -420,9 +420,15 @@ fn completion_notice_carries_the_real_parent_identity_to_the_target() {
     // Real parent association: the calling session's own record, no flag.
     assert_eq!(result["parent_session"]["id"], parent.id.to_string());
     assert_eq!(result["parent_session"]["tag"], parent.tag);
+    // Records carry the canonical workspace; on Windows a raw TempDir path can
+    // be the 8.3 short form (C:\Users\RUNNER~1\...).
+    #[cfg(windows)]
+    let expected_workspace = aplexer::canonical_workspace(task_workspace.path()).unwrap();
+    #[cfg(not(windows))]
+    let expected_workspace = task_workspace.path().to_path_buf();
     assert_eq!(
         result["parent_session"]["workspace"],
-        task_workspace.path().to_str().unwrap()
+        expected_workspace.to_str().unwrap()
     );
     // The notice was sent and its id recorded.
     assert_eq!(result["notice"]["status"], "sent");
@@ -456,7 +462,7 @@ fn completion_notice_carries_the_real_parent_identity_to_the_target() {
     assert_eq!(notice["from"]["tag"], parent.tag);
     assert_eq!(
         notice["from"]["workspace"],
-        task_workspace.path().to_str().unwrap()
+        expected_workspace.to_str().unwrap()
     );
     assert_eq!(notice["to"]["tag"], root.tag);
     assert!(
