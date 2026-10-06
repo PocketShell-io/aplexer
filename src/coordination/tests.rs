@@ -22,8 +22,8 @@ struct Isolated {
 }
 
 fn isolated() -> Isolated {
-    let runtime = TempDir::new().unwrap();
-    let state = TempDir::new().unwrap();
+    let runtime = crate::paths::canonical_tempdir();
+    let state = crate::paths::canonical_tempdir();
     let config = runtime.path().join("config.toml");
     let paths = Paths::discover_with(
         Some(runtime.path()),
@@ -68,7 +68,7 @@ fn join_simple(paths: &Paths, id: Uuid, workspace: &std::path::Path, task: &str)
 #[test]
 fn join_requires_a_session_a_task_and_contained_scopes() {
     let isolated = isolated();
-    let workspace = TempDir::new().unwrap();
+    let workspace = crate::paths::canonical_tempdir();
     let ghost = Uuid::new_v4();
     assert!(
         join(
@@ -152,7 +152,7 @@ fn join_requires_a_session_a_task_and_contained_scopes() {
 #[test]
 fn concurrent_joins_upsert_and_leaves_serialize() {
     let isolated = isolated();
-    let workspace = TempDir::new().unwrap();
+    let workspace = crate::paths::canonical_tempdir();
     let id = record_at(
         &isolated.paths,
         workspace.path(),
@@ -216,7 +216,7 @@ fn concurrent_joins_upsert_and_leaves_serialize() {
 #[test]
 fn idle_and_exit_never_release_but_claims_go_stale() {
     let isolated = isolated();
-    let workspace = TempDir::new().unwrap();
+    let workspace = crate::paths::canonical_tempdir();
     let live = record_at(
         &isolated.paths,
         workspace.path(),
@@ -266,8 +266,8 @@ fn idle_and_exit_never_release_but_claims_go_stale() {
 #[cfg(unix)]
 fn aliases_collapse_to_one_claim_and_relation_uses_checkout_facts() {
     let isolated = isolated();
-    let real = TempDir::new().unwrap();
-    let alias = TempDir::new().unwrap();
+    let real = crate::paths::canonical_tempdir();
+    let alias = crate::paths::canonical_tempdir();
     let alias_path = alias.path().join("link");
     std::os::unix::fs::symlink(real.path(), &alias_path).unwrap();
 
@@ -413,8 +413,8 @@ fn init_repo(path: std::path::PathBuf) -> std::path::PathBuf {
 #[test]
 fn overlaps_are_reported_only_for_shared_directories() {
     let isolated = isolated();
-    let shared = TempDir::new().unwrap();
-    let elsewhere = TempDir::new().unwrap();
+    let shared = crate::paths::canonical_tempdir();
+    let elsewhere = crate::paths::canonical_tempdir();
 
     let me = record_at(&isolated.paths, shared.path(), "me", Phase::Running, true);
     let editor = record_at(
@@ -542,8 +542,8 @@ fn overlaps_are_reported_only_for_shared_directories() {
 #[test]
 fn retained_uuid_history_survives_ack_and_excludes_unrelated_mail() {
     let isolated = isolated();
-    let home = TempDir::new().unwrap();
-    let foreign = TempDir::new().unwrap();
+    let home = crate::paths::canonical_tempdir();
+    let foreign = crate::paths::canonical_tempdir();
 
     let me = record_at(
         &isolated.paths,
@@ -575,7 +575,7 @@ fn retained_uuid_history_survives_ack_and_excludes_unrelated_mail() {
     }
 
     // The foreign mailbox is discovered because one message names this
-    // session's UUID explicitly — broadcast and tag-only traffic in the
+    // session's UUID explicitly â€” broadcast and tag-only traffic in the
     // same retained mailbox stay out.
     let workspaces = mailbox_workspaces(&isolated.paths, me).unwrap();
     assert!(workspaces.contains(&canonical_workspace(home.path()).unwrap()));
@@ -610,7 +610,7 @@ fn retained_uuid_history_survives_ack_and_excludes_unrelated_mail() {
 
     // A declaration subscribes the declared workspace to ordinary inbox
     // traffic: broadcasts there become unread for me.
-    let declared = TempDir::new().unwrap();
+    let declared = crate::paths::canonical_tempdir();
     join_simple(&isolated.paths, me, declared.path(), "working here");
     let subscription_broadcast =
         envelope(declared.path(), Recipient::Broadcast { broadcast: true });
@@ -631,7 +631,7 @@ fn retained_uuid_history_survives_ack_and_excludes_unrelated_mail() {
 #[test]
 fn oversized_state_is_rejected_preserving_the_previous_sidecar() {
     let isolated = isolated();
-    let workspace = TempDir::new().unwrap();
+    let workspace = crate::paths::canonical_tempdir();
     let id = record_at(
         &isolated.paths,
         workspace.path(),
@@ -698,7 +698,7 @@ fn envelope(workspace: &std::path::Path, to: Recipient) -> MessageEnvelope {
 fn unread_and_mailbox_listing_tolerate_a_missing_record() {
     let isolated = isolated();
     let ghost = Uuid::new_v4();
-    let home = TempDir::new().unwrap();
+    let home = crate::paths::canonical_tempdir();
     ensure_workspace(&isolated.paths, home.path()).unwrap();
     let message = envelope(
         home.path(),
@@ -724,8 +724,8 @@ fn unread_and_mailbox_listing_tolerate_a_missing_record() {
 fn snapshot_skips_a_busy_mailbox_and_matches_the_wrappers() {
     use crate::messaging::mailbox_lock_path;
     let isolated = isolated();
-    let home = TempDir::new().unwrap();
-    let foreign = TempDir::new().unwrap();
+    let home = crate::paths::canonical_tempdir();
+    let foreign = crate::paths::canonical_tempdir();
     let me = record_at(
         &isolated.paths,
         home.path(),

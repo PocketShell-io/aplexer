@@ -362,3 +362,79 @@ fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     }
     path
 }
+
+/// A temp directory whose `path()` is already the canonical workspace form.
+/// On Windows `TEMP` may be an 8.3 short alias (`C:\Users\RUNNER~1\...`)
+/// while production identities are always long-form, so fixtures that hand
+/// raw paths to APIs expecting `canonical_workspace` output must start from
+/// the long form. Unchanged (plain `TempDir::new`) elsewhere.
+#[cfg(test)]
+pub(crate) fn canonical_tempdir() -> tempfile::TempDir {
+    #[cfg(windows)]
+    {
+        let root = canonical_workspace(&env::temp_dir()).unwrap();
+        tempfile::TempDir::new_in(root).unwrap()
+    }
+    #[cfg(not(windows))]
+    {
+        tempfile::TempDir::new().unwrap()
+    }
+}
+
+#[cfg(all(test, windows))]
+mod short_alias_tests {
+    use super::*;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+    fn short_form(path: &Path) -> Option<PathBuf> {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut buf = vec![0u16; 1024];
+        let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+        if n == 0 || n as usize >= buf.len() {
+            return None;
+        }
+        Some(PathBuf::from(String::from_utf16_lossy(&buf[..n as usize])))
+    }
+
+    /// One workspace is one identity however its path is spelled: the 8.3
+    /// short alias and the long form canonicalize, key, and compare equal.
+    #[test]
+    fn short_alias_and_long_form_are_one_workspace_identity() {
+        let root = canonical_tempdir();
+        let long = root.path().join("a_rather_long_workspace_directory");
+        fs::create_dir_all(long.join("sub")).unwrap();
+        let Some(short) = short_form(&long) else {
+            eprintln!("8.3 names unavailable on this volume; skipping");
+            return;
+        };
+        if short == long {
+            eprintln!("volume produced no distinct 8.3 alias; skipping");
+            return;
+        }
+
+        let canon_long = canonical_workspace(&long).unwrap();
+        let canon_short = canonical_workspace(&short).unwrap();
+        assert_eq!(canon_long, canon_short);
+        assert_eq!(canon_long, long, "canonical form is the long spelling");
+        // A not-yet-created leaf under the short alias lands on the same identity.
+        assert_eq!(
+            canonical_workspace(&short.join("new")).unwrap(),
+            long.join("new")
+        );
+        assert_eq!(
+            crate::messaging::workspace_key(&canon_long),
+            crate::messaging::workspace_key(&canon_short)
+        );
+
+        // Awareness: a path under the short alias is inside the long workspace.
+        let file = short.join("sub").join("f.rs");
+        fs::write(&file, "x").unwrap();
+        assert!(crate::awareness::render::outside_workspace(&file, &long).is_none());
+        assert!(crate::awareness::render::outside_workspace(
+            &long.join("sub").join("f.rs"),
+            &short
+        )
+        .is_none());
+    }
+}

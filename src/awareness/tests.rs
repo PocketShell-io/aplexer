@@ -16,7 +16,7 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------
 
 fn test_paths() -> (TempDir, Paths) {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::paths::canonical_tempdir();
     let paths = Paths {
         runtime_root: dir.path().join("runtime"),
         state_root: dir.path().join("state"),
@@ -781,7 +781,7 @@ fn multiworkspace_mailboxes_are_named_at_bootstrap() {
 
 #[test]
 fn foreign_destinations_resolve_to_nearest_existing_directory() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::paths::canonical_tempdir();
     let home = dir.path().join("home-ws");
     std::fs::create_dir_all(&home).unwrap();
     let outside = dir.path().join("outside");
@@ -807,7 +807,7 @@ fn foreign_destinations_resolve_to_nearest_existing_directory() {
 
 #[test]
 fn foreign_peers_render_is_bounded_and_deduplicated() {
-    let dir = TempDir::new().unwrap();
+    let dir = crate::paths::canonical_tempdir();
     let home = dir.path().join("home-ws");
     let outside = dir.path().join("outside");
     std::fs::create_dir_all(home.join("sub")).unwrap();

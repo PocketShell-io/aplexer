@@ -236,6 +236,12 @@ pub(crate) fn outside_workspace(raw: &Path, workspace: &Path) -> Option<PathBuf>
         canonical.parent()?.to_path_buf()
     };
     let destination = strip_verbatim(destination);
+    // Windows: a workspace spelled with 8.3 short components must compare
+    // equal to the long form `canonicalize` yields for the destination.
+    #[cfg(windows)]
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
     if destination.starts_with(strip_verbatim(workspace.to_path_buf())) {
         return None;
     }
