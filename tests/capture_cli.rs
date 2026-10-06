@@ -173,6 +173,11 @@ fn json_capture_keeps_exact_utf8_as_an_optional_convenience() {
 fn screen_svg_capture_renders_a_live_session() {
     let harness = Harness::new();
     let workspace = TempDir::new().unwrap();
+    let shell: &[&str] = if cfg!(windows) {
+        &["cmd.exe"]
+    } else {
+        &["/bin/bash", "--norc"]
+    };
     let start = harness
         .command()
         .args([
@@ -183,9 +188,8 @@ fn screen_svg_capture_renders_a_live_session() {
             "--tag",
             "svgtest",
             "--",
-            "/bin/bash",
-            "--norc",
         ])
+        .args(shell)
         .output()
         .unwrap();
     assert!(start.status.success(), "{start:?}");
