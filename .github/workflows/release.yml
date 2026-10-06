@@ -143,6 +143,7 @@ jobs:
     name: Test release inputs (Windows)
     needs: check-versions
     runs-on: windows-2025
+    continue-on-error: true
     defaults:
       run:
         shell: pwsh
@@ -330,7 +331,11 @@ jobs:
   build-windows:
     name: Build windows-amd64
     needs: test-windows
+    # Never ship Windows binaries whose tests did not pass. Stated explicitly
+    # because test-windows is continue-on-error (non-blocking for Linux).
+    if: ${{ !cancelled() && needs.test-windows.result == 'success' }}
     runs-on: windows-2025
+    continue-on-error: true
     defaults:
       run:
         shell: pwsh
@@ -446,6 +451,9 @@ jobs:
   release:
     name: Create GitHub release
     needs: [build, build-windows]
+    # Windows is non-blocking: run whenever the Linux build succeeded, even
+    # if the Windows jobs failed or were skipped.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -478,18 +486,23 @@ jobs:
 
           version = os.environ["RELEASE_TAG"].removeprefix("v")
           root = pathlib.Path("artifacts")
-          expected = {
+          # Windows is non-blocking: the Linux wheels are required, the Windows
+          # pair is optional but must be present as a pair or not at all.
+          required = {
               f"aplexer-{version}-py3-none-manylinux_2_28_x86_64.whl",
               f"aplexer-{version}-py3-none-manylinux_2_28_aarch64.whl",
-              f"aplexer-{version}-py3-none-win_amd64.whl",
               f"aplexer_client-{version}-cp311-abi3-manylinux_2_28_x86_64.whl",
               f"aplexer_client-{version}-cp311-abi3-manylinux_2_28_aarch64.whl",
+          }
+          optional = {
+              f"aplexer-{version}-py3-none-win_amd64.whl",
               f"aplexer_client-{version}-cp311-abi3-win_amd64.whl",
           }
           wheel_paths = list(root.rglob("*.whl"))
           found = {path.name: path for path in wheel_paths}
-          if len(wheel_paths) != len(expected) or set(found) != expected:
-              print(f"::error::wheel set mismatch: expected {sorted(expected)}, found {sorted(path.name for path in wheel_paths)}")
+          present = set(found)
+          if not required <= present or (present - required) not in (set(), optional):
+              print(f"::error::wheel set mismatch: required {sorted(required)}, optional pair {sorted(optional)}, found {sorted(present)}")
               sys.exit(1)
           for name, path in found.items():
               shutil.copy2(path, pathlib.Path("release-assets") / name)
@@ -504,6 +517,7 @@ jobs:
   publish-testpypi:
     name: Publish both distributions to TestPyPI
     needs: [build, build-windows]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
@@ -530,18 +544,23 @@ jobs:
           import sys
 
           version = os.environ["RELEASE_TAG"].removeprefix("v")
-          expected = {
+          # Windows is non-blocking: the Linux wheels are required, the Windows
+          # pair is optional but must be present as a pair or not at all.
+          required = {
               f"aplexer-{version}-py3-none-manylinux_2_28_x86_64.whl",
               f"aplexer-{version}-py3-none-manylinux_2_28_aarch64.whl",
-              f"aplexer-{version}-py3-none-win_amd64.whl",
               f"aplexer_client-{version}-cp311-abi3-manylinux_2_28_x86_64.whl",
               f"aplexer_client-{version}-cp311-abi3-manylinux_2_28_aarch64.whl",
+          }
+          optional = {
+              f"aplexer-{version}-py3-none-win_amd64.whl",
               f"aplexer_client-{version}-cp311-abi3-win_amd64.whl",
           }
           wheel_paths = list(pathlib.Path("artifacts").rglob("*.whl"))
           paths = {path.name: path for path in wheel_paths}
-          if len(wheel_paths) != len(expected) or set(paths) != expected:
-              print(f"::error::wheel set mismatch: expected {sorted(expected)}, found {sorted(path.name for path in wheel_paths)}")
+          present = set(paths)
+          if not required <= present or (present - required) not in (set(), optional):
+              print(f"::error::wheel set mismatch: required {sorted(required)}, optional pair {sorted(optional)}, found {sorted(present)}")
               sys.exit(1)
           client_output = pathlib.Path("dist/client")
           cli_output = pathlib.Path("dist/cli")
@@ -572,6 +591,7 @@ jobs:
   publish-pypi:
     name: Publish both distributions to PyPI
     needs: [build, build-windows, publish-testpypi]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.publish-testpypi.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
@@ -598,18 +618,23 @@ jobs:
           import sys
 
           version = os.environ["RELEASE_TAG"].removeprefix("v")
-          expected = {
+          # Windows is non-blocking: the Linux wheels are required, the Windows
+          # pair is optional but must be present as a pair or not at all.
+          required = {
               f"aplexer-{version}-py3-none-manylinux_2_28_x86_64.whl",
               f"aplexer-{version}-py3-none-manylinux_2_28_aarch64.whl",
-              f"aplexer-{version}-py3-none-win_amd64.whl",
               f"aplexer_client-{version}-cp311-abi3-manylinux_2_28_x86_64.whl",
               f"aplexer_client-{version}-cp311-abi3-manylinux_2_28_aarch64.whl",
+          }
+          optional = {
+              f"aplexer-{version}-py3-none-win_amd64.whl",
               f"aplexer_client-{version}-cp311-abi3-win_amd64.whl",
           }
           wheel_paths = list(pathlib.Path("artifacts").rglob("*.whl"))
           paths = {path.name: path for path in wheel_paths}
-          if len(wheel_paths) != len(expected) or set(paths) != expected:
-              print(f"::error::wheel set mismatch: expected {sorted(expected)}, found {sorted(path.name for path in wheel_paths)}")
+          present = set(paths)
+          if not required <= present or (present - required) not in (set(), optional):
+              print(f"::error::wheel set mismatch: required {sorted(required)}, optional pair {sorted(optional)}, found {sorted(present)}")
               sys.exit(1)
           client_output = pathlib.Path("dist/client")
           cli_output = pathlib.Path("dist/cli")
