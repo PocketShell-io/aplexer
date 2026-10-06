@@ -10,8 +10,23 @@
 //! the lifecycle takes over lives here.
 
 use super::*;
+#[cfg(unix)]
 use crate::cgroup::{Cgroup, ScopePlan};
+#[cfg(unix)]
 use std::ffi::OsString;
+#[cfg(windows)]
+use crate::process::{PtyMaster, Workload};
+
+/// Wire signal numbers on Windows, where `libc` does not exist (the wire
+/// stays `i32`; see docs/windows-port.md).
+#[cfg(windows)]
+const SIGKILL: i32 = 9;
+#[cfg(windows)]
+const SIGTERM: i32 = 15;
+#[cfg(unix)]
+const SIGKILL: i32 = libc::SIGKILL;
+#[cfg(unix)]
+const SIGTERM: i32 = libc::SIGTERM;
 
 /// The terminal aplexer presents to every workload it spawns.
 ///
@@ -30,6 +45,80 @@ pub(super) const WORKLOAD_TERM: &str = "xterm-256color";
 /// understands `CSI 38;2;r;g;b m`.
 pub(super) const WORKLOAD_COLORTERM: &str = "truecolor";
 
+/// Windows workload spawn: ConPTY + raw `CreateProcessW` (see
+/// `sys::windows::pty`). There is no slave fd and no cgroup plan; containment
+/// is the session Job Object, passed as a raw handle (`job`) so the child is
+/// created suspended, assigned, then resumed. Returns the workload and its
+/// leader pid (== `Workload::pid`).
+#[cfg(windows)]
+pub(super) fn spawn_workload(
+    record: &SessionRecord,
+    launch_environment: &std::collections::BTreeMap<String, String>,
+    pty: &PtyMaster,
+    job: Option<windows_sys::Win32::Foundation::HANDLE>,
+) -> Result<(Workload, u32)> {
+    use crate::sys::windows::pty::EnvOverrides;
+    use std::ffi::OsString;
+    if record.command.is_empty() {
+        bail!("empty workload command");
+    }
+    // Windows env names are case-insensitive; keep one entry per name so the
+    // later write wins exactly as with `Command::env` on Unix.
+    fn set(env: &mut EnvOverrides, key: &str, value: Option<OsString>) {
+        env.retain(|k, _| !k.to_string_lossy().eq_ignore_ascii_case(key));
+        env.insert(key.into(), value);
+    }
+    let mut env = EnvOverrides::new();
+    // Same terminal declaration as the Unix path (see the long rationale there).
+    set(&mut env, "TERM", Some(WORKLOAD_TERM.into()));
+    set(&mut env, "COLORTERM", Some(WORKLOAD_COLORTERM.into()));
+    set(
+        &mut env,
+        "TMUX",
+        Some(
+            format!(
+                "/tmp/aplexer/tmux-{id},{pid},0",
+                id = record.id,
+                pid = std::process::id()
+            )
+            .into(),
+        ),
+    );
+    set(&mut env, "TMUX_PANE", Some("%0".into()));
+    for (key, value) in launch_environment {
+        set(&mut env, key, Some(value.into()));
+    }
+    set(&mut env, "APLEXER_SESSION_ID", Some(record.id.to_string().into()));
+    set(&mut env, "APLEXER_WORKSPACE", Some(record.workspace.as_os_str().to_os_string()));
+    set(&mut env, "APLEXER_TAG", Some(record.tag.clone().into()));
+    // Put the `a` next to this worker first on PATH.
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let mut path = dir.as_os_str().to_os_string();
+            path.push(";");
+            if let Some(existing) = env::var_os("PATH") {
+                path.push(existing);
+            }
+            set(&mut env, "PATH", Some(path));
+        }
+    }
+    // Provider-key safety strip: always wins, last.
+    for name in &record.env_unset {
+        set(&mut env, name, None);
+    }
+    let workload = crate::sys::windows::pty::spawn_workload(
+        &record.command,
+        &record.cwd,
+        &env,
+        Some(pty),
+        job,
+    )
+    .context("spawn workload")?;
+    let pid = workload.pid();
+    Ok((workload, pid))
+}
+
+#[cfg(unix)]
 pub(super) fn spawn_workload(
     record: &SessionRecord,
     launch_environment: &std::collections::BTreeMap<String, String>,
@@ -245,6 +334,75 @@ where
     Ok(())
 }
 
+/// Windows thread set: history flush, PTY reader, workload waiter, lifecycle,
+/// termination monitor. No reaper thread: the session Job Object replaces
+/// subreaper/SIGCHLD adoption. The waiter closes the pseudoconsole when the
+/// leader exits, because ConPTY only reports EOF to the reader after that.
+#[cfg(windows)]
+pub(super) fn start_worker_threads(
+    runtime: Arc<WorkerRuntime>,
+    pty: PtyMaster,
+    child_slot: Arc<Mutex<Option<Workload>>>,
+    commit_ready: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let gate = Arc::new((Mutex::new(ThreadStart::Pending), Condvar::new()));
+    let mut handles = Vec::new();
+    let (life_tx, life_rx) = mpsc::channel();
+    let setup = (|| -> Result<()> {
+        let periodic_runtime = Arc::clone(&runtime);
+        spawn_startup_thread("history-flush", 1, &gate, &mut handles, move || {
+            run_periodic_flush(periodic_runtime)
+        })?;
+
+        let reader_runtime = Arc::clone(&runtime);
+        let reader_tx = life_tx.clone();
+        let master_read = pty.reader().context("duplicate PTY output handle")?;
+        spawn_startup_thread("pty-reader", 2, &gate, &mut handles, move || {
+            run_pty_reader(master_read, reader_runtime, reader_tx)
+        })?;
+
+        let waiter_tx = life_tx;
+        let waiter_pty = pty.clone();
+        spawn_startup_thread("child-waiter", 3, &gate, &mut handles, move || {
+            let child = match child_slot.lock() {
+                Ok(mut slot) => slot.take(),
+                Err(_) => {
+                    let _ = waiter_tx.send(LifeEvent::PtyError(
+                        "workload child slot lock poisoned".into(),
+                    ));
+                    return;
+                }
+            };
+            if let Some(child) = child {
+                run_child_waiter(child, waiter_pty, waiter_tx);
+            }
+        })?;
+
+        let lifecycle_runtime = Arc::clone(&runtime);
+        spawn_startup_thread("lifecycle", 4, &gate, &mut handles, move || {
+            run_lifecycle(lifecycle_runtime, life_rx)
+        })?;
+
+        let termination_runtime = Arc::clone(&runtime);
+        spawn_startup_thread("termination", 5, &gate, &mut handles, move || {
+            run_termination_monitor(termination_runtime)
+        })?;
+        startup_checkpoint("after_thread_setup")?;
+        commit_ready()?;
+        Ok(())
+    })();
+    if let Err(error) = setup {
+        release_startup_threads(&gate, ThreadStart::Abort);
+        for handle in handles {
+            let _ = handle.join();
+        }
+        return Err(error);
+    }
+    release_startup_threads(&gate, ThreadStart::Run);
+    Ok(())
+}
+
+#[cfg(unix)]
 pub(super) fn start_worker_threads(
     runtime: Arc<WorkerRuntime>,
     master_read: File,
@@ -418,11 +576,11 @@ pub(super) fn run_termination_monitor(runtime: Arc<WorkerRuntime>) {
         ));
         return;
     }
-    if let Err(error) = runtime.kill(libc::SIGTERM, 500) {
+    if let Err(error) = runtime.kill(SIGTERM, 500) {
         log_best_effort(&format!(
             "aplexer worker: terminate contained workload: {error:#}"
         ));
-        let _ = runtime.kill(libc::SIGKILL, 0);
+        let _ = runtime.kill(SIGKILL, 0);
     }
 }
 
@@ -448,6 +606,8 @@ pub(super) fn run_pty_reader(
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            // Linux reports a closed PTY slave as EIO.
+            #[cfg(unix)]
             Err(error) if error.raw_os_error() == Some(libc::EIO) => {
                 let _ = tx.send(LifeEvent::PtyEof);
                 break;
@@ -460,6 +620,24 @@ pub(super) fn run_pty_reader(
     }
 }
 
+/// Windows waiter: block on the leader's process handle, publish its exit
+/// code (no signals exist), then close the pseudoconsole so the PTY reader
+/// drains the remaining output and sees EOF.
+#[cfg(windows)]
+pub(super) fn run_child_waiter(child: Workload, pty: PtyMaster, tx: mpsc::Sender<LifeEvent>) {
+    let event = match child.wait() {
+        Ok(code) => LifeEvent::ChildExit {
+            code: Some(code as i32),
+            signal: None,
+        },
+        Err(error) => LifeEvent::WaiterError(format!("wait workload: {error}")),
+    };
+    // Non-blocking: the reader thread drains while conhost shuts down.
+    pty.close();
+    let _ = tx.send(event);
+}
+
+#[cfg(unix)]
 pub(super) fn run_child_waiter(mut child: Child, tx: mpsc::Sender<LifeEvent>) {
     let pid = child.id();
     let event = match child.wait() {
@@ -476,7 +654,22 @@ pub(super) fn run_child_waiter(mut child: Child, tx: mpsc::Sender<LifeEvent>) {
     let _ = tx.send(event);
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn startup_history_node_must_be_regular_or_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(validate_existing_history_node(&dir.path().join("missing.bin")).is_ok());
+        let regular = dir.path().join("regular.bin");
+        fs::write(&regular, b"history").unwrap();
+        assert!(validate_existing_history_node(&regular).is_ok());
+        assert!(validate_existing_history_node(dir.path()).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
