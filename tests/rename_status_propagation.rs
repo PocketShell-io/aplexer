@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! The rename → status-bar propagation loop, end to end: a client is
 //! attached to a session, and a *second* process (`a rename`, the exact
 //! thing PocketShell runs inside the session) retags it. The attached

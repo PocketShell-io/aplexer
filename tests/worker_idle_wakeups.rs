@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use aplexer::{process_is_zombie, process_start_time_ticks, read_record, Phase};
 use serde_json::Value;
 use std::fs;

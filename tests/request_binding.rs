@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use aplexer::{
     atomic_write_json, frame_json, read_frame, write_json, Operation, Paths, Request, Response,
     SessionRecord,

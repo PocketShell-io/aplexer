@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! `a status --json` must report the same derived liveness `state` that
 //! `a list --json` and `a status`'s own human output report (issue #6).
 //!

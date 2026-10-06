@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! `api::kill_session` with a grace window longer than the ordinary control
 //! deadline. The worker holds the `Kill` response until the kill has run to
 //! completion (the grace window, then the SIGKILL sweep), so a

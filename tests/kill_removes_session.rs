@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! `a kill` and a clean natural exit both remove the session entirely.
 //!
 //! Finished sessions used to leave a durable `exited` row that every listing

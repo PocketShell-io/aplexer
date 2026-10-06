@@ -21,6 +21,7 @@ class CoordinationPackages(unittest.TestCase):
             capture_output=True, text=True,
         )
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX shell quoting and #!/bin/sh stubs")
     def test_special_binary_paths_are_literal_in_shell_and_json(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -73,6 +74,7 @@ class CoordinationPackages(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(sentinel.read_text(), "Preserve this file.")
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX shell stub binary")
     @unittest.skipUnless(shutil.which("node"), "Node is unavailable")
     def test_opencode_appends_notice_without_changing_tool_output(self):
         with tempfile.TemporaryDirectory() as temporary:

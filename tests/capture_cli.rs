@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+#[path = "support/workload.rs"]
+mod workload;
+
 use aplexer::{atomic_write_json, Limits, Paths, Phase, SessionRecord, SCHEMA_VERSION};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -56,7 +60,7 @@ impl Harness {
             tag: format!("capture-{id}"),
             engine: "shell".into(),
             profile: None,
-            command: vec!["/bin/sh".into()],
+            command: vec![workload::shell_program().into()],
             cwd: self.workspace.path().to_path_buf(),
             env: BTreeMap::new(),
             env_unset: Vec::new(),

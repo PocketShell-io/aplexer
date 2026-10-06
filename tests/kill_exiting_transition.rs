@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! An accepted kill persists `phase: exiting` BEFORE teardown starts
 //! (issue #18).
 //!

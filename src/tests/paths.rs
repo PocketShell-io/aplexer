@@ -3,6 +3,7 @@
 use super::*;
 
 #[test]
+#[cfg(unix)]
 fn ensure_private_dir_rejects_leaf_symlink_without_chmodding_target() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("target");
@@ -25,6 +26,7 @@ fn ensure_private_dir_rejects_leaf_symlink_without_chmodding_target() {
 }
 
 #[test]
+#[cfg(unix)]
 fn ensure_private_dir_rejects_symlink_ancestor_without_creating_beneath_it() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("target");
@@ -37,6 +39,7 @@ fn ensure_private_dir_rejects_symlink_ancestor_without_creating_beneath_it() {
 }
 
 #[test]
+#[cfg(unix)]
 fn ensure_private_dir_validates_type_before_chmod() {
     let root = tempfile::tempdir().unwrap();
     let file = root.path().join("ordinary-file");
@@ -51,6 +54,7 @@ fn ensure_private_dir_validates_type_before_chmod() {
 }
 
 #[test]
+#[cfg(unix)]
 fn ensure_private_dir_chmods_verified_directory() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("private");
@@ -72,6 +76,7 @@ fn explicit_relative_path_overrides_are_resolved_once() {
 }
 
 #[test]
+#[cfg(unix)]
 fn xdg_paths_must_be_absolute() {
     let error = absolute_xdg_path(PathBuf::from("runtime"), "XDG_RUNTIME_DIR").unwrap_err();
     assert!(error.to_string().contains("must be an absolute path"));

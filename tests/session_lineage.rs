@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Session lineage: a session started from inside another session records
 //! its parent.
 //!

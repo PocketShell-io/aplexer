@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Worker/workload cgroup recording and placement classification, end to
 //! end (issue #1).
 //!

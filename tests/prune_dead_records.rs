@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Product-path regressions for `a prune`.
 //!
 //! Reproduces the state reported on 2026-09-06: three ~10-day-old records

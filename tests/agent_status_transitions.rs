@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Agent transitions → status-bar immediacy, end to end: a client is
 //! attached to a plain shell session, and an agent is started (and later
 //! killed) *inside* that session through the attached keyboard -- the exact

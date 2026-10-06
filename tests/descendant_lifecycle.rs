@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Linux descendant-containment regressions.
 //!
 //! Each test starts a short-lived shell leader which launches a `setsid`

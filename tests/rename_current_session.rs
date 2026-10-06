@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! `a rename` with no SESSION argument renames the session the command runs
 //! inside (`APLEXER_SESSION_ID`) -- the CLI twin of the attach client's
 //! `Ctrl-b R` prompt. These tests drive the real binary against a real

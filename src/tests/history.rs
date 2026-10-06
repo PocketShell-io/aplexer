@@ -174,6 +174,7 @@ fn history_markerless_v2_is_readable_and_next_writable_open_publishes_marker() {
 }
 
 #[test]
+#[cfg(unix)]
 fn history_marker_is_bounded_checksummed_and_a_safe_regular_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history.bin");
@@ -268,6 +269,7 @@ fn history_legacy_migration_and_capacity_changes_keep_only_exact_tail() {
 }
 
 #[test]
+#[cfg(unix)]
 fn history_special_files_fail_without_becoming_persistence_inputs() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("target");

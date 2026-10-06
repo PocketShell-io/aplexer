@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+#[path = "support/workload.rs"]
+mod workload;
+
 use aplexer::api::{start_session, StartRequest};
 use aplexer::{
     atomic_write_json, read_record, ExitInfo, Limits, Paths, Phase, SessionRecord,
@@ -76,8 +80,8 @@ fn cli_rejects_cap_plus_one_before_worker_spawn() {
             "--history-bytes",
             &(MAX_HISTORY_BYTES + 1).to_string(),
             "--",
-            "/bin/true",
         ])
+        .args(workload::true_command())
         .output()
         .expect("run CLI");
 
@@ -100,7 +104,7 @@ fn embedded_api_rejects_usize_max_before_worker_spawn() {
         profile: None,
         cwd: None,
         env: BTreeMap::new(),
-        command: vec!["/bin/true".into()],
+        command: workload::true_command(),
         memory: None,
         pids: None,
         cpu_quota_us: None,
@@ -143,7 +147,7 @@ fn terminal_legacy_oversized_record_remains_recoverable() {
         tag: "legacy".into(),
         engine: "shell".into(),
         profile: None,
-        command: vec!["/bin/sh".into()],
+        command: vec![workload::shell_program().into()],
         cwd: paths.state_root.clone(),
         env: BTreeMap::new(),
         env_unset: Vec::new(),

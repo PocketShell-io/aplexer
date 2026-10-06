@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+#[path = "support/workload.rs"]
+mod workload;
+
 use aplexer::SessionRecord;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -20,12 +24,16 @@ impl Harness {
         let config = runtime.path().join("config.toml");
         std::fs::write(
             &config,
-            "version = 1\n\
-             [engines.shell]\n\
-             command = [\"/bin/sh\", \"-l\"]\n\
-             env_unset = [\"SHELL_REMOVE\"]\n\
-             [engines.agentish]\n\
-             command = [\"/bin/true\"]\n",
+            format!(
+                "version = 1\n\
+                 [engines.shell]\n\
+                 command = {}\n\
+                 env_unset = [\"SHELL_REMOVE\"]\n\
+                 [engines.agentish]\n\
+                 command = {}\n",
+                workload::shell_engine_toml(),
+                serde_json::to_string(&workload::true_command()).unwrap(),
+            ),
         )
         .unwrap();
         Self {
@@ -55,9 +63,9 @@ impl Harness {
         tag: &str,
         engine: &str,
         environment: &[&str],
-        script: &str,
+        argv: &[String],
     ) -> SessionRecord {
-        self.start_from_launcher(workspace, tag, engine, environment, &[], script)
+        self.start_from_launcher(workspace, tag, engine, environment, &[], argv)
     }
 
     /// `start`, plus `launcher_env` applied to the `a start` process itself
@@ -70,7 +78,7 @@ impl Harness {
         engine: &str,
         environment: &[&str],
         launcher_env: &[(&str, &str)],
-        script: &str,
+        argv: &[String],
     ) -> SessionRecord {
         let mut command = self.command();
         for (name, value) in launcher_env {
@@ -83,7 +91,7 @@ impl Harness {
         for value in environment {
             command.args(["--env", value]);
         }
-        command.args(["--", "/bin/sh", "-c", script]);
+        command.arg("--").args(argv);
         let output = command.output().expect("start session");
         assert!(
             output.status.success(),
@@ -96,7 +104,7 @@ impl Harness {
     }
 
     fn capture_until(&self, id: &str, marker: &str) -> Vec<u8> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + workload::capture_deadline();
         loop {
             let output = self.run(&["capture", id]);
             if output.status.success() && String::from_utf8_lossy(&output.stdout).contains(marker) {
@@ -163,7 +171,14 @@ fn shell_keeps_provider_overrides_while_agent_engines_strip_them() {
         "shell-env",
         "shell",
         &["OPENAI_API_KEY=visible", "SHELL_REMOVE=hidden"],
-        "printf 'shell-api=%s shell-remove=%s\\n' \"${OPENAI_API_KEY-unset}\" \"${SHELL_REMOVE-unset}\"; sleep 30",
+        &workload::env_report_command(
+            &[
+                ("shell-api", "OPENAI_API_KEY"),
+                ("shell-remove", "SHELL_REMOVE"),
+            ],
+            false,
+            30,
+        ),
     );
     let output = harness.capture_until(&shell.id.to_string(), "shell-api=");
     let output = String::from_utf8_lossy(&output);
@@ -177,7 +192,7 @@ fn shell_keeps_provider_overrides_while_agent_engines_strip_them() {
         "agent-env",
         "agentish",
         &["OPENAI_API_KEY=hidden"],
-        "printf 'agent-api=%s\\n' \"${OPENAI_API_KEY-unset}\"; sleep 30",
+        &workload::env_report_command(&[("agent-api", "OPENAI_API_KEY")], false, 30),
     );
     let output = harness.capture_until(&agent.id.to_string(), "agent-api=");
     let output = String::from_utf8_lossy(&output);
@@ -205,7 +220,7 @@ fn workload_terminal_is_aplexers_own_not_the_launchers() {
         "shell",
         &[],
         &[("TERM", "dumb"), ("COLORTERM", "")],
-        "printf 'term=[%s] colorterm=[%s]\\n' \"${TERM-unset}\" \"${COLORTERM-unset}\"; sleep 30",
+        &workload::env_report_command(&[("term", "TERM"), ("colorterm", "COLORTERM")], true, 30),
     );
     let output = harness.capture_until(&session.id.to_string(), "term=[");
     let output = String::from_utf8_lossy(&output);
@@ -223,7 +238,7 @@ fn workload_terminal_is_aplexers_own_not_the_launchers() {
         "shell",
         &["TERM=screen-256color"],
         &[("TERM", "dumb")],
-        "printf 'term=[%s]\\n' \"${TERM-unset}\"; sleep 30",
+        &workload::env_report_command(&[("term", "TERM")], true, 30),
     );
     let output = harness.capture_until(&session.id.to_string(), "term=[");
     let output = String::from_utf8_lossy(&output);

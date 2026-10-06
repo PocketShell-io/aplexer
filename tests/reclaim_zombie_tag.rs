@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Product-path regressions for reclaiming a `workspace+tag` from a record
 //! that no longer needs it (issue #7).
 //!

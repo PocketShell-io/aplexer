@@ -1,3 +1,4 @@
+#![cfg(unix)]
 // Live integration test: start real agent CLIs in skip-permissions mode,
 // resolve each session with `a whoami` (the same APLEXER_SESSION_ID a
 // process inside the session sees), give them a task that needs tools,

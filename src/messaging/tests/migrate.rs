@@ -89,6 +89,7 @@ fn ensure_workspace_losslessly_merges_coexisting_mailboxes() {
 }
 
 #[test]
+#[cfg(unix)]
 fn legacy_merge_rejects_special_file_cursor_collisions_without_blocking() {
     let root = TempDir::new().unwrap();
     let paths = test_paths(root.path());

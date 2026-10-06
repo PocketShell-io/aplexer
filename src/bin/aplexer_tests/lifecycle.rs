@@ -90,6 +90,7 @@ fn quick_index_skips_exited_corpses_like_the_default_list() {
 /// even though every other reap condition (non-terminal phase, dead
 /// workload, no containment proof) is satisfied.
 #[test]
+#[cfg(unix)]
 fn prune_retains_a_record_whose_worker_identity_is_unreadable() {
     let mut record = mk_record("/ws/uncertain", "main", Phase::Running);
     // A real throwaway process standing in for the recorded worker,
@@ -179,6 +180,7 @@ fn prune_fences_a_pre_pid_starting_record_against_its_worker_lock() {
 /// this test also proves the containment preflight happens before any
 /// signal is sent.
 #[test]
+#[cfg(unix)]
 fn cmd_kill_preserves_stale_socket_record_without_containment_proof() {
     let state_dir = tempfile::tempdir().unwrap();
     let runtime_dir = tempfile::tempdir().unwrap();
@@ -248,6 +250,7 @@ fn cmd_kill_preserves_stale_socket_record_without_containment_proof() {
 }
 
 #[test]
+#[cfg(unix)]
 fn force_kill_stale_worker_refuses_legacy_record_without_identity() {
     let state_dir = tempfile::tempdir().unwrap();
     let runtime_dir = tempfile::tempdir().unwrap();
@@ -278,6 +281,7 @@ fn force_kill_stale_worker_refuses_legacy_record_without_identity() {
 }
 
 #[test]
+#[cfg(unix)]
 fn force_kill_stale_worker_refuses_start_time_mismatch() {
     let state_dir = tempfile::tempdir().unwrap();
     let runtime_dir = tempfile::tempdir().unwrap();

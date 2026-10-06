@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Workspace ordering for `a list --sort` and `last_accessed_ms` on attach.
 //!
 //! Human `a list` numbers workspaces in the chosen order, and `a N` uses

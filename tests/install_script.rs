@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! The install script's contract: exactly one real binary lands in the bin
 //! dir and `a` is always a symlink to it — including over a stale
 //! regular-file `a` left behind by a copy-based install. That drift is not

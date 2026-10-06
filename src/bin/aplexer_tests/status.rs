@@ -228,6 +228,7 @@ fn agent_annotation_appears_only_when_it_adds_information() {
 /// `write_fake_claude` in tests/agent_detection.rs. The loop also
 /// self-expires, so a test that panics before cleanup cannot leak an
 /// immortal polling process.
+#[cfg(unix)]
 fn spawn_fake_claude(dir: &Path) -> (PathBuf, std::process::Child) {
     let bin = dir.join("bin");
     fs::create_dir_all(&bin).unwrap();
@@ -260,6 +261,7 @@ fn spawn_fake_claude(dir: &Path) -> (PathBuf, std::process::Child) {
 }
 
 #[test]
+#[cfg(unix)]
 fn status_bar_names_the_agent_running_in_a_shell_session() {
     let dir = tempfile::TempDir::new().unwrap();
     let (sentinel, mut child) = spawn_fake_claude(dir.path());
@@ -281,6 +283,7 @@ fn status_bar_names_the_agent_running_in_a_shell_session() {
 }
 
 #[test]
+#[cfg(unix)]
 fn status_bar_does_not_repeat_an_agent_the_engine_already_names() {
     let dir = tempfile::TempDir::new().unwrap();
     let (sentinel, mut child) = spawn_fake_claude(dir.path());
@@ -305,6 +308,7 @@ fn status_bar_does_not_repeat_an_agent_the_engine_already_names() {
 /// cache, and everyone renders from it. A worker that accepts and then
 /// says nothing is the stall this guards against.
 #[test]
+#[cfg(unix)]
 fn bar_renders_from_the_cache_without_a_worker_round_trip() {
     let dir = tempfile::TempDir::new().unwrap();
     let socket = dir.path().join("worker.sock");

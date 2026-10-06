@@ -103,6 +103,7 @@ fn pager_bar_without_typing_still_writes_unconditionally() {
 /// The resize poller's whole reaction, as `run_resize_loop` runs it. The
 /// worker end of the writer is a dead socket pair: the Resize control
 /// send is best-effort there and irrelevant to what reaches the host.
+#[cfg(unix)]
 fn resize_config(ctx: &StatusBarCtx) -> ResizeThreadConfig {
     let (writer, _peer) = UnixStream::pair().expect("socket pair");
     ResizeThreadConfig {
@@ -120,6 +121,7 @@ fn resize_config(ctx: &StatusBarCtx) -> ResizeThreadConfig {
 /// painting it here put old history under live bytes, and did so even
 /// mid-escape-sequence, where a live injection has to wait.
 #[test]
+#[cfg(unix)]
 fn resize_while_typing_repaints_the_live_screen_not_the_pager() {
     let _fd1 = FD1_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
     let ctx = ctx_in_typing_mode();

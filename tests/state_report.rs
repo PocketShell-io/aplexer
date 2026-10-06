@@ -1,3 +1,4 @@
+#![cfg(unix)]
 // Integration test for `a state-report` (docs/pocketshell-integration-plan.md
 // Open question #2, "Agent-state ingestion"): a hook running inside a
 // session pushes its own semantic state, and `a watch --jsonl`'s

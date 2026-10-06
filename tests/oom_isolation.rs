@@ -1,3 +1,4 @@
+#![cfg(unix)]
 // Integration tests for the failure-domain invariants aplexer exists to
 // provide (spec.md section 29): killing or OOM-ing one session's workload,
 // or killing one session's worker process outright, must never affect

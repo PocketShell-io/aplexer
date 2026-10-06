@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! A stalled attached client must not be dropped by a flooding session --
 //! and a wedged one must not clog the worker forever.
 //!

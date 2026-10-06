@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Product-path regressions for fail-closed broken-session recovery.
 
 use aplexer::{atomic_write_json, FileLock, Limits, Paths, Phase, SessionRecord, SCHEMA_VERSION};

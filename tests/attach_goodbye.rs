@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! `a attach`'s goodbye line must tell the truth about why the client left.
 //!
 //! Ctrl-b d and stdin EOF stay `Detached from X.`. A worker that dies under an

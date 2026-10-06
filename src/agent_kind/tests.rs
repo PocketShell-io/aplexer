@@ -32,6 +32,7 @@ fn variants_from(profiles: &[(&str, &str)]) -> ProfileVariants {
 
 /// Materialise one pid in a synthetic `/proc`: `comm`, `cmdline`, and the
 /// `task/<pid>/children` file the descendant walker reads.
+#[cfg(unix)]
 fn write_proc(root: &Path, pid: u32, comm: &str, cmdline: &[&str], children: &[u32]) {
     let dir = root.join(pid.to_string());
     fs::create_dir_all(&dir).unwrap();
@@ -54,6 +55,7 @@ fn write_proc(root: &Path, pid: u32, comm: &str, cmdline: &[&str], children: &[u
 
 /// `write_proc` plus an `environ` file, the `/proc` evidence profile
 /// resolution reads.
+#[cfg(unix)]
 fn write_proc_env(root: &Path, pid: u32, comm: &str, cmdline: &[&str], env: &[(&str, &str)]) {
     write_proc(root, pid, comm, cmdline, &[]);
     let mut raw = Vec::new();
@@ -64,6 +66,7 @@ fn write_proc_env(root: &Path, pid: u32, comm: &str, cmdline: &[&str], env: &[(&
     fs::write(root.join(pid.to_string()).join("environ"), raw).unwrap();
 }
 
+#[cfg(unix)]
 fn proc_tree() -> (TempDir, PathBuf) {
     let dir = TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
@@ -71,6 +74,7 @@ fn proc_tree() -> (TempDir, PathBuf) {
 }
 
 #[test]
+#[cfg(unix)]
 fn claude_under_bash_is_detected() {
     let (_dir, root) = proc_tree();
     write_proc(&root, 100, "bash", &["/bin/bash", "-l"], &[101]);
@@ -83,6 +87,7 @@ fn claude_under_bash_is_detected() {
 }
 
 #[test]
+#[cfg(unix)]
 fn node_wrapped_codex_is_detected() {
     let (_dir, root) = proc_tree();
     write_proc(&root, 200, "bash", &["/bin/bash", "-l"], &[201]);
@@ -116,6 +121,7 @@ fn zcodex_engine_variants() -> ProfileVariants {
 }
 
 #[test]
+#[cfg(unix)]
 fn zcodex_under_bash_is_detected_as_codex() {
     // The shape every zcodex session has: a login shell whose child is
     // the codex-rs dev build, `comm` = `zcodex`. It is a codex variant,
@@ -144,6 +150,7 @@ fn zcodex_under_bash_is_detected_as_codex() {
 }
 
 #[test]
+#[cfg(unix)]
 fn zcodex_binary_names_the_zcodex_profile_without_any_env() {
     // The usual hand-launched shape: the variant engine's binary and
     // no profile env at all. The config-derived token names the
@@ -162,6 +169,7 @@ fn zcodex_binary_names_the_zcodex_profile_without_any_env() {
 }
 
 #[test]
+#[cfg(unix)]
 fn sibling_codex_home_env_names_that_profile() {
     let (_dir, root) = proc_tree();
     write_proc_env(
@@ -182,6 +190,7 @@ fn sibling_codex_home_env_names_that_profile() {
 }
 
 #[test]
+#[cfg(unix)]
 fn default_codex_home_env_is_the_default_profile() {
     let (_dir, root) = proc_tree();
     write_proc_env(
@@ -202,6 +211,7 @@ fn default_codex_home_env_is_the_default_profile() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_non_default_env_wins_over_the_variant_binary_name() {
     // A zcodex binary pointed at a different sibling home: the home
     // decides which profile is live, the binary is only the fallback.
@@ -224,6 +234,7 @@ fn a_non_default_env_wins_over_the_variant_binary_name() {
 }
 
 #[test]
+#[cfg(unix)]
 fn sibling_claude_config_dir_names_that_profile() {
     let (_dir, root) = proc_tree();
     write_proc_env(
@@ -244,6 +255,7 @@ fn sibling_claude_config_dir_names_that_profile() {
 }
 
 #[test]
+#[cfg(unix)]
 fn agents_without_a_profile_env_can_only_be_the_default_profile() {
     // Grok has no known profile env, so whatever else is in the
     // environment cannot name a variation.
@@ -280,6 +292,7 @@ fn profile_label_defaults_to_default() {
 }
 
 #[test]
+#[cfg(unix)]
 fn codex_helper_path_alone_does_not_match() {
     let (_dir, root) = proc_tree();
     write_proc(&root, 300, "bash", &["/bin/bash", "-l"], &[301]);
@@ -295,6 +308,7 @@ fn codex_helper_path_alone_does_not_match() {
 }
 
 #[test]
+#[cfg(unix)]
 fn workload_without_descendants_has_no_agent() {
     let (_dir, root) = proc_tree();
     write_proc(&root, 400, "bash", &["/bin/bash", "-l"], &[]);
@@ -303,6 +317,7 @@ fn workload_without_descendants_has_no_agent() {
 }
 
 #[test]
+#[cfg(unix)]
 fn workload_leader_itself_can_be_the_agent() {
     let (_dir, root) = proc_tree();
     write_proc(&root, 500, "claude", &["claude"], &[]);
@@ -314,6 +329,7 @@ fn workload_leader_itself_can_be_the_agent() {
 }
 
 #[test]
+#[cfg(unix)]
 fn agent_nested_several_levels_below_the_workload_is_found() {
     let (_dir, root) = proc_tree();
     write_proc(&root, 600, "bash", &["/bin/bash", "-l"], &[601]);
@@ -328,6 +344,7 @@ fn agent_nested_several_levels_below_the_workload_is_found() {
 }
 
 #[test]
+#[cfg(unix)]
 fn vanished_pid_mid_walk_is_skipped_and_the_live_sibling_still_matches() {
     let (_dir, root) = proc_tree();
     // 701 is listed as a child but its /proc entry is gone -- exactly what
@@ -343,6 +360,7 @@ fn vanished_pid_mid_walk_is_skipped_and_the_live_sibling_still_matches() {
 }
 
 #[test]
+#[cfg(unix)]
 fn every_descendant_vanishing_yields_none_without_error() {
     let (_dir, root) = proc_tree();
     write_proc(&root, 800, "bash", &["/bin/bash", "-l"], &[801, 802]);
@@ -351,6 +369,7 @@ fn every_descendant_vanishing_yields_none_without_error() {
 }
 
 #[test]
+#[cfg(unix)]
 fn missing_workload_pid_yields_none_without_error() {
     let (_dir, root) = proc_tree();
 
@@ -358,6 +377,7 @@ fn missing_workload_pid_yields_none_without_error() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_child_cycle_cannot_loop_forever() {
     let (_dir, root) = proc_tree();
     write_proc(&root, 900, "bash", &["/bin/bash"], &[901]);
@@ -367,6 +387,7 @@ fn a_child_cycle_cannot_loop_forever() {
 }
 
 #[test]
+#[cfg(unix)]
 fn shallower_match_wins_over_a_deeper_one() {
     let (_dir, root) = proc_tree();
     write_proc(&root, 1000, "bash", &["/bin/bash"], &[1001, 1002]);
@@ -595,6 +616,7 @@ fn tokens_are_lowercase_rules_applied_to_lowercased_text() {
 }
 
 #[test]
+#[cfg(unix)]
 fn comm_is_classified_before_cmdline() {
     let (_dir, root) = proc_tree();
     // A wrapper whose comm already names the agent must not need its

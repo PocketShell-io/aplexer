@@ -263,6 +263,7 @@ fn idle_and_exit_never_release_but_claims_go_stale() {
 }
 
 #[test]
+#[cfg(unix)]
 fn aliases_collapse_to_one_claim_and_relation_uses_checkout_facts() {
     let isolated = isolated();
     let real = TempDir::new().unwrap();

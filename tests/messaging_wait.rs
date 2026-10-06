@@ -1,3 +1,4 @@
+#![cfg(unix)]
 #[path = "support/messaging.rs"]
 mod support;
 

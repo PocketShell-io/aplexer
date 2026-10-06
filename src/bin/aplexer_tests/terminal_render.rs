@@ -23,10 +23,12 @@
 /// write end of another test's already-drained pipe, restore it as the
 /// process's stdout, and hand the harness an EPIPE on its next progress
 /// line.
+#[cfg(unix)]
 struct StdoutToDevNull {
     saved_fd: i32,
     _fd1: std::sync::MutexGuard<'static, ()>,
 }
+#[cfg(unix)]
 impl StdoutToDevNull {
     fn new() -> Self {
         let fd1 = FD1_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
@@ -44,6 +46,7 @@ impl StdoutToDevNull {
         }
     }
 }
+#[cfg(unix)]
 impl Drop for StdoutToDevNull {
     fn drop(&mut self) {
         unsafe {
@@ -103,15 +106,18 @@ fn status_ctx_for_test(reserved: bool) -> StatusBarCtx {
 /// it the default multi-threaded test harness lets one such test's
 /// `dup(1)` capture another's pipe write end and hold it open, so the
 /// reader blocks forever waiting for an EOF that never comes.
+#[cfg(unix)]
 static FD1_GUARD: Mutex<()> = Mutex::new(());
 
 /// Like `StdoutToDevNull`, but keeps the bytes: redirects fd 1 to a pipe
 /// so a test can assert on the exact escape sequences `draw_status_bar`
 /// emitted, rather than only on its `bool` return.
+#[cfg(unix)]
 struct StdoutToPipe {
     saved_fd: i32,
     read_fd: i32,
 }
+#[cfg(unix)]
 impl StdoutToPipe {
     fn new() -> Self {
         let saved_fd = unsafe { libc::dup(1) };
@@ -168,6 +174,7 @@ impl StdoutToPipe {
 /// snapshot had just restored (docs/terminal-state-design.md section 6.2
 /// step 3) -- and left the host terminal scrolling the wrong rows.
 #[test]
+#[cfg(unix)]
 fn draw_status_bar_reasserts_the_workload_scroll_region_not_its_own() {
     let _fd1 = FD1_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
     let ctx = status_ctx_for_test(true);
@@ -212,6 +219,7 @@ fn draw_status_bar_reasserts_the_workload_scroll_region_not_its_own() {
 /// swallowed by the dirty-check -- that would leave the wrong scroll
 /// region in force on the host until some unrelated text change happened.
 #[test]
+#[cfg(unix)]
 fn draw_status_bar_dirty_check_notices_a_workload_margin_change() {
     let _guard = StdoutToDevNull::new();
     let ctx = status_ctx_for_test(true);
@@ -837,6 +845,7 @@ fn live_screen_refresh_defers_mid_escape_sequence() {
 }
 
 #[test]
+#[cfg(unix)]
 fn draw_status_bar_dirty_check_reports_skip_vs_real_write() {
     let _guard = StdoutToDevNull::new();
     let ctx = status_ctx_for_test(true);
@@ -865,6 +874,7 @@ fn draw_status_bar_dirty_check_reports_skip_vs_real_write() {
 }
 
 #[test]
+#[cfg(unix)]
 fn real_zero_sized_pty_uses_conventional_geometry() {
     use std::os::fd::AsRawFd;
 
@@ -897,6 +907,7 @@ fn real_zero_sized_pty_uses_conventional_geometry() {
 /// the point of the push -- redraw the bar with the new tag immediately,
 /// not at the status thread's next poll or a switch.
 #[test]
+#[cfg(unix)]
 fn record_update_swaps_the_record_and_redraws_the_bar_with_the_new_tag() {
     let _guard = StdoutToDevNull::new();
     let ctx = status_ctx_for_test(true);

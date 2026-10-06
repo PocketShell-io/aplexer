@@ -9,6 +9,9 @@
 #[allow(dead_code)]
 #[path = "support/messaging.rs"]
 mod support;
+#[allow(dead_code)]
+#[path = "support/workload.rs"]
+mod workload;
 
 use aplexer::{atomic_write_json, task::sha256_hex};
 use serde_json::Value;
@@ -19,39 +22,6 @@ use support::Harness;
 use tempfile::TempDir;
 use uuid::Uuid;
 
-/// A fake engine that prints every argv element, its cwd, and selected env
-/// vars, then exits with $FAKE_EXIT (default 0). The prompt is always the
-/// final argv element, so `argv[last]=<prompt>` pins argv preservation.
-const FAKE_ENGINE: &str = r#"#!/bin/sh
-i=0
-for a in "$@"; do
-  echo "argv[$i]=$a"
-  i=$((i+1))
-done
-echo "cwd=$PWD"
-echo "session=${APLEXER_SESSION_ID:-none}"
-echo "stripped=${MY_CUSTOM_STRIP:-none}"
-echo "kept=${KEEP_ME:-none}"
-exit ${FAKE_EXIT:-0}
-"#;
-
-/// A fake engine that ignores everything and just sleeps past any test
-/// timeout, so the timeout path (group kill, exit 124) is what's exercised.
-const SLEEPING_ENGINE: &str = "#!/bin/sh
-sleep 30
-exit 0
-";
-
-fn write_executable(dir: &Path, name: &str, body: &str) -> String {
-    let path = dir.join(name);
-    fs::write(&path, body).unwrap();
-    let mut permissions = fs::metadata(&path).unwrap().permissions();
-    use std::os::unix::fs::PermissionsExt;
-    permissions.set_mode(0o755);
-    fs::set_permissions(&path, permissions).unwrap();
-    path.to_str().unwrap().to_string()
-}
-
 /// Harness with a config defining two fake engines over the given script:
 /// `codex` (builtin codex-family task argv + skip-permissions flag) and
 /// `antigravity` (config-provided `task_argv = ["-p"]`, proving the config
@@ -59,7 +29,7 @@ fn write_executable(dir: &Path, name: &str, body: &str) -> String {
 fn harness_with_fake_engine(script: &str) -> (Harness, TempDir, TempDir) {
     let harness = Harness::new();
     let engine_dir = TempDir::new().unwrap();
-    let fake = write_executable(engine_dir.path(), "fake-engine", script);
+    let fake = workload::toml_path(&workload::write_executable(engine_dir.path(), "fake-engine", script));
     let config = format!(
         r#"
 [engines.codex]
@@ -92,12 +62,14 @@ fn read_result(output_dir: &Path) -> Value {
 }
 
 fn stdout_log(output_dir: &Path) -> String {
-    fs::read_to_string(output_dir.join("stdout.log")).unwrap()
+    fs::read_to_string(output_dir.join("stdout.log"))
+        .unwrap()
+        .replace("\r\n", "\n")
 }
 
 #[test]
 fn prompt_reaches_child_argv_verbatim_and_success_exits_zero() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(FAKE_ENGINE);
+    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(true));
     let prompt = "delegated prompt with spaces 42";
     let prompt_path = write_prompt(cwd.path(), prompt);
     let output_dir = cwd.path().join("out-success");
@@ -184,7 +156,7 @@ fn prompt_reaches_child_argv_verbatim_and_success_exits_zero() {
 
 #[test]
 fn task_failure_propagates_the_childs_actual_exit_code() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(FAKE_ENGINE);
+    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(true));
     let prompt_path = write_prompt(cwd.path(), "failing task prompt");
     let output_dir = cwd.path().join("out-failure");
 
@@ -229,16 +201,16 @@ fn task_failure_propagates_the_childs_actual_exit_code() {
 
 #[test]
 fn unspawnable_engine_task_exits_127_with_an_honest_result() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(FAKE_ENGINE);
+    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(true));
     // An engine whose executable does not exist: the child can never start.
     // The launcher must exit 127 -- never 0 -- so the hosting script sees a
     // launch that did not happen, and RESULT.json keeps the evidence.
     let config = format!(
         r#"
 [engines.codex]
-command = ["{}/no-such-engine"]
+command = ["{}"]
 "#,
-        cwd.path().display()
+        workload::toml_path(&cwd.path().join("no-such-engine").display().to_string())
     );
     fs::write(harness.paths().config_file, config).unwrap();
 
@@ -282,15 +254,13 @@ command = ["{}/no-such-engine"]
 
 #[test]
 fn timeout_kills_only_the_task_group_and_exits_124() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(SLEEPING_ENGINE);
+    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::sleeping_engine_script(30));
     let prompt_path = write_prompt(cwd.path(), "sleeping task prompt");
     let output_dir = cwd.path().join("out-timeout");
 
     // A foreign long-running process the task must never touch.
-    let mut foreign = Command::new("sleep")
-        .arg("120")
-        .spawn()
-        .expect("spawn foreign sleep");
+    let mut foreign = workload::spawn_foreign_sleeper(120);
+
     let foreign_pid = foreign.id();
 
     let started = std::time::Instant::now();
@@ -325,11 +295,8 @@ fn timeout_kills_only_the_task_group_and_exits_124() {
     assert_eq!(result["exit_code"], 124);
 
     // The unrelated foreign process survived the task's timeout kill.
-    let foreign_alive = Command::new("kill")
-        .args(["-0", &foreign_pid.to_string()])
-        .status()
-        .expect("probe foreign process")
-        .success();
+    let foreign_alive = workload::process_alive(foreign_pid);
+
     assert!(foreign_alive, "foreign process must survive a task timeout");
     let _ = foreign.kill();
     let _ = foreign.wait();
@@ -337,7 +304,7 @@ fn timeout_kills_only_the_task_group_and_exits_124() {
 
 #[test]
 fn two_tasks_run_in_isolation_with_distinct_artifacts() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(FAKE_ENGINE);
+    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(true));
     let prompt_path = write_prompt(cwd.path(), "isolated prompt");
 
     for name in ["task-one", "task-two"] {
@@ -404,7 +371,7 @@ fn two_tasks_run_in_isolation_with_distinct_artifacts() {
 
 #[test]
 fn completion_notice_carries_the_real_parent_identity_to_the_target() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(FAKE_ENGINE);
+    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(true));
     // The calling session: a task hosted in a session whose record lives in
     // the task workspace (what `a start` gives a hosted task).
     let task_workspace = TempDir::new().unwrap();
@@ -504,7 +471,7 @@ fn completion_notice_carries_the_real_parent_identity_to_the_target() {
 
 #[test]
 fn notice_without_a_session_identity_is_skipped_not_faked() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(FAKE_ENGINE);
+    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(true));
     let prompt_path = write_prompt(cwd.path(), "anonymous prompt");
     let output_dir = cwd.path().join("out-no-identity");
 
@@ -564,7 +531,7 @@ fn notice_without_a_session_identity_is_skipped_not_faked() {
 
 #[test]
 fn cutoff_routes_new_launches_timezone_aware_never_midflight() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(FAKE_ENGINE);
+    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(true));
     let prompt_path = write_prompt(cwd.path(), "routed prompt");
 
     // The Berlin-cutoff instant with its explicit offset: past it, new
@@ -697,7 +664,7 @@ fn cutoff_routes_new_launches_timezone_aware_never_midflight() {
 
 #[test]
 fn skip_permissions_argv_is_appended_by_default_and_opt_out_honored() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(FAKE_ENGINE);
+    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(true));
     let prompt_path = write_prompt(cwd.path(), "permissions prompt");
 
     let with_default = cwd.path().join("perm-default");
@@ -759,14 +726,14 @@ fn skip_permissions_argv_is_appended_by_default_and_opt_out_honored() {
 
 #[test]
 fn unknown_engine_refuses_rather_than_guessing_flags() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(FAKE_ENGINE);
+    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(true));
     // A shell engine has no noninteractive mode and no config task_argv.
     let config = format!(
         r#"
 [engines.codex]
 command = ["{}"]
 "#,
-        write_executable(cwd.path(), "unused-fake", FAKE_ENGINE)
+        workload::toml_path(&workload::write_executable(cwd.path(), "unused-fake", &workload::fake_engine_script(true)))
     );
     fs::write(harness.paths().config_file, config).unwrap();
 

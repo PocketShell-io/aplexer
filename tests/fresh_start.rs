@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! `--fresh` starts -- `a new`'s "always creates" backend (product ask: add
 //! another session to a workspace whose tree already has one).
 //!

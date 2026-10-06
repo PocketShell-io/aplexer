@@ -2,8 +2,13 @@
 //! bundle. Synthetic records, native logs, and bind sidecars in isolated
 //! APLEXER_* dirs + HOME -- never a real user's sessions or engine logs.
 
+#[allow(dead_code)]
+#[path = "support/workload.rs"]
+mod workload;
+
 use serde_json::{json, Value};
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -38,7 +43,7 @@ impl Harness {
         cmd.env("APLEXER_RUNTIME_DIR", self.runtime_dir.path());
         cmd.env("APLEXER_STATE_DIR", self.state_dir.path());
         cmd.env("APLEXER_CONFIG", &self.config_file);
-        cmd.env("HOME", self.home.path());
+        workload::sandbox_home(&mut cmd, self.home.path());
         cmd.env_remove("APLEXER_SESSION_ID");
         cmd
     }
@@ -75,9 +80,8 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::process::Output
     match rx.recv_timeout(timeout) {
         Ok(output) => output.expect("wait a"),
         Err(_) => {
-            let _ = std::process::Command::new("kill")
-                .args(["-9", &pid_hint.to_string()])
-                .status();
+            workload::kill_process(pid_hint);
+
             panic!("`a` timed out after {timeout:?}");
         }
     }
@@ -106,7 +110,7 @@ fn write_dead_session(h: &Harness, id: &str, cwd: &Path) -> PathBuf {
         "workspace": cwd.display().to_string(),
         "tag": "zoom",
         "engine": "shell",
-        "command": ["/bin/bash", "-l"],
+        "command": workload::login_shell_argv(),
         "cwd": cwd.display().to_string(),
         "env": {},
         "env_unset": [],
@@ -186,17 +190,26 @@ fn write_function_rollout(path: &Path, cwd: &Path) {
 struct WritableGuard(PathBuf);
 impl WritableGuard {
     fn read_only(dir: &Path) -> Self {
-        let mut perms = fs::metadata(dir).unwrap().permissions();
-        perms.set_mode(0o555);
-        fs::set_permissions(dir, perms).unwrap();
+        // Windows directory read-only attributes do not block creating
+        // files inside, so there the guard is a no-op and the test simply
+        // checks the explicit-source path never writes a sidecar.
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(dir).unwrap().permissions();
+            perms.set_mode(0o555);
+            fs::set_permissions(dir, perms).unwrap();
+        }
         Self(dir.to_path_buf())
     }
 }
 impl Drop for WritableGuard {
     fn drop(&mut self) {
-        let mut perms = fs::metadata(&self.0).unwrap().permissions();
-        perms.set_mode(0o755);
-        let _ = fs::set_permissions(&self.0, perms);
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&self.0).unwrap().permissions();
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&self.0, perms);
+        }
     }
 }
 

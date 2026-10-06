@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Issue #21: a live worker whose durable state is deleted out from under it
 //! must self-reap instead of serving a socket no client can reach again.
 //!

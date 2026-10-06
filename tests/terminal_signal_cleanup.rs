@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;

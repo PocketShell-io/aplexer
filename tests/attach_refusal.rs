@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! A refused attach must say why. The worker used to return from
 //! `handle_attach` before writing any `Response` frame when the attach
 //! could not be established -- the attached-client cap, an oversized

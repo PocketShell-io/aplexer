@@ -12,6 +12,7 @@ fn workspace_key_stable_and_distinct() {
 }
 
 #[test]
+#[cfg(unix)]
 fn workspace_key_hashes_raw_unix_path_bytes() {
     let a = PathBuf::from(OsString::from_vec(b"/tmp/aplexer-\x80".to_vec()));
     let b = PathBuf::from(OsString::from_vec(b"/tmp/aplexer-\x81".to_vec()));
@@ -20,6 +21,7 @@ fn workspace_key_hashes_raw_unix_path_bytes() {
 }
 
 #[test]
+#[cfg(unix)]
 fn workspace_and_cursor_state_reject_special_and_oversized_files() {
     let root = TempDir::new().unwrap();
     let paths = test_paths(root.path());

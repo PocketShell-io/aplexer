@@ -1,3 +1,4 @@
+#![cfg(unix)]
 // Integration test for the live terminal-state model
 // (docs/terminal-state-design.md), checklist item 11: start a session
 // running a script that paints a box and enters the alternate screen,

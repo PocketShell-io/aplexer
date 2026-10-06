@@ -80,6 +80,7 @@ fn exiting_lifecycle_overrides_even_a_valid_report() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn old_quiet_idle_stays_eligible_and_same_envelope_is_submitted_once() {
     let case = rejected_case(Some("idle"), Some(1000), Some(900));

@@ -76,14 +76,22 @@ class TestBuildWheel(unittest.TestCase):
                 self.assertIn("Requires-Python: >=3.11\n", metadata)
                 self.assertIn("Requires-Dist: aplexer-client==0.1.0\n", metadata)
 
-    def test_release_targets_are_linux_only_with_matching_architecture_tags(self):
+    def test_release_targets_have_matching_architecture_tags(self):
+        targets = list(build_wheels.TARGETS)
+        linux = [t for t in targets if t[0].startswith("linux-")]
         self.assertEqual(
-            build_wheels.TARGETS,
+            linux,
             [
                 ("linux-amd64", "linux_x86_64", ""),
                 ("linux-arm64", "linux_aarch64", ""),
             ],
         )
+        # Anything beyond Linux must be the Windows x86-64 wheel (.exe binary).
+        for name, tag, suffix in targets:
+            if not name.startswith("linux-"):
+                self.assertEqual(name, "windows-amd64")
+                self.assertEqual(tag, "win_amd64")
+                self.assertEqual(suffix, ".exe")
 
 
 class TestMainMatrixEnforcement(unittest.TestCase):
@@ -91,8 +99,9 @@ class TestMainMatrixEnforcement(unittest.TestCase):
     def write_binaries(root, platform):
         artifact_dir = os.path.join(root, "aplexer-bins-" + platform)
         os.makedirs(artifact_dir)
+        suffix = {t[0]: t[2] for t in build_wheels.TARGETS}.get(platform, "")
         for name in build_wheels.BINARY_NAMES:
-            with open(os.path.join(artifact_dir, name), "wb") as f:
+            with open(os.path.join(artifact_dir, name + suffix), "wb") as f:
                 f.write(("#!/bin/sh\necho " + name + "\n").encode("ascii"))
 
     @staticmethod
@@ -113,6 +122,7 @@ class TestMainMatrixEnforcement(unittest.TestCase):
         return result, stdout.getvalue(), stderr.getvalue()
 
     def test_missing_default_matrix_fails_before_writing_any_wheel(self):
+        # Only linux-amd64 is staged, so every other release platform is missing.
         with tempfile.TemporaryDirectory() as tmpdir:
             binaries_dir = os.path.join(tmpdir, "artifacts")
             os.makedirs(binaries_dir)
@@ -148,20 +158,21 @@ class TestMainMatrixEnforcement(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             binaries_dir = os.path.join(tmpdir, "artifacts")
             os.makedirs(binaries_dir)
-            self.write_binaries(binaries_dir, "linux-amd64")
-            self.write_binaries(binaries_dir, "linux-arm64")
+            for target in build_wheels.TARGETS:
+                self.write_binaries(binaries_dir, target[0])
             output_dir = os.path.join(tmpdir, "dist")
 
             result, stdout, stderr = self.run_main(binaries_dir, output_dir)
 
+            count = len(build_wheels.TARGETS)
             self.assertEqual(result, 0)
             self.assertEqual(stderr, "")
-            self.assertIn("2 wheels built, 0 skipped", stdout)
+            self.assertIn(f"{count} wheels built, 0 skipped", stdout)
             self.assertEqual(
                 set(os.listdir(output_dir)),
                 {
-                    "aplexer-0.1.0-py3-none-linux_x86_64.whl",
-                    "aplexer-0.1.0-py3-none-linux_aarch64.whl",
+                    f"aplexer-0.1.0-py3-none-{tag}.whl"
+                    for _name, tag, _suffix in build_wheels.TARGETS
                 },
             )
 

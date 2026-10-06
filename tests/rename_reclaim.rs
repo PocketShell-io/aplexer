@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Rename answers the same ownership question as start (issue #13).
 //!
 //! `a start` reclaims a `workspace+tag` whose holder no longer needs it --

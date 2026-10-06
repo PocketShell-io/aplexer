@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use serde_json::Value;
 use std::io;
 use std::os::unix::process::CommandExt;

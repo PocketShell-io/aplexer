@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Scratch differential probe for live-session garbling that survives the
 //! fixed routes in `attach_divergence.rs` (scroll-region reset, last-row wrap,
 //! resize mid-frame). The workload here mimics what the real agent TUIs

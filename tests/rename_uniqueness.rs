@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use aplexer::{
     frame_json, list_records, read_frame, write_json, Operation, Paths, Request, Response,
 };

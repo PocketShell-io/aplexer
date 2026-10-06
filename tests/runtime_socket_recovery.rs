@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use serde_json::Value;
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};

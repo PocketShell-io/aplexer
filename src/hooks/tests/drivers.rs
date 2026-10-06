@@ -111,6 +111,7 @@ fn engine_filter_limits_the_drivers() {
 }
 
 #[test]
+#[cfg(unix)]
 fn install_writes_through_a_symlinked_settings_file() {
     let dir = tempfile::TempDir::new().unwrap();
     let home = dir.path().join("home");

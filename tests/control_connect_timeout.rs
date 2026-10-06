@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use aplexer::{atomic_write_json, Limits, Paths, Phase, SessionRecord};
 use serde_json::Value;
 use std::collections::BTreeMap;

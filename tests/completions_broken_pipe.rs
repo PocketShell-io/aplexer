@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! `a completions` must not panic when its reader leaves before the script.
 
 use std::os::fd::{FromRawFd, IntoRawFd};

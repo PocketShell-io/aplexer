@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! End-to-end proof that `a list --json` / `a snapshot` / `a status --json`
 //! name the agent actually running inside a session -- and that the human
 //! plain `a list` tree (the rendering pocketshell's app shows) labels the

@@ -78,6 +78,7 @@ fn status(output: &Output, expected: &str) {
     assert_eq!(value["status"], expected, "{output:?}");
 }
 
+#[cfg(unix)]
 fn verify_delivery(cross: bool, engine: &str) {
     let case = Case::new(cross, engine);
     let server = worker::Worker::start(&case.recipient, false);
@@ -97,6 +98,7 @@ fn verify_delivery(cross: bool, engine: &str) {
     assert_eq!(writes[3], b"\r");
 }
 
+#[cfg(unix)]
 #[test]
 fn same_and_cross_workspace_keep_identity_and_submit_one_framed_input() {
     for cross in [false, true] {
@@ -141,6 +143,7 @@ fn reused_tag_does_not_redirect_message_to_replacement_session() {
     assert_eq!(case.stored(), case.envelope);
 }
 
+#[cfg(unix)]
 #[test]
 fn working_recipient_receives_no_input_and_reservation_stays_retryable() {
     let mut case = Case::new(false, "codex");
@@ -159,6 +162,7 @@ fn working_recipient_receives_no_input_and_reservation_stays_retryable() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn lost_transport_response_is_uncertain_and_never_retried() {
     let case = Case::new(true, "codex");

@@ -41,7 +41,7 @@ class TestEntryPointsExist(unittest.TestCase):
 
 
 class TestPlatformDetection(unittest.TestCase):
-    """Platform detection resolves only architectures in the Linux wheel matrix."""
+    """Platform detection resolves only architectures in the wheel matrix."""
 
     def _assert_resolves(self, plat, machine, suffix):
         with mock.patch("sys.platform", plat), mock.patch(
@@ -60,6 +60,11 @@ class TestPlatformDetection(unittest.TestCase):
     def test_linux_arm64_alias(self):
         self._assert_resolves("linux", "arm64", "")
 
+    def test_windows_amd64_resolves_exe_when_released(self):
+        if ("win32", "AMD64") not in _main._PLATFORM_MAP:
+            self.skipTest("Windows wheel not part of this release matrix")
+        self._assert_resolves("win32", "AMD64", ".exe")
+
     def test_unreleased_platforms_are_unsupported(self):
         for plat, machine in (
             ("darwin", "x86_64"),
@@ -68,6 +73,8 @@ class TestPlatformDetection(unittest.TestCase):
             ("win32", "ARM64"),
             ("freebsd", "armv7l"),
         ):
+            if (plat, machine) in _main._PLATFORM_MAP:
+                continue  # released since: covered by its own resolve test
             with self.subTest(platform=plat, machine=machine), mock.patch(
                 "sys.platform", plat
             ), mock.patch("platform.machine", return_value=machine):
@@ -85,7 +92,8 @@ class TestMissingOrUnsupportedExitsWithError(unittest.TestCase):
         self.assertIn("Linux x86_64", stderr.getvalue())
         self.assertIn("Linux aarch64 (arm64)", stderr.getvalue())
         self.assertNotIn("macOS", stderr.getvalue())
-        self.assertNotIn("Windows", stderr.getvalue())
+        if ("win32", "AMD64") not in _main._PLATFORM_MAP:
+            self.assertNotIn("Windows", stderr.getvalue())
 
     def test_missing_binary_exits_with_error(self):
         """Supported platform, but no binary bundled in the source tree."""

@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use aplexer::{
     atomic_write_json, now_ms, Limits, Paths, Phase, SessionRecord, DEFAULT_STARTUP_TIMEOUT_MS,
     SCHEMA_VERSION,

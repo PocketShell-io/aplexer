@@ -3,6 +3,10 @@
 // APLEXER_* dirs + HOME so this never touches a real user's sessions
 // or engine logs.
 
+#[allow(dead_code)]
+#[path = "support/workload.rs"]
+mod workload;
+
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,7 +42,7 @@ impl Harness {
         cmd.env("APLEXER_RUNTIME_DIR", self.runtime_dir.path());
         cmd.env("APLEXER_STATE_DIR", self.state_dir.path());
         cmd.env("APLEXER_CONFIG", &self.config_file);
-        cmd.env("HOME", self.home.path());
+        workload::sandbox_home(&mut cmd, self.home.path());
         cmd.env_remove("APLEXER_SESSION_ID");
         cmd
     }
@@ -77,9 +81,8 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::process::Output
     match rx.recv_timeout(timeout) {
         Ok(output) => output.expect("wait a"),
         Err(_) => {
-            let _ = std::process::Command::new("kill")
-                .args(["-9", &pid_hint.to_string()])
-                .status();
+            workload::kill_process(pid_hint);
+
             panic!("`a` timed out after {timeout:?}");
         }
     }
@@ -121,7 +124,7 @@ fn write_session(h: &Harness, id: &str, cwd: &Path, engine: &str) {
 }
 
 fn write_claude_log(h: &Harness, cwd: &Path, body: &str) -> PathBuf {
-    let encoded = cwd.display().to_string().replace(['/', '.'], "-");
+    let encoded = workload::claude_project_dir_name(cwd);
     let dir = h.home.path().join(".claude/projects").join(encoded);
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("abc.jsonl");
@@ -368,9 +371,10 @@ fn whoami_inside_session_survives_cleared_env() {
     let ws = h.home.path().join("proj");
     fs::create_dir_all(&ws).unwrap();
     let ws_str = ws.display().to_string();
+    let shell_argv = workload::interactive_shell_argv();
     let stdout = {
         let output = h.run(
-            &[
+            &{ let mut args = vec![
                 "start",
                 "--json",
                 "--workspace",
@@ -383,11 +387,7 @@ fn whoami_inside_session_survives_cleared_env() {
                 "shell",
                 "--startup-timeout-ms",
                 "15000",
-                "--",
-                "/bin/bash",
-                "--norc",
-                "-i",
-            ],
+                "--", ]; args.extend(shell_argv.iter().map(String::as_str)); args },
             Duration::from_secs(20),
         );
         assert!(
@@ -412,12 +412,20 @@ fn whoami_inside_session_survives_cleared_env() {
     // there with `env: 'a': No such file or directory` (on two commits,
     // while passing locally). The shim's own installation is
     // tests/install_script.rs's subject, not this one's.
+    #[cfg(unix)]
     let command = format!(
         "env -u APLEXER_SESSION_ID {} whoami; printf 'WHOAMI_'; printf 'DONE\\n'",
         aplexer::shell_quote(env!("CARGO_BIN_EXE_aplexer"))
     );
+    // cmd.exe: clear the stamp in the shell itself; `^D` keeps the marker out
+    // of the echoed input line (the caret is consumed on execution).
+    #[cfg(windows)]
+    let command = format!(
+        "set \"APLEXER_SESSION_ID=\" & \"{}\" whoami & echo WHOAMI_^DONE",
+        env!("CARGO_BIN_EXE_aplexer")
+    );
     h.run_ok(&["send", &id, "--enter", &command]);
-    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let deadline = std::time::Instant::now() + workload::capture_deadline() + Duration::from_secs(3);
     let mut captured = String::new();
     while std::time::Instant::now() < deadline {
         let output = h.run(&["capture", &id, "--bytes", "4000"], Duration::from_secs(5));

@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! `a rename` must answer "does this record still own its `workspace+tag`?"
 //! exactly like `a start` does (issue #13).
 //!

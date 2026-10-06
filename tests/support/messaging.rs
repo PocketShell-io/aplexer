@@ -41,6 +41,20 @@ impl Harness {
             .env("APLEXER_RUNTIME_DIR", self.runtime.path())
             .env("APLEXER_STATE_DIR", self.state.path())
             .env("APLEXER_CONFIG", &self.config);
+        // Keep the child away from the real profile on Windows, where
+        // dirs are derived from USERPROFILE/LOCALAPPDATA/APPDATA, not HOME.
+        #[cfg(windows)]
+        {
+            let profile = self.state.path().join("profile");
+            let local = profile.join("AppData").join("Local");
+            let roaming = profile.join("AppData").join("Roaming");
+            let _ = std::fs::create_dir_all(&local);
+            let _ = std::fs::create_dir_all(&roaming);
+            command
+                .env("USERPROFILE", &profile)
+                .env("LOCALAPPDATA", local)
+                .env("APPDATA", roaming);
+        }
         command
     }
 
@@ -71,7 +85,7 @@ impl Harness {
             tag: format!("capture-{id}"),
             engine: "shell".into(),
             profile: None,
-            command: vec!["/bin/sh".into()],
+            command: vec![if cfg!(windows) { "cmd.exe" } else { "/bin/sh" }.into()],
             cwd: workspace.to_path_buf(),
             env: BTreeMap::new(),
             env_unset: Vec::new(),

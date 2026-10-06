@@ -319,6 +319,7 @@ pub(super) fn history_failure_does_not_interrupt_live_output_and_can_recover() {
 }
 
 #[test]
+#[cfg(unix)]
 pub(super) fn history_append_failure_does_not_drop_subscribers_or_stop_live_output() {
     let dir = tempfile::tempdir().unwrap();
     let hub = test_hub(&dir);
@@ -386,6 +387,7 @@ pub(super) fn connection_permits_are_bounded_and_release_on_drop() {
 }
 
 #[test]
+#[cfg(unix)]
 pub(super) fn descriptor_pressure_accept_errors_are_retriable() {
     for errno in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
         assert!(transient_accept_error(&io::Error::from_raw_os_error(errno)));

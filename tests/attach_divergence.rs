@@ -1,3 +1,4 @@
+#![cfg(unix)]
 // Differential reproduction harness for the "Claude Code renders garbled
 // through `a attach`" report: two frames of output landing on the SAME
 // physical row, welded together in 1-6 character runs, plus a status bar that

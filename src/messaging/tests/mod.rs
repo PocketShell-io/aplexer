@@ -15,8 +15,10 @@ use std::ffi::OsString;
 
 use std::fs::{FileTimes, OpenOptions};
 
+#[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
 
 use std::time::Duration;

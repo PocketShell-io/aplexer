@@ -75,6 +75,7 @@ fn codex_rollout(dir: &Path, name: &str, cwd: &str, answer: &str) -> PathBuf {
 
 /// A synthetic /proc tree: `pid` holds the given targets open on its file
 /// descriptors, the same shape `open_jsonl_fds` reads back.
+#[cfg(unix)]
 fn fake_proc(root: &Path, pid: u32, open: &[PathBuf]) -> PathBuf {
     let fd_dir = root.join(pid.to_string()).join("fd");
     std::fs::create_dir_all(&fd_dir).unwrap();
@@ -96,6 +97,7 @@ fn shell_session_in(dir: &Path, codex_home: &Path) -> SessionRecord {
 }
 
 #[test]
+#[cfg(unix)]
 fn live_fd_binds_the_single_open_rollout_and_records_the_engine() {
     let dir = tempfile::tempdir().unwrap();
     let codex_home = dir.path().join("zcodex-home");
@@ -143,6 +145,7 @@ fn live_fd_binds_the_single_open_rollout_and_records_the_engine() {
 }
 
 #[test]
+#[cfg(unix)]
 fn live_fd_with_two_plausible_rollouts_refuses_and_binds_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let codex_home = dir.path().join("zcodex-home");

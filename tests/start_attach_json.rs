@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+#[path = "support/workload.rs"]
+mod workload;
+
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
@@ -21,8 +25,8 @@ fn global_json_rejects_start_attach_before_creating_a_session() {
             "--tag",
             "must-not-start",
             "--",
-            "/bin/sh",
         ])
+        .arg(workload::shell_program())
         .stdin(Stdio::null())
         .output()
         .unwrap();

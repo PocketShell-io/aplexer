@@ -1,14 +1,35 @@
-import fcntl
 import json
 import os
 import signal
+import sys
 import tempfile
 import time
 from pathlib import Path
 
 import pytest
 
+try:  # POSIX only; the flock-based tests are skipped on Windows.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+
 from aplexer.client import AplexerError, Client
+
+WINDOWS = sys.platform == "win32"
+posix_only = pytest.mark.skipif(
+    WINDOWS, reason="needs POSIX flock/raw-tty/signal semantics"
+)
+
+
+def _sleep_command(seconds):
+    """A portable long-lived workload: /bin/sleep on POSIX, a ping loop on Windows."""
+    if WINDOWS:
+        return ["cmd.exe", "/c", f"ping -n {int(seconds) + 1} 127.0.0.1 >nul"]
+    return ["/bin/sleep", str(seconds)]
+
+
+def _true_command():
+    return ["cmd.exe", "/c", "exit 0"] if WINDOWS else ["/bin/true"]
 
 
 def test_client_calls_native_not_subprocess(monkeypatch):
@@ -127,8 +148,8 @@ def test_client_paths_are_instance_local_including_start(monkeypatch, tmp_path):
 
     first.snapshot()
     second.snapshot()
-    first.start(workspace=tmp_path, tag="first", command=["/bin/true"])
-    second.start(workspace=tmp_path, tag="second", command=["/bin/true"])
+    first.start(workspace=tmp_path, tag="first", command=_true_command())
+    second.start(workspace=tmp_path, tag="second", command=_true_command())
 
     assert calls == [
         ("snapshot", *first_paths),
@@ -368,7 +389,7 @@ def test_native_clients_isolate_worker_start_and_snapshot():
         # reason that has nothing to do with isolation. Kill explicitly instead,
         # and wait for the records to go, which pins the same "no files left
         # behind" property the short sleep was reaching for.
-        command = ["/bin/sleep", "30"]
+        command = _sleep_command(30)
         first_session = first.start(workspace=root, tag="first", command=command)
         second_session = second.start(workspace=root, tag="second", command=command)
 
@@ -392,6 +413,7 @@ def _wait_until_gone(client, selector, timeout=5):
     raise AssertionError(f"session {selector} did not disappear from the list")
 
 
+@posix_only
 def test_native_operations_round_trip_arbitrary_bytes_and_forget():
     # Keep the root short enough for Linux's 108-byte Unix-socket path limit.
     with tempfile.TemporaryDirectory(prefix="apx-py-op-") as directory:
@@ -451,7 +473,7 @@ def test_native_kill_stops_live_session():
         session = client.start(
             workspace=root,
             tag="kill",
-            command=["/bin/sleep", "10"],
+            command=_sleep_command(10),
         )
         with pytest.raises(AplexerError, match="signal out of range"):
             client.kill(session.id, signal=0)
@@ -469,6 +491,7 @@ def _pid_alive(pid):
         return False
 
 
+@posix_only
 def test_native_forget_matches_cli_contract(capfd):
     """The Python binding is `a forget`: same gate, warning, and fence.
 

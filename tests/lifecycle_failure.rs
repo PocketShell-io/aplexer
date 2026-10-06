@@ -1,3 +1,4 @@
+#![cfg(unix)]
 #![cfg(feature = "startup-test-hooks")]
 
 //! Product-path regression for a failed workload waiter. The worker must

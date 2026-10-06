@@ -37,6 +37,7 @@ fn attach_goodbye_distinguishes_detach_error_and_socket_loss() {
 }
 
 #[test]
+#[cfg(unix)]
 fn control_deadline_bounds_a_silent_worker_and_streaming_can_clear_it() {
     let (mut client, _silent_worker) = UnixStream::pair().unwrap();
     set_control_deadlines(&client).unwrap();
@@ -54,6 +55,7 @@ fn control_deadline_bounds_a_silent_worker_and_streaming_can_clear_it() {
 }
 
 #[test]
+#[cfg(unix)]
 fn connect_deadline_bounds_a_saturated_unix_listener_backlog() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("saturated.sock");

@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! A running worker must reap the descendants it adopts.
 //!
 //! Workers set `PR_SET_CHILD_SUBREAPER`, so every process in the workload's

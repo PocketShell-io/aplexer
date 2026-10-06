@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! The embeddable API must never replace its host's SIGCHLD handler. Run each
 //! disposition in an isolated copy of this test process because sigaction is
 //! process-wide.

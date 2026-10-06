@@ -60,6 +60,7 @@ fn message_loader_validates_schema_filename_id_and_workspace() {
 }
 
 #[test]
+#[cfg(unix)]
 fn message_loader_rejects_symlink_non_regular_and_oversized_entries() {
     let root = TempDir::new().unwrap();
     let paths = test_paths(root.path());

@@ -1,14 +1,19 @@
 //! Crate-root unit tests, grouped into one file per module under test.
 
+#[cfg(unix)]
 mod cgroup;
 mod config;
 mod history;
 mod paths;
 mod persist;
+#[cfg(unix)]
 mod placement;
+#[cfg(unix)]
 mod proc_usage;
+#[cfg(unix)]
 mod process;
 mod protocol;
+#[cfg(unix)]
 mod record;
 mod registry;
 mod util;
@@ -20,12 +25,16 @@ use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::env;
+#[cfg(unix)]
 use std::ffi::CString;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -38,11 +47,13 @@ use uuid::Uuid;
 /// `validate_recorded_cgroup`'s full chain (locator shape, cgroup-v2
 /// filesystem, mount device, identity triple) runs for real. Returns
 /// None when the environment has no writable cgroup-v2 parent.
+#[cfg(unix)]
 struct DelegatedCgroup {
     path: PathBuf,
     members: Vec<std::process::Child>,
 }
 
+#[cfg(unix)]
 impl DelegatedCgroup {
     fn create(id: Uuid) -> Option<Self> {
         let own = fs::read_to_string("/proc/self/cgroup").ok()?;
@@ -109,6 +120,7 @@ impl DelegatedCgroup {
     }
 }
 
+#[cfg(unix)]
 impl Drop for DelegatedCgroup {
     fn drop(&mut self) {
         self.drain_members();

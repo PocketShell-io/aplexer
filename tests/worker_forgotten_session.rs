@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! A worker launched for a session whose durable state is already gone must
 //! not bring that session back.
 //!

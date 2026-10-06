@@ -1,3 +1,4 @@
+#![cfg(unix)]
 #![cfg(feature = "startup-test-hooks")]
 
 use aplexer::{

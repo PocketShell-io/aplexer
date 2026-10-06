@@ -1,3 +1,4 @@
+#![cfg(unix)]
 #[cfg(feature = "startup-test-hooks")]
 use aplexer::read_persisted_history_tail;
 use aplexer::{atomic_write_json, ExitInfo, Limits, Paths, Phase, SessionRecord, SCHEMA_VERSION};

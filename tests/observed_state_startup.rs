@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Issue #9: a healthy mid-create session is `starting`, not `broken`.
 //!
 //! `start_session` persists `phase: starting, worker_pid: null` before the
