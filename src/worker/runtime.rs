@@ -10,10 +10,11 @@
 use super::*;
 
 /// The PTY master's write handle. A `File` on Unix; on Windows the ConPTY
-/// master owned by the conpty agent (`sys::windows::pty::PtyMaster`, assumed
-/// to be `Write` for `&PtyMaster` and to offer `resize(rows, cols)`).
+/// master (`sys::windows::pty::PtyMaster`) paired with a duplicated input
+/// handle, which is `Write` for `&PtyWrite` and offers `resize(rows, cols)`.
 #[cfg(unix)]
 pub(super) type PtyWrite = File;
+#[cfg(windows)]
 pub(super) struct PtyWrite {
     master: crate::sys::windows::pty::PtyMaster,
     input: File,
