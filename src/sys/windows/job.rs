@@ -21,7 +21,8 @@
 use std::io;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -34,10 +35,11 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
-    JobObjectBasicProcessIdList, JobObjectCpuRateControlInformation,
-    JobObjectExtendedLimitInformation, OpenJobObjectW, QueryInformationJobObject,
-    SetInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectAssociateCompletionPortInformation,
+    JobObjectBasicAccountingInformation, JobObjectBasicProcessIdList,
+    JobObjectCpuRateControlInformation, JobObjectExtendedLimitInformation, OpenJobObjectW,
+    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+    JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
     JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_CPU_RATE_CONTROL_INFORMATION,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_CPU_RATE_CONTROL_ENABLE,
     JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
@@ -48,6 +50,9 @@ use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows_sys::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, TerminateProcess, WaitForSingleObject,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+};
+use windows_sys::Win32::System::IO::{
+    CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
 };
 
 /// Job access rights (not exported as typed constants by windows-sys).
@@ -388,7 +393,26 @@ pub fn job_name(id: impl std::fmt::Display) -> String {
 pub struct Job {
     handle: Arc<OwnedHandle>,
     name: String,
+    /// Limits and limit-hit counters fed by the completion-port listener
+    /// (only the creating process, i.e. the worker, has a listener).
+    shared: Arc<JobShared>,
 }
+
+#[derive(Debug, Default)]
+struct JobShared {
+    limits: JobLimits,
+    /// Processes ended because the job exceeded its committed-memory limit.
+    oom_kills: AtomicU64,
+    /// Process creations refused by the active-process limit.
+    pid_limit_hits: AtomicU64,
+}
+
+/// Exit code of a process killed for exceeding the job memory limit
+/// (`STATUS_COMMITMENT_LIMIT`).
+pub const OOM_EXIT_CODE: u32 = 0xC000_012D;
+
+const JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT: u32 = 3;
+const JOB_OBJECT_MSG_JOB_MEMORY_LIMIT: u32 = 10;
 
 impl Job {
     /// Create the session job. Fails with `AlreadyExists` instead of
@@ -408,8 +432,17 @@ impl Job {
         let job = Self {
             handle: Arc::new(handle),
             name,
+            shared: Arc::new(JobShared {
+                limits: *limits,
+                ..JobShared::default()
+            }),
         };
         job.apply_limits(limits)?;
+        if limits.memory_bytes.is_some() || limits.pids.is_some() {
+            // Best effort: without the listener limits are still enforced,
+            // they just are not reported.
+            let _ = job.start_limit_listener();
+        }
         Ok(job)
     }
 
@@ -439,7 +472,55 @@ impl Job {
         Ok(Some(Self {
             handle: Arc::new(OwnedHandle(raw)),
             name,
+            shared: Arc::new(JobShared::default()),
         }))
+    }
+
+    /// Processes killed for exceeding the job memory limit since creation:
+    /// the Windows analogue of the cgroup `oom_kill` counter. Only meaningful
+    /// on the handle returned by [`Job::create`].
+    pub fn oom_kills(&self) -> u64 {
+        self.shared.oom_kills.load(Ordering::SeqCst)
+    }
+
+    /// Process creations refused by the active-process limit.
+    pub fn pid_limit_hits(&self) -> u64 {
+        self.shared.pid_limit_hits.load(Ordering::SeqCst)
+    }
+
+    /// The limits this job was created with (default for a reopened job).
+    pub fn limits(&self) -> JobLimits {
+        self.shared.limits
+    }
+
+    /// Associate a completion port so the kernel reports limit hits. A job
+    /// that exceeds `JobMemoryLimit` merely fails the allocation (the
+    /// workload usually limps on); like the Linux OOM killer we then end the
+    /// offending process and count it.
+    fn start_limit_listener(&self) -> io::Result<()> {
+        let port = OwnedHandle::new(unsafe {
+            CreateIoCompletionPort(INVALID_HANDLE_VALUE, null_mut(), 0, 1)
+        })?;
+        let assoc = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
+            CompletionKey: null_mut::<std::ffi::c_void>().wrapping_add(1),
+            CompletionPort: port.as_raw(),
+        };
+        let ok = unsafe {
+            SetInformationJobObject(
+                self.handle.as_raw(),
+                JobObjectAssociateCompletionPortInformation,
+                (&assoc as *const JOBOBJECT_ASSOCIATE_COMPLETION_PORT).cast(),
+                size_of::<JOBOBJECT_ASSOCIATE_COMPLETION_PORT>() as u32,
+            )
+        };
+        if ok == 0 {
+            return Err(last_error());
+        }
+        let shared: Weak<JobShared> = Arc::downgrade(&self.shared);
+        std::thread::Builder::new()
+            .name("aplexer-job-limits".into())
+            .spawn(move || limit_listener(port, shared))
+            .map(|_| ())
     }
 
     pub fn name(&self) -> &str {
@@ -644,6 +725,39 @@ impl Job {
     }
 }
 
+/// Drain job limit notifications until every `Job` clone is gone.
+fn limit_listener(port: OwnedHandle, shared: Weak<JobShared>) {
+    loop {
+        let mut message = 0u32;
+        let mut key = 0usize;
+        let mut pid_value: *mut OVERLAPPED = null_mut();
+        let ok = unsafe {
+            GetQueuedCompletionStatus(port.as_raw(), &mut message, &mut key, &mut pid_value, 250)
+        };
+        let Some(shared) = shared.upgrade() else {
+            return;
+        };
+        if ok == 0 && pid_value.is_null() {
+            continue; // timeout: re-check liveness
+        }
+        // For job notifications the "overlapped" pointer carries the pid.
+        let pid = pid_value as usize as u32;
+        match message {
+            JOB_OBJECT_MSG_JOB_MEMORY_LIMIT => {
+                if let Ok(process) = open_process(pid, PROCESS_TERMINATE) {
+                    if unsafe { TerminateProcess(process.as_raw(), OOM_EXIT_CODE) } != 0 {
+                        shared.oom_kills.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+            JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT => {
+                shared.pid_limit_hits.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+    }
+}
+
 // --- The running worker's own job ---------------------------------------------
 
 static SESSION_JOB: OnceLock<Job> = OnceLock::new();
@@ -746,6 +860,66 @@ mod tests {
         child.wait().unwrap();
     }
 
+    fn spawn_powershell(script: &str) -> std::process::Child {
+        Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("spawn powershell")
+    }
+
+    #[test]
+    fn memory_limit_kills_offender_and_counts_oom() {
+        let limits = JobLimits {
+            memory_bytes: Some(150 << 20),
+            ..JobLimits::default()
+        };
+        let job = Job::create(unique(), &limits).unwrap();
+        let mut child = spawn_powershell(
+            "$l=New-Object System.Collections.ArrayList; \
+             for($i=0;$i -lt 60;$i++){ $b=New-Object byte[] 10MB; \
+             for($j=0;$j -lt $b.Length;$j+=4096){$b[$j]=1}; [void]$l.Add($b); Start-Sleep -Milliseconds 50 }; \
+             Start-Sleep 30",
+        );
+        job.assign_pid(child.id()).unwrap();
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(OOM_EXIT_CODE as i32), "{status:?}");
+        assert!(job.oom_kills() >= 1);
+        assert_eq!(job.limits().memory_bytes, Some(150 << 20));
+    }
+
+    #[test]
+    fn pid_limit_refuses_extra_processes_and_is_counted() {
+        let limits = JobLimits {
+            pids: Some(4),
+            ..JobLimits::default()
+        };
+        let job = Job::create(unique(), &limits).unwrap();
+        // The member tries to start 10 children and exits with the number
+        // that were refused.
+        let mut child = spawn_powershell(
+            "$f=0; $kids=@(); 1..10 | ForEach-Object { try { $kids += Start-Process -PassThru \
+             -WindowStyle Hidden ping -ArgumentList '-n','20','127.0.0.1' } catch { $f++ } }; \
+             $kids | Stop-Process -Force; exit $f",
+        );
+        job.assign_pid(child.id()).unwrap();
+        let status = child.wait().unwrap();
+        let refused = status.code().unwrap();
+        assert!(
+            refused >= 5,
+            "limit 4 must refuse most of 10 spawns: {refused}"
+        );
+        // The notification is asynchronous.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while job.pid_limit_hits() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(job.pid_limit_hits() >= 1);
+        job.kill_until_empty(Instant::now() + Duration::from_secs(5))
+            .unwrap();
+    }
     #[test]
     fn identity_pins_and_detects_exit_and_reuse() {
         let me = process_identity(std::process::id()).unwrap();

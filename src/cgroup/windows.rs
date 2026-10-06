@@ -54,15 +54,24 @@ impl Cgroup {
         Ok(!self.job.is_empty().context("inspect containment job")?)
     }
 
-    /// Job memory limits are enforced by the kernel without an OOM event we
-    /// can observe, so a Windows session never reports `oom_killed`.
+    /// A process was ended for exceeding the job memory limit (the limit
+    /// listener kills the offender with `STATUS_COMMITMENT_LIMIT`).
     pub fn oom_killed(&self) -> bool {
-        false
+        self.job.oom_kills() > 0
     }
 
     pub fn stats(&self) -> serde_json::Value {
         let accounting = self.job.accounting().ok();
+        let limits = self.job.limits();
         serde_json::json!({
+            "memory_limit_bytes": limits.memory_bytes,
+            "pids_limit": limits.pids,
+            "cpu_quota_us": limits.cpu_quota_us,
+            "cpu_period_us": limits.cpu_quota_us.map(|_| limits.cpu_period_us.unwrap_or(100_000)),
+            "oom_kill_count": self.job.oom_kills(),
+            "oom_kill_count_since_start": self.job.oom_kills(),
+            "pid_limit_hits": self.job.pid_limit_hits(),
+            "populated": self.populated().ok(),
             "job": self.job.name(),
             "active_processes": accounting.map(|a| a.active_processes),
             "cpu_time_100ns": accounting.map(|a| a.cpu_time_100ns),
