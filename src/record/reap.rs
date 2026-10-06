@@ -2,6 +2,7 @@
 //! destroys a record's durable state answers.
 
 use super::{CgroupIdentity, SessionRecord};
+#[cfg(target_os = "linux")]
 use crate::{cgroup_path_populated, linux_boot_id, validate_recorded_cgroup};
 use anyhow::Result;
 use std::path::Path;
@@ -75,7 +76,35 @@ pub enum ContainmentReap {
 /// Caller-side guards, deliberately NOT folded in here: a live worker and a
 /// live workload leader are checked separately and always retain.
 pub fn containment_reap_verdict(record: &SessionRecord) -> ContainmentReap {
-    containment_reap_verdict_with(record, recorded_cgroup_observed_empty)
+    #[cfg(target_os = "linux")]
+    return containment_reap_verdict_with(record, recorded_cgroup_observed_empty);
+    #[cfg(windows)]
+    return windows_reap_verdict(record);
+}
+
+/// Windows containment is the session's named Job Object, which is looked up
+/// by session id rather than by a recorded locator. No job object means every
+/// handle to it closed, and `KILL_ON_JOB_CLOSE` ended every member; a job
+/// that still exists is asked directly. Anything unreadable retains.
+#[cfg(windows)]
+fn windows_reap_verdict(record: &SessionRecord) -> ContainmentReap {
+    if record.containment_proven_empty() {
+        return ContainmentReap::Proven;
+    }
+    match recorded_job_observed_empty(record.id) {
+        Ok(true) => ContainmentReap::Proven,
+        Ok(false) | Err(_) => ContainmentReap::Retain,
+    }
+}
+
+/// Read-only emptiness check for a session's Job Object. Signals nothing.
+#[cfg(windows)]
+pub(crate) fn recorded_job_observed_empty(id: Uuid) -> Result<bool> {
+    use crate::sys::windows::job::Job;
+    match Job::open(id)? {
+        None => Ok(true),
+        Some(job) => Ok(job.is_empty()?),
+    }
 }
 
 /// The decision table, with the kernel probe injected so every arm --
@@ -84,6 +113,7 @@ pub fn containment_reap_verdict(record: &SessionRecord) -> ContainmentReap {
 /// machine, not only one with cgroup-v2 delegation. The real probe is
 /// covered separately against a real cgroup (see
 /// `recorded_cgroup_observed_empty_tracks_a_real_delegated_cgroup`).
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn containment_reap_verdict_with(
     record: &SessionRecord,
     probe: impl FnOnce(Uuid, &Path, Option<&CgroupIdentity>) -> Result<bool>,
@@ -108,6 +138,7 @@ pub(crate) fn containment_reap_verdict_with(
 
 /// Read-only membership check for a durably recorded cgroup. Signals
 /// nothing and removes nothing.
+#[cfg(target_os = "linux")]
 pub(crate) fn recorded_cgroup_observed_empty(
     id: Uuid,
     locator: &Path,

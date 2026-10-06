@@ -15,7 +15,9 @@
 //! sleep at all.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+#[cfg(unix)]
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::thread;
@@ -93,6 +95,7 @@ pub struct ProcSnapshot {
     pub(crate) rows: BTreeMap<Uuid, ProcRow>,
 }
 
+#[cfg(unix)]
 struct ProcStat {
     ppid: u32,
     jiffies: u64,
@@ -115,6 +118,7 @@ struct UsageCacheEntry {
     cpu_percent: Option<f64>,
 }
 
+#[cfg(unix)]
 pub fn clock_ticks_hz() -> u64 {
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
     if hz > 0 {
@@ -124,6 +128,7 @@ pub fn clock_ticks_hz() -> u64 {
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn mono_ms() -> u64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
@@ -146,6 +151,7 @@ pub fn cpu_percent(before_jiffies: u64, after_jiffies: u64, dt_ms: u64, hz: u64)
     Some(cores * 100.0)
 }
 
+#[cfg(unix)]
 /// One pass over `proc_root`. Every root is present in the snapshot, with
 /// `processes == 0` when that pid is not a live process.
 pub fn scan_session_procs(proc_root: &Path, roots: &[(Uuid, u32)]) -> ProcSnapshot {
@@ -216,6 +222,64 @@ pub fn scan_session_procs(proc_root: &Path, roots: &[(Uuid, u32)]) -> ProcSnapsh
     ProcSnapshot { at_ms, rows }
 }
 
+/// Windows backend. Same public shapes as the `/proc` pass above: `jiffies`
+/// are 100 ns CPU ticks (`clock_ticks_hz` is 10 MHz) and `start_ticks` is the
+/// worker's creation FILETIME, so the cache's pid-reuse guard keeps working.
+///
+/// Each root is `(session id, worker pid)`. The session's Job Object
+/// (`aplexer-<id>`) is the containment domain: its active-process count is
+/// the process count and its accounted user+kernel time (which also covers
+/// processes that already exited) is the CPU counter. A session whose job is
+/// gone falls back to the worker process alone.
+#[cfg(windows)]
+pub fn clock_ticks_hz() -> u64 {
+    10_000_000
+}
+
+/// Milliseconds on a clock shared by every aplexer process (system uptime),
+/// so a sample cached by one CLI invocation can be rated by the next.
+#[cfg(windows)]
+pub(crate) fn mono_ms() -> u64 {
+    unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() }
+}
+
+#[cfg(windows)]
+pub fn scan_session_procs(_proc_root: &Path, roots: &[(Uuid, u32)]) -> ProcSnapshot {
+    use crate::sys::windows::job::{process_usage, Job};
+
+    let at_ms = mono_ms();
+    let mut rows: BTreeMap<Uuid, ProcRow> = BTreeMap::new();
+    for (id, pid) in roots {
+        if *pid == 0 {
+            continue;
+        }
+        let mut row = ProcRow {
+            pid: *pid,
+            start_ticks: 0,
+            jiffies: 0,
+            processes: 0,
+        };
+        let worker = process_usage(*pid);
+        if let Some((creation, cpu, _)) = worker {
+            row.start_ticks = creation;
+            row.jiffies = cpu;
+            row.processes = 1;
+        }
+        // The job outlives nothing: no job means no workload processes.
+        if worker.is_some() {
+            if let Ok(Some(job)) = Job::open(id) {
+                if let Ok(accounting) = job.accounting() {
+                    // The worker is not a job member; add it to the count and
+                    // keep its own CPU on top of the job's.
+                    row.processes = accounting.active_processes.saturating_add(1);
+                    row.jiffies = row.jiffies.saturating_add(accounting.cpu_time_100ns);
+                }
+            }
+        }
+        rows.insert(*id, row);
+    }
+    ProcSnapshot { at_ms, rows }
+}
 /// Second sample for a human listing. Sleeps only the remainder of
 /// `min_window` after `first.at_ms`, then stores the sample so a later
 /// cache-only caller (JSON) can rate it without waiting.
@@ -306,6 +370,7 @@ fn rate_if_same(prev: &ProcRow, row: &ProcRow, dt_ms: u64, hz: u64, min_dt_ms: u
     cpu_percent(prev.jiffies, row.jiffies, dt_ms, hz)
 }
 
+#[cfg(unix)]
 fn owner_of(
     start: u32,
     stats: &HashMap<u32, ProcStat>,
@@ -355,6 +420,7 @@ fn owner_of(
 
 /// `/proc/<pid>/stat` after the comm field, which is wrapped in parentheses
 /// and may itself contain spaces and parentheses.
+#[cfg(unix)]
 fn parse_stat(bytes: &[u8]) -> Option<ProcStat> {
     let end = bytes.iter().rposition(|byte| *byte == b')')?;
     let rest = bytes.get(end + 1..)?;
@@ -381,10 +447,12 @@ fn parse_stat(bytes: &[u8]) -> Option<ProcStat> {
     })
 }
 
+#[cfg(unix)]
 fn parse_u32(bytes: &[u8]) -> Option<u32> {
     std::str::from_utf8(bytes).ok()?.parse().ok()
 }
 
+#[cfg(unix)]
 fn parse_u64(bytes: &[u8]) -> Option<u64> {
     std::str::from_utf8(bytes).ok()?.parse().ok()
 }
@@ -423,4 +491,55 @@ fn write_cache(
         },
     )
     .map_err(|_| ())
+}
+
+#[cfg(all(windows, test))]
+mod windows_tests {
+    use super::*;
+    use crate::sys::windows::job::{Job, JobLimits};
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn scan_counts_the_worker_and_its_job_members() {
+        let id = Uuid::new_v4();
+        let job = Job::create(id, &JobLimits::default()).unwrap();
+        let mut child = Command::new("cmd")
+            .args(["/c", "ping -n 30 127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        job.assign_pid(child.id()).unwrap();
+        let ghost = Uuid::new_v4();
+        let snapshot = scan_session_procs(
+            Path::new(""),
+            &[(id, std::process::id()), (ghost, u32::MAX - 1)],
+        );
+        let row = &snapshot.rows[&id];
+        assert!(row.processes >= 2, "worker + job member, got {}", row.processes);
+        assert!(row.start_ticks > 0);
+        assert_eq!(snapshot.rows[&ghost].processes, 0);
+        assert!(clock_ticks_hz() == 10_000_000);
+        job.kill_until_empty(std::time::Instant::now() + Duration::from_secs(5))
+            .unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn bracket_reports_counts_through_the_public_api() {
+        let id = Uuid::new_v4();
+        let dir = std::env::temp_dir().join(format!("aplexer-pu-{id}.json"));
+        let roots = [(id, std::process::id())];
+        let first = scan_session_procs(Path::new(""), &roots);
+        let usage = bracket_session_proc_usage(
+            Path::new(""),
+            &dir,
+            &first,
+            &roots,
+            Duration::from_millis(60),
+        );
+        assert!(usage[&id].processes >= 1);
+        let _ = std::fs::remove_file(dir);
+    }
 }

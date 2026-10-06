@@ -23,6 +23,7 @@
 
 use crate::SessionRecord;
 use serde_json::json;
+#[cfg(target_os = "linux")]
 use std::fs;
 
 /// Opt-in switch for the launch path to escape the per-user manager by
@@ -135,9 +136,17 @@ pub fn parse_cgroup_v2_path(cgroup_file_text: &str) -> Option<String> {
 /// process is gone, `/proc` is unreadable, or the file has no v2 line --
 /// recording nothing beats recording a guess (issue #1's post-mortem could
 /// not even prove causation because the dead processes' cgroups were gone).
+#[cfg(target_os = "linux")]
 pub fn read_process_cgroup(pid: u32) -> Option<String> {
     let text = fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
     parse_cgroup_v2_path(&text)
+}
+
+/// Windows has no cgroups: containment is the session's Job Object, which is
+/// derived from the session id, so there is no placement to record.
+#[cfg(windows)]
+pub fn read_process_cgroup(_pid: u32) -> Option<String> {
+    None
 }
 
 /// [`read_process_cgroup`] plus classification, for launch-time validation.
