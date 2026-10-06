@@ -55,7 +55,11 @@ pub(crate) fn attach(
         None
     };
     let _raw = if input_tty {
-        Some(RawMode::enter(STDIN_FD)?)
+        #[cfg(windows)]
+        let raw = RawMode::enter_with_mouse(STDIN_FD, status_enabled && mouse_capture_enabled())?;
+        #[cfg(unix)]
+        let raw = RawMode::enter(STDIN_FD)?;
+        Some(raw)
     } else {
         None
     };

@@ -478,9 +478,15 @@ pub(crate) fn relay_to_terminal(ctx: &StatusBarCtx, data: &[u8]) -> io::Result<(
         // and the stream flows -- typing with no echo would be worse than
         // the reading view the user chose to give up. Esc takes it back.
         if ctx.scroll.owns_host() || ctx.overlay.is_active() {
+            #[cfg(windows)]
+            win_host::reset_live();
             return Ok(());
         }
         let src = rewritten.as_deref().unwrap_or(data);
+        #[cfg(windows)]
+        let src_host = win_host::filter_live(src);
+        #[cfg(windows)]
+        let src = &*src_host;
         if let Some(filtered) = s.filter_host(src) {
             out.write_all(&filtered)?;
         } else {
@@ -508,6 +514,10 @@ pub(crate) fn feed_and_write(
             s.reset(rows, cols);
         }
         s.feed(payload);
+        #[cfg(windows)]
+        let payload_host = win_host::filter_once(payload);
+        #[cfg(windows)]
+        let payload = &*payload_host;
         if let Some(filtered) = s.filter_host(prefix) {
             out.write_all(&filtered)?;
         } else {
@@ -623,5 +633,174 @@ pub(crate) struct TerminalUiGuard {
 impl Drop for TerminalUiGuard {
     fn drop(&mut self) {
         reset_terminal(&self.stdout);
+    }
+}
+
+/// Windows only: sequences the workload's ConPTY emits for *its* terminal
+/// that must never reach the client's own console.
+///
+/// The worker's ConPTY announces every resize with `CSI 8 ; rows ; cols t`
+/// (and opens with `CSI ? 9001 h`, win32-input-mode). Relayed verbatim they
+/// reach the client's console, which obeys them: it resizes (legacy conhost
+/// even resizes its window), the resize poller then reports the shrunken size
+/// back to the worker, and the status bar lands a row above the bottom.
+/// `CSI 1..10 t` (window manipulation) and `CSI ? 9001 h/l` are dropped; the
+/// filter is stateful so a sequence split across two frames is still caught.
+#[cfg(windows)]
+pub(crate) mod win_host {
+    use std::borrow::Cow;
+    use std::sync::{Mutex, PoisonError};
+
+    /// Longest CSI held back waiting for its final byte; anything longer is
+    /// not one of the sequences filtered here and passes through.
+    const MAX_HELD: usize = 48;
+
+    #[derive(Default)]
+    pub(crate) struct HostSequenceFilter {
+        held: Vec<u8>,
+    }
+
+    enum Scan {
+        Incomplete,
+        NotCsi,
+        Csi(usize),
+    }
+
+    fn scan_csi(bytes: &[u8]) -> Scan {
+        match bytes.get(1) {
+            None => return Scan::Incomplete,
+            Some(b'[') => {}
+            Some(_) => return Scan::NotCsi,
+        }
+        for (offset, &byte) in bytes.iter().enumerate().skip(2) {
+            match byte {
+                0x20..=0x3f => {
+                    if offset >= MAX_HELD {
+                        return Scan::NotCsi;
+                    }
+                }
+                0x40..=0x7e => return Scan::Csi(offset + 1),
+                _ => return Scan::NotCsi,
+            }
+        }
+        Scan::Incomplete
+    }
+
+    fn is_dropped(csi: &[u8]) -> bool {
+        let Some((&final_byte, rest)) = csi.split_last() else {
+            return false;
+        };
+        let params = &rest[2..];
+        match final_byte {
+            b't' => {
+                let first = params.split(|b| *b == b';').next().unwrap_or(&[]);
+                std::str::from_utf8(first)
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .is_some_and(|n| (1..=10).contains(&n))
+            }
+            b'h' | b'l' => params == b"?9001",
+            _ => false,
+        }
+    }
+
+    impl HostSequenceFilter {
+        pub(crate) fn reset(&mut self) {
+            self.held.clear();
+        }
+
+        pub(crate) fn filter<'a>(&mut self, data: &'a [u8]) -> Cow<'a, [u8]> {
+            if self.held.is_empty() && !data.contains(&0x1b) {
+                return Cow::Borrowed(data);
+            }
+            let joined: Cow<[u8]> = if self.held.is_empty() {
+                Cow::Borrowed(data)
+            } else {
+                let mut all = std::mem::take(&mut self.held);
+                all.extend_from_slice(data);
+                Cow::Owned(all)
+            };
+            let bytes = &*joined;
+            let mut out = Vec::with_capacity(bytes.len());
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] != 0x1b {
+                    out.push(bytes[i]);
+                    i += 1;
+                    continue;
+                }
+                match scan_csi(&bytes[i..]) {
+                    Scan::Incomplete => {
+                        self.held = bytes[i..].to_vec();
+                        break;
+                    }
+                    Scan::NotCsi => {
+                        out.push(0x1b);
+                        i += 1;
+                    }
+                    Scan::Csi(len) => {
+                        let csi = &bytes[i..i + len];
+                        if !is_dropped(csi) {
+                            out.extend_from_slice(csi);
+                        }
+                        i += len;
+                    }
+                }
+            }
+            Cow::Owned(out)
+        }
+    }
+
+    static LIVE: Mutex<HostSequenceFilter> = Mutex::new(HostSequenceFilter { held: Vec::new() });
+
+    pub(crate) fn filter_live(data: &[u8]) -> Cow<'_, [u8]> {
+        LIVE.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .filter(data)
+    }
+
+    pub(crate) fn reset_live() {
+        LIVE.lock().unwrap_or_else(PoisonError::into_inner).reset();
+    }
+
+    /// A replayed block is self-contained: no state carried in or out.
+    pub(crate) fn filter_once(data: &[u8]) -> Cow<'_, [u8]> {
+        let mut filter = HostSequenceFilter::default();
+        let filtered = filter.filter(data);
+        if filter.held.is_empty() {
+            filtered
+        } else {
+            let mut all = filtered.into_owned();
+            all.extend_from_slice(&filter.held);
+            Cow::Owned(all)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn drops_window_ops_and_win32_input_mode() {
+            let mut f = HostSequenceFilter::default();
+            assert_eq!(&*f.filter(b"a\x1b[8;29;100tb"), b"ab");
+            assert_eq!(&*f.filter(b"\x1b[?9001h\x1b[?9001lx"), b"x");
+            let kept: &[u8] = b"\x1b[?25h\x1b[31mred\x1b[14t";
+            assert_eq!(&*f.filter(kept), kept);
+            let other: &[u8] = b"\x1b7\x1b]0;t\x07";
+            assert_eq!(&*f.filter(other), other);
+        }
+
+        #[test]
+        fn handles_split_sequences() {
+            let mut f = HostSequenceFilter::default();
+            assert_eq!(&*f.filter(b"x\x1b[8;2"), b"x");
+            assert_eq!(&*f.filter(b"9;100ty"), b"y");
+            assert_eq!(&*f.filter(b"\x1b"), b"");
+            assert_eq!(&*f.filter(b"[31mz"), b"\x1b[31mz");
+            assert_eq!(&*f.filter(b"q\x1b[8;"), b"q");
+            f.reset();
+            assert_eq!(&*f.filter(b"ok"), b"ok");
+        }
     }
 }

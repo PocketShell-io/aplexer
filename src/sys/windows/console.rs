@@ -37,10 +37,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::Console::{
     GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle, PeekConsoleInputW, ReadConsoleInputW,
     SetConsoleCtrlHandler, SetConsoleMode, CONSOLE_SCREEN_BUFFER_INFO, CTRL_BREAK_EVENT,
-    CTRL_C_EVENT, DISABLE_NEWLINE_AUTO_RETURN, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT,
-    ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
-    ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT, INPUT_RECORD, KEY_EVENT,
-    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    CTRL_C_EVENT, DISABLE_NEWLINE_AUTO_RETURN, ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS,
+    ENABLE_LINE_INPUT, ENABLE_MOUSE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT,
+    ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    ENABLE_WINDOW_INPUT, INPUT_RECORD, KEY_EVENT, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
@@ -174,15 +174,30 @@ unsafe impl Send for RawMode {}
 
 impl RawMode {
     pub fn enter(fd: i32) -> io::Result<Self> {
+        Self::enter_with_mouse(fd, false)
+    }
+
+    /// Like [`RawMode::enter`]. With `mouse` the console is also taken out of
+    /// Quick Edit mode and mouse input is enabled: in a classic conhost window
+    /// Quick Edit swallows the mouse for text selection, so the VT mouse
+    /// reports the client asks for (`?1000h`/`?1006h`) would never arrive.
+    /// Windows Terminal is unaffected either way. All bits are restored on
+    /// drop.
+    pub fn enter_with_mouse(fd: i32, mouse: bool) -> io::Result<Self> {
         let input = std_handle(fd)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a console handle"))?;
         let old_input = console_mode(input).ok_or_else(io::Error::last_os_error)?;
-        let raw = (old_input
+        let mut raw = (old_input
             & !(ENABLE_LINE_INPUT
                 | ENABLE_ECHO_INPUT
                 | ENABLE_PROCESSED_INPUT
                 | ENABLE_WINDOW_INPUT))
             | ENABLE_VIRTUAL_TERMINAL_INPUT;
+        if mouse {
+            // ENABLE_EXTENDED_FLAGS must be set for the Quick Edit bit to be
+            // honoured at all.
+            raw = (raw & !ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS | ENABLE_MOUSE_INPUT;
+        }
         if unsafe { SetConsoleMode(input, raw) } == 0 {
             return Err(io::Error::last_os_error());
         }
