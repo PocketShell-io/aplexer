@@ -105,7 +105,9 @@ pub(super) fn cleanup_superseded_archive(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod reclaim_tests {
     use super::*;
-    use crate::{atomic_write_json, ContainmentReap};
+    use crate::atomic_write_json;
+    #[cfg(unix)]
+    use crate::ContainmentReap;
 
     /// A registry containing exactly one record, with its paths wired to the
     /// throwaway state/runtime roots so `read_session_record`'s identity

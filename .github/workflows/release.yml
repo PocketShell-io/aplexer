@@ -149,7 +149,7 @@ jobs:
     env:
       # Executed-test floor (passed + failed only). Conservative placeholder:
       # measure a real Windows run and raise it, as for the Linux floors.
-      WINDOWS_MIN_TESTS: "40"
+      WINDOWS_MIN_TESTS: "395"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 

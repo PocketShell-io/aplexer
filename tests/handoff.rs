@@ -92,6 +92,7 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::process::Output
 fn write_dead_session(h: &Harness, id: &str, cwd: &Path) -> PathBuf {
     let session_dir = h.state_dir.path().join("sessions").join(id);
     fs::create_dir_all(&session_dir).unwrap();
+    #[cfg(unix)]
     let socket_path = h
         .runtime_dir
         .path()

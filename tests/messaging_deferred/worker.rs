@@ -5,12 +5,12 @@
 pub(super) use fake_worker::Worker;
 
 mod fake_worker {
+    use aplexer::sys::ipc::{Listener, Stream};
     use aplexer::{
         frame_json, read_frame, write_frame, write_json, FrameKind, Operation, Request, Response,
         SessionRecord,
     };
     use serde_json::json;
-    use aplexer::sys::ipc::{Listener, Stream};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,

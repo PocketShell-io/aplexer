@@ -91,6 +91,7 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::process::Output
 fn write_session(h: &Harness, id: &str, cwd: &Path, engine: &str) {
     let session_dir = h.state_dir.path().join("sessions").join(id);
     fs::create_dir_all(&session_dir).unwrap();
+    #[cfg(unix)]
     let socket_path = h
         .runtime_dir
         .path()
@@ -368,6 +369,7 @@ fn explicit_transcript_path_errors_are_clear() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("--path"));
 }
 
+#[cfg(unix)]
 #[test]
 fn whoami_inside_session_survives_cleared_env() {
     let h = Harness::new();

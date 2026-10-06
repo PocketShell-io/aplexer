@@ -447,8 +447,10 @@ pub fn run_task_child(
                 if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
                     #[cfg(unix)]
                     kill_child_group(pid);
+                    // Terminated with 124 so the reported exit code is the timeout
+                    // code (Unix gets it from the missing exit status instead).
                     #[cfg(windows)]
-                    if let Err(error) = job.terminate(1) {
+                    if let Err(error) = job.terminate(124) {
                         eprintln!("a: task timeout kill of job object failed: {error}");
                     }
                     let status = child.wait()?;
