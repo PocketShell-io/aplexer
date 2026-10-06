@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -228,7 +229,7 @@ impl History {
                     format!("remove disabled legacy history {}", self.path.display())
                 })?;
                 if let Some(parent) = self.path.parent() {
-                    File::open(parent)?.sync_all()?;
+                    crate::persist::sync_dir(parent)?;
                 }
             }
             self.compatibility_end = self.observed_end;

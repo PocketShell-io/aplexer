@@ -22,6 +22,26 @@ pub fn engine_family(engine: &str) -> &str {
     }
 }
 
+/// The default `shell` engine argv. Unix: `$SHELL -l` (login shell).
+#[cfg(unix)]
+fn default_shell_argv() -> Vec<String> {
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    vec![shell, "-l".to_string()]
+}
+
+/// Windows: `pwsh.exe` if on PATH, else `powershell.exe`, else `%COMSPEC%`
+/// (then `cmd.exe`). No login flag: Windows shells have none.
+#[cfg(windows)]
+fn default_shell_argv() -> Vec<String> {
+    let path = env::var("PATH").unwrap_or_default();
+    for candidate in ["pwsh.exe", "powershell.exe"] {
+        if let Some(found) = super::pathfix::which_in(candidate, &path) {
+            return vec![found.to_string_lossy().into_owned()];
+        }
+    }
+    vec![env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())]
+}
+
 impl Config {
     /// The engines every installation gets, before user config extends or
     /// overrides them. Variant engines (`zcodex`, a private claude wrapper)
@@ -46,7 +66,8 @@ impl Config {
                 task_argv: Vec::new(),
             }
         }
-        let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let shell_argv = default_shell_argv();
+        let shell_refs: Vec<&str> = shell_argv.iter().map(String::as_str).collect();
         // Skip-permissions argv is ported from pocketshell engines.py's
         // LaunchSpecs. `--auto` is opencode's documented flag for
         // "auto-approve permissions that are not explicitly denied";
@@ -63,7 +84,7 @@ impl Config {
         // gemini is an aplexer-only extra with no pocketshell source, so it
         // stays empty.
         let engines: [(&str, &[&str], &[&str]); 7] = [
-            ("shell", &[shell.as_str(), "-l"], &[]),
+            ("shell", shell_refs.as_slice(), &[]),
             (
                 "codex",
                 &["codex", "-c", "check_for_update_on_startup=false"],

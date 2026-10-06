@@ -78,7 +78,7 @@ pub(crate) fn write_message_limited(
         false,
     ) {
         let _ = fs::remove_file(&path);
-        let _ = fs::File::open(&mp.msgs_dir).and_then(|dir| dir.sync_all());
+        let _ = crate::persist::sync_dir(&mp.msgs_dir);
         return Err(error).context("enforce mailbox quota after append");
     }
     Ok(())
@@ -129,10 +129,7 @@ fn message_id_from_path(path: &Path) -> Result<Uuid> {
 /// symlink. O_NONBLOCK keeps an accidental FIFO from hanging the caller before
 /// its descriptor can be inspected; it has no effect on regular-file reads.
 pub(crate) fn open_message_file(path: &Path) -> Result<(File, u64)> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
+    let file = crate::persist::open_no_follow_read(path)
         .with_context(|| format!("open mailbox message {}", path.display()))?;
     let metadata = file
         .metadata()

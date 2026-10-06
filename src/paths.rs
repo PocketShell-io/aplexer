@@ -2,14 +2,24 @@
 //! private runtime/state directories (symlink and permission checks), and
 //! workspace canonicalization.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
+#[cfg(unix)]
+use anyhow::bail;
 use std::env;
+#[cfg(unix)]
 use std::ffi::{CString, OsStr};
-use std::fs::{self, File};
+use std::fs;
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path, PathBuf};
+#[cfg(unix)]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -33,33 +43,26 @@ impl Paths {
         state: Option<&Path>,
         config: Option<&Path>,
     ) -> Result<Self> {
-        let uid = unsafe { libc::geteuid() };
         let runtime_root = if let Some(value) = runtime {
             absolute_override_path(value.to_path_buf(), "runtime_dir")?
         } else if let Some(value) = env::var_os("APLEXER_RUNTIME_DIR") {
             absolute_override_path(PathBuf::from(value), "APLEXER_RUNTIME_DIR")?
-        } else if let Some(value) = env::var_os("XDG_RUNTIME_DIR") {
-            absolute_xdg_path(PathBuf::from(value), "XDG_RUNTIME_DIR")?.join("aplexer")
         } else {
-            PathBuf::from(format!("/tmp/aplexer-{uid}"))
+            default_runtime_root()?
         };
         let state_root = if let Some(value) = state {
             absolute_override_path(value.to_path_buf(), "state_dir")?
         } else if let Some(value) = env::var_os("APLEXER_STATE_DIR") {
             absolute_override_path(PathBuf::from(value), "APLEXER_STATE_DIR")?
-        } else if let Some(value) = env::var_os("XDG_STATE_HOME") {
-            absolute_xdg_path(PathBuf::from(value), "XDG_STATE_HOME")?.join("aplexer")
         } else {
-            home_dir()?.join(".local/state/aplexer")
+            default_state_root()?
         };
         let config_file = if let Some(value) = config {
             absolute_override_path(value.to_path_buf(), "config")?
         } else if let Some(value) = env::var_os("APLEXER_CONFIG") {
             absolute_override_path(PathBuf::from(value), "APLEXER_CONFIG")?
-        } else if let Some(value) = env::var_os("XDG_CONFIG_HOME") {
-            absolute_xdg_path(PathBuf::from(value), "XDG_CONFIG_HOME")?.join("aplexer/config.toml")
         } else {
-            home_dir()?.join(".config/aplexer/config.toml")
+            default_config_file()?
         };
         let paths = Self {
             runtime_root,
@@ -137,6 +140,7 @@ pub(crate) fn absolute_override_path(path: PathBuf, variable: &str) -> Result<Pa
         .join(path))
 }
 
+#[cfg(unix)]
 pub(crate) fn absolute_xdg_path(path: PathBuf, variable: &str) -> Result<PathBuf> {
     if !path.is_absolute() {
         bail!(
@@ -147,12 +151,80 @@ pub(crate) fn absolute_xdg_path(path: PathBuf, variable: &str) -> Result<PathBuf
     Ok(path)
 }
 
+/// The user's home directory: `HOME` on Unix, `USERPROFILE` on Windows.
+#[cfg(unix)]
 pub(crate) fn home_dir() -> Result<PathBuf> {
     env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("HOME is not set"))
 }
 
+#[cfg(windows)]
+pub(crate) fn home_dir() -> Result<PathBuf> {
+    crate::sys::windows::fs::home_dir().ok_or_else(|| anyhow!("USERPROFILE is not set"))
+}
+
+#[cfg(unix)]
+fn default_runtime_root() -> Result<PathBuf> {
+    if let Some(value) = env::var_os("XDG_RUNTIME_DIR") {
+        return Ok(absolute_xdg_path(PathBuf::from(value), "XDG_RUNTIME_DIR")?.join("aplexer"));
+    }
+    let uid = unsafe { libc::geteuid() };
+    Ok(PathBuf::from(format!("/tmp/aplexer-{uid}")))
+}
+
+#[cfg(unix)]
+fn default_state_root() -> Result<PathBuf> {
+    if let Some(value) = env::var_os("XDG_STATE_HOME") {
+        return Ok(absolute_xdg_path(PathBuf::from(value), "XDG_STATE_HOME")?.join("aplexer"));
+    }
+    Ok(home_dir()?.join(".local/state/aplexer"))
+}
+
+#[cfg(unix)]
+fn default_config_file() -> Result<PathBuf> {
+    if let Some(value) = env::var_os("XDG_CONFIG_HOME") {
+        return Ok(
+            absolute_xdg_path(PathBuf::from(value), "XDG_CONFIG_HOME")?.join("aplexer/config.toml")
+        );
+    }
+    Ok(home_dir()?.join(".config/aplexer/config.toml"))
+}
+
+/// `%LOCALAPPDATA%\aplexer\run`.
+#[cfg(windows)]
+fn default_runtime_root() -> Result<PathBuf> {
+    Ok(windows_local_root()?.join("run"))
+}
+
+/// `%LOCALAPPDATA%\aplexer\state`.
+#[cfg(windows)]
+fn default_state_root() -> Result<PathBuf> {
+    Ok(windows_local_root()?.join("state"))
+}
+
+/// `%APPDATA%\aplexer\config.toml`.
+#[cfg(windows)]
+fn default_config_file() -> Result<PathBuf> {
+    let base = crate::sys::windows::fs::app_data().ok_or_else(|| anyhow!("APPDATA is not set"))?;
+    Ok(base.join("aplexer").join("config.toml"))
+}
+
+#[cfg(windows)]
+fn windows_local_root() -> Result<PathBuf> {
+    let base = crate::sys::windows::fs::local_app_data()
+        .ok_or_else(|| anyhow!("LOCALAPPDATA is not set"))?;
+    Ok(base.join("aplexer"))
+}
+
+/// Windows: owner-only protected DACL, reparse points rejected.
+#[cfg(windows)]
+pub fn ensure_private_dir(path: &Path) -> Result<()> {
+    crate::sys::windows::fs::ensure_private_dir(path)
+        .with_context(|| format!("create private directory {}", path.display()))
+}
+
+#[cfg(unix)]
 pub fn ensure_private_dir(path: &Path) -> Result<()> {
     if path.as_os_str().is_empty() {
         bail!("directory path is empty");
@@ -172,7 +244,7 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
             Component::RootDir | Component::CurDir => continue,
             Component::ParentDir => OsStr::new(".."),
             Component::Normal(name) => name,
-            Component::Prefix(_) => unreachable!("Unix paths have no prefix component"),
+            Component::Prefix(_) => bail!("unexpected prefix in Unix path {}", path.display()),
         };
         let name_c = CString::new(name.as_bytes()).context("directory component contains NUL")?;
         let next = match open_directory_at(directory.as_raw_fd(), name) {
@@ -221,6 +293,7 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 pub(crate) fn open_directory_at(parent_fd: RawFd, name: &OsStr) -> io::Result<File> {
     let name = CString::new(name.as_bytes())?;
     let fd = unsafe {

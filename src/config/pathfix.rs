@@ -17,6 +17,7 @@
 
 use anyhow::{bail, Context, Result};
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,7 @@ use crate::Paths;
 /// working example: it resolves for the app precisely because it lives
 /// there). Anything that needs more than this to resolve is exactly what
 /// the app's non-interactive launch cannot reproduce.
+#[cfg(unix)]
 const MINIMAL_PATH_DIRS: &[&str] = &[
     "/usr/local/sbin",
     "/usr/local/bin",
@@ -42,6 +44,7 @@ const MINIMAL_PATH_DIRS: &[&str] = &[
 /// The minimal PATH string the engine-resolution check probes against:
 /// [`MINIMAL_PATH_DIRS`] plus the user's `~/.local/bin` when a home
 /// directory is known.
+#[cfg(unix)]
 pub fn minimal_path() -> String {
     let mut dirs: Vec<String> = MINIMAL_PATH_DIRS
         .iter()
@@ -53,22 +56,103 @@ pub fn minimal_path() -> String {
     dirs.join(":")
 }
 
+/// Windows: the system directories every session has, plus `~\.local\bin`.
+/// Entries are joined with `;` (via `env::join_paths`).
+#[cfg(windows)]
+pub fn minimal_path() -> String {
+    let root = std::env::var_os("SystemRoot")
+        .or_else(|| std::env::var_os("windir"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let system32 = root.join("System32");
+    let mut dirs = vec![
+        system32.clone(),
+        root.clone(),
+        system32.join("Wbem"),
+        system32.join("WindowsPowerShell").join("v1.0"),
+    ];
+    if let Ok(home) = home_dir() {
+        dirs.push(home.join(".local").join("bin"));
+    }
+    std::env::join_paths(&dirs)
+        .map(|joined| joined.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| {
+            dirs.iter()
+                .map(|dir| dir.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(";")
+        })
+}
+
 /// True when a command word goes through PATH lookup at all: anything with
-/// a slash in it is resolved (or fails to resolve) directly.
+/// a path separator in it is resolved (or fails to resolve) directly.
+#[cfg(unix)]
 pub fn is_bare_executable(name: &str) -> bool {
     !name.contains('/')
 }
 
+#[cfg(windows)]
+pub fn is_bare_executable(name: &str) -> bool {
+    !name.contains(['/', '\\']) && !(name.len() >= 2 && name.as_bytes()[1] == b':')
+}
+
+#[cfg(unix)]
 fn is_executable_file(path: &Path) -> bool {
     fs::metadata(path)
         .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
 }
 
+/// The executable extensions, from `PATHEXT` (default `.COM;.EXE;.BAT;.CMD`),
+/// lowercase with the leading dot.
+#[cfg(windows)]
+pub(crate) fn path_exts() -> Vec<String> {
+    let raw = std::env::var("PATHEXT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+    raw.split(';')
+        .map(|ext| ext.trim().to_ascii_lowercase())
+        .filter(|ext| ext.len() > 1 && ext.starts_with('.'))
+        .collect()
+}
+
+#[cfg(windows)]
+fn has_path_ext(path: &Path, exts: &[String]) -> bool {
+    path.extension()
+        .map(|ext| format!(".{}", ext.to_string_lossy().to_ascii_lowercase()))
+        .is_some_and(|ext| exts.contains(&ext))
+}
+
+#[cfg(windows)]
+fn is_executable_file(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && has_path_ext(path, &path_exts()))
+        .unwrap_or(false)
+}
+
+/// Windows lookup of `base` (a directory joined with the command word): the
+/// name itself when it already carries a `PATHEXT` extension, then the name
+/// with each `PATHEXT` extension appended.
+#[cfg(windows)]
+fn resolve_with_pathext(base: &Path) -> Option<PathBuf> {
+    let exts = path_exts();
+    if has_path_ext(base, &exts) && is_executable_file(base) {
+        return Some(base.to_path_buf());
+    }
+    exts.iter().find_map(|ext| {
+        let mut name = base.as_os_str().to_os_string();
+        name.push(ext);
+        let candidate = PathBuf::from(name);
+        is_executable_file(&candidate).then_some(candidate)
+    })
+}
+
 /// which(1) over an explicit PATH string, so the check can probe two
 /// different PATHs in one process. A bare name resolves to the first
 /// directory on `path_var` holding an executable file; a path with a slash
 /// in it is checked directly.
+#[cfg(unix)]
 pub fn which_in(name: &str, path_var: &str) -> Option<PathBuf> {
     if name.contains('/') {
         let direct = PathBuf::from(name);
@@ -81,6 +165,19 @@ pub fn which_in(name: &str, path_var: &str) -> Option<PathBuf> {
             let candidate = Path::new(dir).join(name);
             is_executable_file(&candidate).then_some(candidate)
         })
+}
+
+/// Windows `which`: PATH is `;`-separated (parsed with `env::split_paths`,
+/// which honours quoting) and each directory is probed with the `PATHEXT`
+/// rules of [`resolve_with_pathext`].
+#[cfg(windows)]
+pub fn which_in(name: &str, path_var: &str) -> Option<PathBuf> {
+    if !is_bare_executable(name) {
+        return resolve_with_pathext(Path::new(name));
+    }
+    std::env::split_paths(path_var)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .find_map(|dir| resolve_with_pathext(&dir.join(name)))
 }
 
 /// What the two-PATH comparison says about one configured executable.
@@ -424,7 +521,74 @@ fn ensure_child_table<'a>(table: &'a mut toml_edit::Table, key: &str) -> &'a mut
         .expect("just ensured a table")
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn bin_dir_with(name: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(dir.path().join(name), b"MZ").unwrap();
+        let dir_path = dir.path().to_string_lossy().into_owned();
+        (dir, dir_path)
+    }
+
+    #[test]
+    fn which_in_appends_pathext_and_skips_non_executables() {
+        let (dir, dir_path) = bin_dir_with("fakeagent.exe");
+        let found = which_in("fakeagent", &dir_path).unwrap();
+        assert_eq!(found, dir.path().join("fakeagent.exe"));
+        assert_eq!(which_in("fakeagent.exe", &dir_path), Some(found));
+        assert_eq!(which_in("missing", &dir_path), None);
+        fs::write(dir.path().join("plain.txt"), b"x").unwrap();
+        assert_eq!(which_in("plain", &dir_path), None);
+        assert_eq!(which_in("plain.txt", &dir_path), None);
+    }
+
+    #[test]
+    fn which_in_uses_semicolon_path_and_first_dir_wins() {
+        let (first, first_path) = bin_dir_with("dup.cmd");
+        let (_second, second_path) = bin_dir_with("dup.exe");
+        let both = std::env::join_paths([&first_path, &second_path])
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(which_in("dup", &both), Some(first.path().join("dup.cmd")));
+    }
+
+    #[test]
+    fn drive_and_separator_paths_are_not_bare() {
+        assert!(is_bare_executable("codex"));
+        assert!(!is_bare_executable(r"C:\tools\codex.exe"));
+        assert!(!is_bare_executable(r"bin\codex"));
+        assert!(!is_bare_executable("bin/codex"));
+        let (dir, _) = bin_dir_with("tool.exe");
+        let direct = dir.path().join("tool");
+        assert_eq!(
+            which_in(&direct.to_string_lossy(), ""),
+            Some(dir.path().join("tool.exe"))
+        );
+    }
+
+    #[test]
+    fn minimal_path_has_system32_and_parses() {
+        let minimal = minimal_path();
+        let dirs: Vec<_> = std::env::split_paths(&minimal).collect();
+        assert!(dirs.iter().any(|dir| dir.ends_with("System32")));
+        assert!(which_in("cmd", &minimal).is_some());
+    }
+
+    #[test]
+    fn resolution_row_marks_pinned_exe() {
+        let (dir, dir_path) = bin_dir_with("pinme.exe");
+        let abs = dir.path().join("pinme.exe").to_string_lossy().into_owned();
+        let row = ResolutionRow::row("engine", "x", &abs, &dir_path, "");
+        assert_eq!(row.verdict, ResolutionVerdict::Resolved);
+        let row = ResolutionRow::row("engine", "x", "pinme", &dir_path, "");
+        assert_eq!(row.verdict, ResolutionVerdict::NeedsPin);
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
