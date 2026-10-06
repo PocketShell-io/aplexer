@@ -48,6 +48,42 @@ use state::{
 /// background load for a long-lived stream.
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
 
+/// True when stdout is a pipe whose read end has been closed.
+#[cfg(windows)]
+fn stdout_consumer_gone() -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileType, FILE_TYPE_PIPE};
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtQueryInformationFile(
+            file: *mut core::ffi::c_void,
+            iosb: *mut [usize; 2],
+            info: *mut u32,
+            len: u32,
+            class: u32,
+        ) -> i32;
+    }
+    // FilePipeLocalInformation: ten ULONGs, NamedPipeState is the ninth.
+    const FILE_PIPE_LOCAL_INFORMATION: u32 = 24;
+    const FILE_PIPE_CLOSING_STATE: u32 = 4;
+    let handle = io::stdout().as_raw_handle();
+    unsafe {
+        if GetFileType(handle as _) != FILE_TYPE_PIPE {
+            return false;
+        }
+        let mut iosb = [0usize; 2];
+        let mut info = [0u32; 10];
+        NtQueryInformationFile(
+            handle,
+            &mut iosb,
+            info.as_mut_ptr(),
+            std::mem::size_of_val(&info) as u32,
+            FILE_PIPE_LOCAL_INFORMATION,
+        ) >= 0
+            && info[8] == FILE_PIPE_CLOSING_STATE
+    }
+}
+
 /// Per-session state `a watch` tracks between polls; never persisted.
 struct KnownSession {
     record: SessionRecord,
@@ -153,6 +189,13 @@ pub fn run(paths: &Paths, all: bool, workspace: Option<&Path>) -> Result<()> {
     let mut stdout = io::stdout();
     loop {
         std::thread::sleep(POLL_INTERVAL);
+        // An idle stream writes nothing, so a vanished consumer (SSH channel
+        // closed, no sshd job teardown to kill us) would never surface as a
+        // write error and the process would linger. Unix learns via SIGHUP.
+        #[cfg(windows)]
+        if stdout_consumer_gone() {
+            return Ok(());
+        }
         generation += 1;
         let now = now_ms();
         let current: Vec<SessionRecord> = list_records(paths)?

@@ -649,8 +649,43 @@ pub fn spawn_detached_worker(command: &mut Command) -> io::Result<Child> {
         .spawn()
     {
         Ok(child) => Ok(child),
-        Err(e) if e.raw_os_error() == Some(5) => command.creation_flags(base).spawn(),
+        Err(e) if e.raw_os_error() == Some(5) => {
+            // The launcher's job (e.g. an sshd exec session) forbids breakaway.
+            // The worker then lives in that job and, if it is KILL_ON_JOB_CLOSE,
+            // ends with it: the session survives only as long as the launcher's
+            // job (for SSH: the connection). Say so rather than fail silently.
+            if launcher_job_kills_on_close() {
+                eprintln!(
+                    "aplexer: warning: this process runs in a Job Object that forbids \
+                     breakaway and kills its members when closed (typical of an SSH \
+                     exec session); the new session will end when that job closes. \
+                     Start it from a context that allows breakaway (e.g. a scheduled \
+                     task or a local console)."
+                );
+            }
+            command.creation_flags(base).spawn()
+        }
         Err(e) => Err(e),
+    }
+}
+
+/// True when the current process is in a Job Object with
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` set.
+fn launcher_job_kills_on_close() -> bool {
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectExtendedLimitInformation, QueryInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    unsafe {
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        QueryInformationJobObject(
+            std::ptr::null_mut(),
+            JobObjectExtendedLimitInformation,
+            &mut info as *mut _ as *mut _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            std::ptr::null_mut(),
+        ) != 0
+            && info.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE != 0
     }
 }
 
