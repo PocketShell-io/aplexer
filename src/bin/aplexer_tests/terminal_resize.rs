@@ -126,7 +126,6 @@ fn resize_config(ctx: &StatusBarCtx) -> ResizeThreadConfig {
 /// mid-escape-sequence, where a live injection has to wait.
 #[cfg(unix)]
 #[test]
-#[cfg(unix)]
 fn resize_while_typing_repaints_the_live_screen_not_the_pager() {
     let _fd1 = FD1_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
     let ctx = ctx_in_typing_mode();
