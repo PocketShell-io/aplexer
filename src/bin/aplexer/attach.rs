@@ -13,8 +13,8 @@ pub(crate) fn attach(
     check_attachable(record)?;
     let explicit_history = history_bytes.is_some();
     let replay_bytes = Some(history_bytes.unwrap_or(DEFAULT_ATTACH_REPLAY_BYTES));
-    let input_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
-    let display_tty = unsafe { libc::isatty(libc::STDOUT_FILENO) } == 1;
+    let input_tty = is_tty(STDIN_FD);
+    let display_tty = is_tty(STDOUT_FD);
     // PocketShell owns the session chrome. In this mode the host terminal is
     // a full-screen relay: no reserved status row, redraw thread, flash hint,
     // or Ctrl-b scanner is installed.
@@ -27,9 +27,9 @@ pub(crate) fn attach(
     // to the old raw-tail semantics (section 6.1); `want_screen` follows
     // its absence.
     let initial_geometry = if display_tty {
-        terminal_size(libc::STDOUT_FILENO)
+        terminal_size(STDOUT_FD)
     } else if input_tty {
-        terminal_size(libc::STDIN_FILENO)
+        terminal_size(STDIN_FD)
     } else {
         None
     };
@@ -46,8 +46,12 @@ pub(crate) fn attach(
     let handshake = establish(record, replay_bytes, !explicit_history, worker_geometry)?;
     let reader = handshake.reader;
     let stdout = Arc::new(Mutex::new(io::stdout()));
+    // Windows consoles need VT processing before any snapshot byte is
+    // written, even when stdin is not a console (no RawMode then).
+    #[cfg(windows)]
+    let _vt_output = if display_tty { VtOutput::enable() } else { None };
     let _raw = if input_tty {
-        Some(RawMode::enter(libc::STDIN_FILENO)?)
+        Some(RawMode::enter(STDIN_FD)?)
     } else {
         None
     };
@@ -254,9 +258,14 @@ pub(crate) fn attach(
     drop(_ui_guard);
     drop(_raw);
     if let Some(signal) = signal_bridge.take().and_then(AttachSignalBridge::finish) {
+        #[cfg(unix)]
         unsafe {
             libc::raise(signal);
         }
+        // Windows has no `raise`: finish with the code the console event
+        // maps to, after the terminal state above has been restored.
+        #[cfg(windows)]
+        std::process::exit(signal);
     }
     let session_outcome = session_outcome?;
     let session_ended = session_outcome.session_ended;

@@ -53,6 +53,7 @@ pub(crate) enum InputAction {
 /// to bound the scanner's wait for the rest of an arrow chord, so an error
 /// (or a signal) answers "yes": the caller falls through to its ordinary
 /// blocking `read`, which is where read errors are already handled.
+#[cfg(unix)]
 pub(crate) fn readable(fd: libc::c_int, timeout: Duration) -> bool {
     let mut poll_fd = libc::pollfd {
         fd,
@@ -62,6 +63,13 @@ pub(crate) fn readable(fd: libc::c_int, timeout: Duration) -> bool {
     let millis = timeout.as_millis().clamp(0, i32::MAX as u128) as i32;
     let ready = unsafe { libc::poll(&mut poll_fd, 1, millis) };
     ready != 0
+}
+
+/// Windows: console input events (focus, mouse, resize, key-up) are not
+/// input and never count as "readable"; only `STDIN_FD` is supported.
+#[cfg(windows)]
+pub(crate) fn readable(_fd: i32, timeout: Duration) -> bool {
+    aplexer::sys::windows::console::stdin_readable(timeout)
 }
 
 /// How long a `Ctrl-b ESC` may wait for the rest of an arrow-key sequence
