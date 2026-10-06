@@ -149,6 +149,52 @@ fn exchange_existing(from: &Path, to: &Path) -> io::Result<()> {
     }
     let from = CString::new(from.as_os_str().as_bytes())?;
     let to = CString::new(to.as_os_str().as_bytes())?;
+    exchange_existing_c(from, to)
+}
+
+/// `renameat2(RENAME_EXCHANGE)` via the raw syscall, never the libc wrapper.
+///
+/// glibc only gained a `renameat2` symbol in 2.28, and a glibc-compiled
+/// binary that references it refuses to LOAD under musl's gcompat shim
+/// ("Error relocating ... renameat2: symbol not found") — every aplexer
+/// release since 0.1.9 was unloadable on the musl Docker fixtures and on
+/// any musl system running glibc binaries through gcompat. The syscall
+/// itself dates to kernel 3.15 and needs no libc cooperation, so going
+/// direct keeps the same kernel behaviour everywhere while removing the
+/// load-time symbol dependency. `libc::syscall` maps to the ancient
+/// `syscall(2)` wrapper, which gcompat provides.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn exchange_existing_c(from: CString, to: CString) -> io::Result<()> {
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Other unix targets keep the libc call: they either rename through a libc
+/// that always had the wrapper (musl), or have no `renameat2` at all and the
+/// exchange probe is expected to fail closed there.
+#[cfg(all(
+    unix,
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))
+))]
+fn exchange_existing_c(from: CString, to: CString) -> io::Result<()> {
     let result = unsafe {
         libc::renameat2(
             libc::AT_FDCWD,
