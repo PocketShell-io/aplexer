@@ -205,6 +205,19 @@ pub(crate) const PLAIN_SHELLS: &[&str] = &[
     "cmd",
 ];
 
+/// `Claude.EXE` / `claude.cmd` -> `claude`: lowercase, executable or shim
+/// extension removed, for comparing a launch command with a Windows image name.
+#[cfg(windows)]
+fn windows_command_stem(command: &str) -> String {
+    let lower = command.to_lowercase();
+    for ext in [".exe", ".cmd", ".bat", ".ps1", ".com"] {
+        if let Some(stem) = lower.strip_suffix(ext) {
+            return stem.to_owned();
+        }
+    }
+    lower
+}
+
 /// The live foreground-command override for the status bar, if there's
 /// anything worth showing beyond `record.engine` alone (see
 /// `foreground_command` in lib.rs and `Operation::Status`'s worker-side
@@ -227,6 +240,12 @@ pub(crate) fn foreground_override(record: &SessionRecord, raw: &Value) -> Option
         .and_then(|c| Path::new(c).file_name())
         .and_then(|n| n.to_str());
     if launched == Some(fg) {
+        return None;
+    }
+    // Windows reports the image name lowercased with `.exe` stripped, while
+    // the launch command may be `Claude.EXE` or an npm `claude.cmd` shim.
+    #[cfg(windows)]
+    if launched.is_some_and(|l| windows_command_stem(l) == fg) {
         return None;
     }
     Some(fg.to_string())

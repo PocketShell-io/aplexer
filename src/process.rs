@@ -90,10 +90,11 @@ pub fn discover_session_id() -> Option<Uuid> {
     {
         direct.or_else(session_id_from_ancestor_environ)
     }
-    // No portable `/proc/<pid>/environ` equivalent: environment only.
+    // Windows: the same ancestor walk, over ToolHelp parent links and each
+    // ancestor's PEB environment block.
     #[cfg(windows)]
     {
-        direct
+        direct.or_else(windows_impl::session_id_from_ancestor_environ)
     }
 }
 
@@ -612,6 +613,20 @@ mod windows_impl {
         }
     }
 
+    /// Ancestors that cannot be inspected (32-bit, elevated, other user,
+    /// already exited) are skipped, not fatal: the walk continues upward.
+    pub(crate) fn session_id_from_ancestor_environ() -> Option<Uuid> {
+        session_id_from_ancestors_of(std::process::id())
+    }
+
+    pub(crate) fn session_id_from_ancestors_of(pid: u32) -> Option<Uuid> {
+        use crate::sys::windows::procinfo;
+        procinfo::ancestors(pid, 64).into_iter().find_map(|pid| {
+            procinfo::environ_var(pid, "APLEXER_SESSION_ID")
+                .and_then(|v| parse_session_id_env(Some(v.into())))
+        })
+    }
+
     /// Boot identity: system boot time (FILETIME) rendered as a string,
     /// from `NtQuerySystemInformation(SystemTimeOfDayInformation)`. Cached.
     #[cfg_attr(windows, allow(dead_code))]
@@ -675,6 +690,51 @@ mod windows_impl {
                 process_start_time_ticks(pid).unwrap()
             );
             assert!(!linux_boot_id().unwrap().is_empty());
+        }
+
+        /// A grandchild whose own and parent environments were cleared still
+        /// finds the session through the outermost ancestor's PEB environment.
+        #[test]
+        fn nested_session_found_through_cleared_ancestors() {
+            use crate::sys::windows::procinfo;
+            let id = Uuid::new_v4();
+            let mut outer = std::process::Command::new("cmd")
+                .args([
+                    "/c",
+                    "cmd",
+                    "/c",
+                    "set APLEXER_SESSION_ID=& ping -n 12 127.0.0.1 >nul",
+                ])
+                .env("APLEXER_SESSION_ID", id.to_string())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            let mut found = None;
+            let mut leaf = None;
+            for _ in 0..80 {
+                let mut tree = vec![outer.id()];
+                let mut i = 0;
+                while i < tree.len() {
+                    let kids = procinfo::children(tree[i]);
+                    tree.extend(kids);
+                    i += 1;
+                }
+                leaf = tree
+                    .iter()
+                    .copied()
+                    .find(|p| procinfo::image_name(*p).as_deref() == Some("ping"));
+                if let Some(leaf) = leaf {
+                    // The leaf itself must NOT carry the variable (cleared).
+                    assert!(procinfo::environ_var(leaf, "APLEXER_SESSION_ID").is_none());
+                    found = session_id_from_ancestors_of(leaf);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            let _ = outer.kill();
+            let _ = outer.wait();
+            assert!(leaf.is_some(), "ping never appeared");
+            assert_eq!(found, Some(id));
         }
 
         #[test]

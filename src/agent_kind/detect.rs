@@ -74,16 +74,29 @@ fn read_environ_var(_proc_root: &Path, pid: u32, var: &str) -> Option<String> {
 
 #[cfg(windows)]
 pub(super) fn normalize_windows_cmdline(raw: &str) -> String {
+    // Launcher/shim extensions that hide a command token from the whole-word
+    // rules: `claude.exe`, `claude.cmd` (npm shim), `claude.ps1`, `codex.js`.
+    const EXTS: &[&str] = &[".exe", ".cmd", ".bat", ".ps1", ".mjs", ".cjs", ".js"];
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw.replace('\\', "/");
-    while let Some(i) = rest.to_ascii_lowercase().find(".exe") {
-        let after = rest[i + 4..].chars().next();
+    loop {
+        let lower = rest.to_ascii_lowercase();
+        // `to_ascii_lowercase` keeps byte offsets identical to `rest`.
+        let Some((i, ext)) = EXTS
+            .iter()
+            .filter_map(|ext| lower.find(ext).map(|i| (i, *ext)))
+            .min_by_key(|(i, _)| *i)
+        else {
+            break;
+        };
+        let end = i + ext.len();
+        let after = rest[end..].chars().next();
         if after.is_some_and(|c| c.is_alphanumeric()) {
-            out.push_str(&rest[..i + 4]);
+            out.push_str(&rest[..end]);
         } else {
             out.push_str(&rest[..i]);
         }
-        rest = rest[i + 4..].to_owned();
+        rest = rest[end..].to_owned();
     }
     out.push_str(&rest);
     out.trim().to_owned()
@@ -257,6 +270,116 @@ mod windows_tests {
             r"node.exe C:\npm\node_modules\@anthropic-ai\claude-code\cli.js",
         );
         assert!(classify_token_detailed(&text, &variants).is_some());
+    }
+
+    #[test]
+    fn shim_and_script_extensions_are_normalised() {
+        let variants = ProfileVariants::default();
+        for (raw, kind) in [
+            (
+                r#"C:\Windows\system32\cmd.exe /d /s /c ""C:\Users\u\AppData\Roaming\npm\claude.cmd" --resume""#,
+                AgentKind::Claude,
+            ),
+            (r"pwsh -File C:\npm\codex.ps1 exec", AgentKind::Codex),
+            (
+                r"node C:\npm\node_modules\@openai\codex\bin\codex.js",
+                AgentKind::Codex,
+            ),
+            (r#""C:\x\opencode.exe""#, AgentKind::Opencode),
+            (r"C:\x\grok.EXE --help", AgentKind::Grok),
+            (r"C:\Users\u\bin\agy.cmd", AgentKind::Antigravity),
+        ] {
+            let text = normalize_windows_cmdline(raw);
+            assert_eq!(
+                classify_token_detailed(&text, &variants).map(|(k, _)| k),
+                Some(kind),
+                "{raw} -> {text}"
+            );
+        }
+        assert!(classify_token_detailed(
+            &normalize_windows_cmdline(r"C:\Windows\system32\cmd.exe /c dir"),
+            &variants
+        )
+        .is_none());
+    }
+
+    /// Run a copy of cmd.exe under `image` (so the process image name is
+    /// `image`) with `args`, and detect from it as the workload leader.
+    fn detect_from_fake(image: &str, args: &[&str]) -> Option<AgentKind> {
+        let dir = std::env::temp_dir().join(format!(
+            "aplexer-detect-{}-{}",
+            std::process::id(),
+            image.replace(['.', ' '], "_")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join(image);
+        std::fs::copy(r"C:\Windows\System32\cmd.exe", &exe).unwrap();
+        let mut child = std::process::Command::new(&exe)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut found = None;
+        for _ in 0..40 {
+            found = detect_agent(Path::new("/proc"), child.id(), &ProfileVariants::default());
+            if found.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+        found
+    }
+
+    #[test]
+    fn detects_a_real_exe_by_image_name() {
+        assert_eq!(
+            detect_from_fake("claude.exe", &["/c", "ping -n 8 127.0.0.1 >nul"]),
+            Some(AgentKind::Claude)
+        );
+    }
+
+    #[test]
+    fn detects_a_node_shim_by_command_line() {
+        assert_eq!(
+            detect_from_fake(
+                "node.exe",
+                &[
+                    "/c",
+                    r"ping -n 8 127.0.0.1 >nul & rem C:\npm\node_modules\@openai\codex\bin\codex.js"
+                ]
+            ),
+            Some(AgentKind::Codex)
+        );
+    }
+
+    #[test]
+    fn detects_a_cmd_shim_and_descends_into_children() {
+        let dir = std::env::temp_dir().join(format!("aplexer-shim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shim = dir.join("opencode.cmd");
+        std::fs::write(&shim, "@echo off\r\nping -n 8 127.0.0.1 >nul\r\n").unwrap();
+        // The leader is a plain cmd; the agent is its grandchild chain.
+        let mut leader = std::process::Command::new("cmd")
+            .args(["/c", "cmd", "/c"])
+            .arg(&shim)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut found = None;
+        for _ in 0..40 {
+            found = detect_agent(Path::new("/proc"), leader.id(), &ProfileVariants::default());
+            if found.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = leader.kill();
+        let _ = leader.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(found, Some(AgentKind::Opencode));
     }
 
     #[test]
