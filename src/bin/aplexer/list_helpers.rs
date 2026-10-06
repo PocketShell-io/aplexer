@@ -360,7 +360,8 @@ pub(crate) fn display_workspace(path: &Path, home: Option<&Path>) -> String {
             return if rest.as_os_str().is_empty() {
                 "~".to_string()
             } else {
-                format!("~/{}", rest.display())
+                // Native separator after `~` so Windows reads `~\git\x`, not `~/git\x`.
+                format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display())
             };
         }
     }
@@ -521,4 +522,26 @@ pub(crate) fn resolve_list_sort(paths: &Paths, requested: Option<ListSort>) -> R
         return Ok(sort);
     }
     Ok(load_list_sort(paths))
+}
+
+#[cfg(test)]
+mod display_workspace_tests {
+    use super::display_workspace;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn home_abbreviation_uses_native_separator() {
+        let home = PathBuf::from(if cfg!(windows) { r"C:\Users\u" } else { "/home/u" });
+        let sep = std::path::MAIN_SEPARATOR;
+        let ws = home.join("git").join("aplexer");
+        let got = display_workspace(&ws, Some(&home));
+        assert_eq!(got, format!("~{sep}git{sep}aplexer"));
+        if cfg!(windows) {
+            assert_eq!(got, r"~\git\aplexer");
+        } else {
+            assert_eq!(got, "~/git/aplexer");
+        }
+        assert_eq!(display_workspace(&home, Some(&home)), "~");
+        assert_eq!(display_workspace(Path::new("elsewhere"), Some(&home)), "elsewhere");
+    }
 }
