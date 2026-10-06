@@ -91,10 +91,10 @@ mod drivers;
 mod files;
 mod nested;
 mod notice;
-#[cfg(windows)]
-mod winshell;
 #[cfg(test)]
 mod tests;
+#[cfg(windows)]
+mod winshell;
 
 use crate::persist::atomic_write_bytes_with_mode;
 use anyhow::{Context, Result};

@@ -63,10 +63,13 @@ enum Runner {
 }
 
 fn git_bash() -> Option<PathBuf> {
-    ["C:\\Program Files\\Git\\bin\\bash.exe", "C:\\Program Files (x86)\\Git\\bin\\bash.exe"]
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.exists())
+    [
+        "C:\\Program Files\\Git\\bin\\bash.exe",
+        "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .find(|p| p.exists())
 }
 
 fn run_line(runner: Runner, line: &str, exit: &str) -> Option<i32> {
@@ -109,7 +112,11 @@ fn assert_runs(runner: Runner, line: &str, log: &Path, tolerant: bool, want_args
         eprintln!("bash not found; skipping {runner:?}");
         return;
     };
-    assert_eq!(calls(log), vec![want_args.to_string()], "{runner:?}: {line}");
+    assert_eq!(
+        calls(log),
+        vec![want_args.to_string()],
+        "{runner:?}: {line}"
+    );
     if tolerant {
         assert_eq!(code, 0, "{runner:?} must tolerate failure: {line}");
     } else {
@@ -136,7 +143,11 @@ fn bash_dialect_runs_under_bash_with_spaced_paths() {
 fn cmd_dialect_runs_under_cmd_and_bash_with_spaced_paths() {
     for dir in DIRS {
         let (exe, log, _g) = fake_a(dir);
-        let line = command_line(HookShell::Cmd, exe.to_str().unwrap(), "state-report working");
+        let line = command_line(
+            HookShell::Cmd,
+            exe.to_str().unwrap(),
+            "state-report working",
+        );
         assert!(line.ends_with("|| exit 0"), "{line}");
         assert_runs(Runner::Cmd, &line, &log, true, "state-report working");
         assert_runs(Runner::Bash, &line, &log, true, "state-report working");
@@ -155,7 +166,13 @@ fn powershell_dialect_runs_under_powershell_with_spaced_paths() {
         if dir.contains(' ') {
             assert!(line.starts_with("& \""), "{line}");
         }
-        assert_runs(Runner::PowerShell, &line, &log, true, "state-report waiting");
+        assert_runs(
+            Runner::PowerShell,
+            &line,
+            &log,
+            true,
+            "state-report waiting",
+        );
     }
 }
 
@@ -192,7 +209,11 @@ fn every_generated_form_is_detected_as_ours() {
         HookShell::Cmd,
         HookShell::PowerShell,
     ] {
-        for bin in [r"C:\bin\a.exe", r"C:\Program Files\a b\a.exe", r"C:\it's\a.exe"] {
+        for bin in [
+            r"C:\bin\a.exe",
+            r"C:\Program Files\a b\a.exe",
+            r"C:\it's\a.exe",
+        ] {
             let report = command_line(shell, bin, "state-report idle");
             assert!(is_state_report_command(&report), "{report}");
             assert!(reports_state(&report, "idle"), "{report}");
@@ -232,7 +253,10 @@ fn install_check_uninstall_round_trip_on_windows_paths() {
         home.join(".grok").join("hooks").join("aplexer.json"),
         home.join(".gemini").join("settings.json"),
         home.join(".gemini").join("config").join("hooks.json"),
-        home.join(".config").join("opencode").join("plugin").join(OPENCODE_PLUGIN_FILENAME),
+        home.join(".config")
+            .join("opencode")
+            .join("plugin")
+            .join(OPENCODE_PLUGIN_FILENAME),
     ];
     let snapshot: Vec<String> = paths
         .iter()
@@ -252,12 +276,15 @@ fn install_check_uninstall_round_trip_on_windows_paths() {
     let removed = uninstall(&targets, None);
     assert!(removed.iter().all(|s| s.action != "error"), "{removed:?}");
     assert!(check(&targets, None).iter().all(|s| !s.installed));
-    let claude: Value =
-        serde_json::from_str(&fs::read_to_string(&paths[0]).unwrap()).unwrap();
+    let claude: Value = serde_json::from_str(&fs::read_to_string(&paths[0]).unwrap()).unwrap();
     assert_eq!(claude, json!({"permissions": {"allow": ["Bash(dir)"]}}));
     for left in &paths[1..5] {
         let text = fs::read_to_string(left).unwrap_or_default();
-        assert!(!text.contains("state-report"), "{} kept hooks", left.display());
+        assert!(
+            !text.contains("state-report"),
+            "{} kept hooks",
+            left.display()
+        );
     }
     assert!(!paths[5].exists());
 }
@@ -273,8 +300,16 @@ fn hooks_written_to_disk_actually_run() {
     assert!(install(&targets, a_bin, Some("claude"))[0].installed);
     let doc: Value =
         serde_json::from_str(&fs::read_to_string(&targets.claude_settings[0]).unwrap()).unwrap();
-    let command = doc["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+    let command = doc["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
     for runner in [Runner::Cmd, Runner::PowerShell, Runner::Bash] {
-        assert_runs(runner, command, &log, command.contains("exit 0"), "state-report idle");
+        assert_runs(
+            runner,
+            command,
+            &log,
+            command.contains("exit 0"),
+            "state-report idle",
+        );
     }
 }

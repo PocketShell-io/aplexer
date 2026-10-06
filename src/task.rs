@@ -733,5 +733,9 @@ mod tests {
         while process_alive(pid) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(100));
         }
-        assert!(!process_alive(pid), "grandchild {pid} survived task timeout");
-    }}
+        assert!(
+            !process_alive(pid),
+            "grandchild {pid} survived task timeout"
+        );
+    }
+}

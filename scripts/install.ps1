@@ -34,25 +34,47 @@ if (-not (Test-Path -PathType Leaf $src)) { throw "binary not found: $src" }
 
 New-Item -ItemType Directory -Force $BinDir | Out-Null
 
-# Atomic replace: copy next to the destination, then rename over it, so a
-# concurrently starting client never executes a half-written file. A running
-# .exe cannot be overwritten but can be renamed, so on failure move the old
-# file aside (best-effort delete of the leftover) and retry.
+# Atomic replace that works while sessions are running. A running .exe cannot
+# be overwritten or deleted, but it CAN be renamed: so the old file is moved
+# aside to `<name>.old-<pid>` (a name no process can already hold open) and the
+# new one takes its place. Leftovers from earlier installs are deleted
+# best-effort at the start of each run (still-running ones just stay until the
+# last session using them exits). New copies are staged next to the target
+# first, so a concurrently starting client never executes a half-written file.
+function Remove-OldCopies([string]$To) {
+    $dir = Split-Path -Parent $To
+    $leaf = Split-Path -Leaf $To
+    Get-ChildItem -LiteralPath $dir -Filter "$leaf.old-*" -Force -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+    Get-ChildItem -LiteralPath $dir -Filter '.aplexer.*.tmp' -Force -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+}
+
 function Install-File([string]$From, [string]$To) {
+    Remove-OldCopies $To
     $tmp = Join-Path (Split-Path -Parent $To) ('.aplexer.' + [guid]::NewGuid().ToString('N') + '.tmp')
     Copy-Item -LiteralPath $From -Destination $tmp -Force
     try {
         Move-Item -LiteralPath $tmp -Destination $To -Force
     }
     catch {
-        $old = $To + '.old'
-        Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
-        if (Test-Path -LiteralPath $To) { Move-Item -LiteralPath $To -Destination $old -Force }
-        Move-Item -LiteralPath $tmp -Destination $To -Force
+        # Target is in use ("Access denied"): rename it aside, then retry.
+        $old = "$To.old-$PID"
+        try {
+            if (Test-Path -LiteralPath $To) { Move-Item -LiteralPath $To -Destination $old -Force }
+            Move-Item -LiteralPath $tmp -Destination $To -Force
+        }
+        catch {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            # Put the original back rather than leave the install without a binary.
+            if ((Test-Path -LiteralPath $old) -and -not (Test-Path -LiteralPath $To)) {
+                Move-Item -LiteralPath $old -Destination $To -Force
+            }
+            throw
+        }
         Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
     }
 }
-
 Install-File $src (Join-Path $BinDir 'aplexer.exe')
 Install-File $src (Join-Path $BinDir 'a.exe')
 

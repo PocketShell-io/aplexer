@@ -83,11 +83,19 @@ pub fn command_line(shell: HookShell, a_bin: &str, args: &str) -> String {
     let quoted = || format!("\"{path}\"");
     match shell {
         HookShell::Bash => {
-            let p = if is_plain(&path) { path.clone() } else { quoted() };
+            let p = if is_plain(&path) {
+                path.clone()
+            } else {
+                quoted()
+            };
             format!("{p} {args} || true")
         }
         HookShell::Cmd => {
-            let p = if is_plain(&path) { path.clone() } else { quoted() };
+            let p = if is_plain(&path) {
+                path.clone()
+            } else {
+                quoted()
+            };
             format!("{p} {args} || exit 0")
         }
         HookShell::PowerShell => {
