@@ -13,6 +13,7 @@ pub(crate) fn run() -> Result<()> {
     // `a` is a standalone process, so it can safely repair an inherited
     // auto-reaping SIGCHLD disposition before any subcommand spawns a child.
     // The embeddable Rust/Python API only validates and preserves its host.
+    #[cfg(unix)]
     normalize_sigchld_for_child_management()?;
     let args = rewrite_quick_attach_args(std::env::args().collect());
     let cli = Cli::parse_from(args);
@@ -374,8 +375,8 @@ pub(crate) fn cmd_start(paths: &Paths, args: StartArgs, json_output: bool) -> Re
     let mut worker_rows = None;
     let mut worker_cols = None;
     if args.attach {
-        let tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
-        if let Some((rows, cols)) = tty.then(|| terminal_size(libc::STDIN_FILENO)).flatten() {
+        let tty = is_tty(STDIN_FD);
+        if let Some((rows, cols)) = tty.then(|| terminal_size(STDIN_FD)).flatten() {
             worker_rows = Some(reserved_rows(rows));
             worker_cols = Some(cols);
         }

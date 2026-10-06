@@ -9,14 +9,17 @@ pub(crate) fn send_control(writer: &Arc<Mutex<UnixStream>>, control: &AttachCont
     write_json(&mut *stream, control)
 }
 
+#[cfg(unix)]
 pub(crate) const ATTACH_CLEANUP_SIGNALS: [i32; 4] =
     [libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT, libc::SIGINT];
+#[cfg(unix)]
 pub(crate) static ATTACH_SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 
 /// Async-signal-safe half of attach cleanup. The handler deliberately does
 /// nothing except write one byte to a nonblocking self-pipe. Terminal I/O,
 /// socket locking, termios restoration, and allocation all remain on normal
 /// Rust threads.
+#[cfg(unix)]
 extern "C" fn attach_cleanup_signal(signal: i32) {
     let fd = ATTACH_SIGNAL_WRITE_FD.load(Ordering::Relaxed);
     if fd >= 0 {
@@ -27,6 +30,7 @@ extern "C" fn attach_cleanup_signal(signal: i32) {
     }
 }
 
+#[cfg(unix)]
 pub(crate) struct AttachSignalBridge {
     pub(crate) read_fd: i32,
     pub(crate) write_fd: i32,
@@ -35,6 +39,7 @@ pub(crate) struct AttachSignalBridge {
     pub(crate) caught: Arc<AtomicI32>,
 }
 
+#[cfg(unix)]
 impl AttachSignalBridge {
     pub(crate) fn install(writer: Arc<Mutex<UnixStream>>, active: Arc<AtomicBool>) -> Result<Self> {
         let mut fds = [-1; 2];
@@ -145,16 +150,19 @@ impl AttachSignalBridge {
     }
 }
 
+#[cfg(unix)]
 impl Drop for AttachSignalBridge {
     fn drop(&mut self) {
         self.stop_and_restore();
     }
 }
 
+#[cfg(unix)]
 pub(crate) struct RawMode {
     pub(crate) fd: i32,
     pub(crate) old: libc::termios,
 }
+#[cfg(unix)]
 impl RawMode {
     pub(crate) fn enter(fd: i32) -> Result<Self> {
         let mut old = std::mem::MaybeUninit::<libc::termios>::uninit();
@@ -172,6 +180,7 @@ impl RawMode {
         Ok(Self { fd, old })
     }
 }
+#[cfg(unix)]
 impl Drop for RawMode {
     fn drop(&mut self) {
         unsafe {
@@ -179,6 +188,7 @@ impl Drop for RawMode {
         }
     }
 }
+#[cfg(unix)]
 pub(crate) fn terminal_size(fd: i32) -> Option<(u16, u16)> {
     let mut ws = std::mem::MaybeUninit::<libc::winsize>::zeroed();
     if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, ws.as_mut_ptr()) } < 0 {
@@ -203,6 +213,7 @@ pub(crate) fn terminal_size(fd: i32) -> Option<(u16, u16)> {
     ))
 }
 
+#[cfg(unix)]
 pub(crate) fn parse_signal(raw: &str) -> Result<i32> {
     let upper = raw.trim().trim_start_matches("SIG").to_ascii_uppercase();
     let value = match upper.as_str() {
@@ -220,6 +231,87 @@ pub(crate) fn parse_signal(raw: &str) -> Result<i32> {
     }
     Ok(value)
 }
+#[cfg(windows)]
+pub(crate) use aplexer::sys::windows::console::{RawMode, VtOutput};
+
+/// Console geometry as `(rows, cols)`; `0x0` is reported as the worker's
+/// default, matching the Unix path.
+#[cfg(windows)]
+pub(crate) fn terminal_size(fd: i32) -> Option<(u16, u16)> {
+    let (rows, cols) = aplexer::sys::windows::console::terminal_size(fd)?;
+    Some((
+        if rows == 0 {
+            aplexer::screen::DEFAULT_TERMINAL_ROWS
+        } else {
+            rows
+        },
+        if cols == 0 {
+            aplexer::screen::DEFAULT_TERMINAL_COLS
+        } else {
+            cols
+        },
+    ))
+}
+
+#[cfg(windows)]
+pub(crate) fn parse_signal(raw: &str) -> Result<i32> {
+    aplexer::sys::windows::console::parse_signal_name(raw).map_err(|message| anyhow!(message))
+}
+
+/// Windows counterpart of the Unix signal bridge: Ctrl-C/Ctrl-Break/close
+/// events detach the attach loop; `finish` yields the process exit code to
+/// finish with (no `raise` on Windows).
+#[cfg(windows)]
+pub(crate) struct AttachSignalBridge {
+    signals: aplexer::sys::windows::console::CleanupSignals,
+}
+
+#[cfg(windows)]
+impl AttachSignalBridge {
+    pub(crate) fn install(writer: Arc<Mutex<UnixStream>>, active: Arc<AtomicBool>) -> Result<Self> {
+        let signals = aplexer::sys::windows::console::CleanupSignals::install(move |_event| {
+            active.store(false, Ordering::Relaxed);
+            if let Ok(stream) = writer.lock() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        })
+        .context("install attach console handler")?;
+        Ok(Self { signals })
+    }
+
+    pub(crate) fn finish(self) -> Option<i32> {
+        self.signals.finish()
+    }
+}
+
+/// `true` when `fd` (0 = stdin, 1 = stdout) is attached to a terminal.
+pub(crate) fn is_tty(fd: i32) -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::isatty(fd) == 1 }
+    }
+    #[cfg(windows)]
+    {
+        aplexer::sys::windows::console::is_tty(fd)
+    }
+}
+
+#[cfg(unix)]
+pub(crate) const STDIN_FD: i32 = libc::STDIN_FILENO;
+#[cfg(unix)]
+pub(crate) const STDOUT_FD: i32 = libc::STDOUT_FILENO;
+#[cfg(windows)]
+pub(crate) const STDIN_FD: i32 = aplexer::sys::windows::console::STDIN_FD;
+#[cfg(windows)]
+pub(crate) const STDOUT_FD: i32 = aplexer::sys::windows::console::STDOUT_FD;
+
+/// Signal number the force-kill paths send (`SIGKILL`; the wire stays
+/// Unix-numbered on Windows, where it means `TerminateJobObject`).
+#[cfg(unix)]
+pub(crate) const SIGNAL_KILL: i32 = libc::SIGKILL;
+#[cfg(windows)]
+pub(crate) const SIGNAL_KILL: i32 = 9;
+
 pub(crate) fn parse_hex(input: &[u8]) -> Result<Vec<u8>> {
     let text = std::str::from_utf8(input)?
         .chars()

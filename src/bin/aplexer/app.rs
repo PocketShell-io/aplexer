@@ -13,10 +13,26 @@ pub(crate) use std::env;
 pub(crate) use std::ffi::{CString, OsStr, OsString};
 pub(crate) use std::fs;
 pub(crate) use std::io::{self, IsTerminal, Read, Write};
+#[cfg(unix)]
 pub(crate) use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+#[cfg(unix)]
 pub(crate) use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 pub(crate) use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 pub(crate) use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+pub(crate) use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+pub(crate) use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
+#[cfg(windows)]
+pub(crate) use std::os::windows::process::CommandExt;
+// Named-pipe client stream. The ipc agent owns the transport; the historical
+// `UnixStream` name is kept so call sites stay identical across platforms.
+// NOTE: assumes `aplexer::sys::transport::Stream` (cfg(windows) re-export of
+// sys::windows::ipc); if it is absent, point this at `sys::windows::ipc::Stream`.
+#[cfg(windows)]
+pub(crate) use aplexer::sys::transport::Stream as UnixStream;
 pub(crate) use std::path::{Path, PathBuf};
 pub(crate) use std::process::Command;
 pub(crate) use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};

@@ -67,7 +67,7 @@ pub(crate) fn wait_for_kill_record_removal(paths: &Paths, id: Uuid) -> KillRecor
 /// worker can also fail an RPC, but then it must not be signalled directly.
 /// ESRCH is success because the process may exit between checks.
 pub(crate) fn force_kill_stale_worker(record: &SessionRecord) -> Result<()> {
-    signal_recorded_worker(record, libc::SIGKILL).context("force-kill unreachable worker")
+    signal_recorded_worker(record, SIGNAL_KILL).context("force-kill unreachable worker")
 }
 
 /// The kill RPC did not reach a working worker. Classify why, then take

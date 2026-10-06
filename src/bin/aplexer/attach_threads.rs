@@ -22,7 +22,7 @@ fn run_resize_loop(config: ResizeThreadConfig) {
     // the attach snapshot.
     let mut last = config.initial_geometry;
     while config.active.load(Ordering::Relaxed) {
-        let size = terminal_size(libc::STDOUT_FILENO);
+        let size = terminal_size(STDOUT_FD);
         if size != last {
             if let Some((rows, cols)) = size {
                 apply_resize(&config, rows, cols);

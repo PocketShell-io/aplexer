@@ -72,12 +72,12 @@ fn run_input_loop(config: InputThreadConfig) {
         // a lone `Ctrl-b` has `KEY_OVERLAY_DELAY` before the keymap is drawn.
         // The short-circuit keeps this free with nothing pending.
         let chord_expired =
-            scanner.awaiting_escape() && !readable(libc::STDIN_FILENO, CHORD_ESCAPE_TIMEOUT);
+            scanner.awaiting_escape() && !readable(STDIN_FD, CHORD_ESCAPE_TIMEOUT);
         if !chord_expired
             && !overlay_armed
             && scanner.awaiting_key()
             && !config.status.scroll.is_active()
-            && !readable(libc::STDIN_FILENO, KEY_OVERLAY_DELAY)
+            && !readable(STDIN_FD, KEY_OVERLAY_DELAY)
         {
             // Hesitation on the prefix rather than a chord typed from muscle
             // memory. Draw the keymap and go straight back to waiting for the
