@@ -1001,10 +1001,12 @@ fn pin_open_files_raises_from_a_starved_soft_limit() {
         "this test needs a hard RLIMIT_NOFILE of at least {TARGET}, got {}",
         current.rlim_max
     );
-    assert!(
-        TARGET > STARVED_OPEN_FILES,
-        "target must be above the starved floor so the pin has to raise"
-    );
+    const {
+        assert!(
+            TARGET > STARVED_OPEN_FILES,
+            "target must be above the starved floor so the pin has to raise"
+        );
+    }
 
     let mut command = Command::new("/bin/sh");
     command.args([

@@ -1,0 +1,6 @@
+# Scripts run on Linux must stay LF even when checked out on Windows
+# (core.autocrlf=true would otherwise produce `bash\r` failures).
+*.sh text eol=lf
+*.py text eol=lf
+*.toml text eol=lf
+*.ps1 text eol=crlf

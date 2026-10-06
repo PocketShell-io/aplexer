@@ -132,13 +132,19 @@ jobs:
         run: scripts/validate.ps1
 
   msrv:
-    name: MSRV compile (${{ matrix.os }})
+    # The Linux leg keeps the original job name so a required-status-check on
+    # "MSRV compile" keeps matching.
+    name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2025]
+        include:
+          - os: ubuntu-24.04
+            label: MSRV compile
+          - os: windows-2025
+            label: MSRV compile (windows-2025)
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
