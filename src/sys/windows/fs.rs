@@ -36,12 +36,11 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-    ConvertStringSidToSidW, GetSecurityInfo,
-    SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+    ConvertStringSidToSidW, GetSecurityInfo, SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    EqualSid, GetSecurityDescriptorDacl, GetTokenInformation, TokenUser,
-    ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    EqualSid, GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL,
+    DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
     PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -110,7 +109,16 @@ pub fn lock_exclusive(file: &File, nonblocking: bool) -> io::Result<()> {
         flags |= LOCKFILE_FAIL_IMMEDIATELY;
     }
     let mut overlapped = lock_overlapped();
-    let ok = unsafe { LockFileEx(file.as_raw_handle() as HANDLE, flags, 0, 1, 0, &mut overlapped) };
+    let ok = unsafe {
+        LockFileEx(
+            file.as_raw_handle() as HANDLE,
+            flags,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
     if ok != 0 {
         return Ok(());
     }
@@ -450,12 +458,19 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
 }
 
 fn harden_leaf(path: &Path) -> io::Result<()> {
-    if hardened().lock().map(|set| set.contains(path)).unwrap_or(false) && path.is_dir() {
+    if hardened()
+        .lock()
+        .map(|set| set.contains(path))
+        .unwrap_or(false)
+        && path.is_dir()
+    {
         return Ok(());
     }
     let directory = OpenOptions::new()
         .read(true)
-        .access_mode(READ_CONTROL | WRITE_DAC | 0x0001 /* FILE_LIST_DIRECTORY */)
+        .access_mode(
+            READ_CONTROL | WRITE_DAC | 0x0001, /* FILE_LIST_DIRECTORY */
+        )
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
     if attributes_are_reparse(directory.metadata()?.file_attributes()) {
@@ -492,8 +507,18 @@ mod tests {
     fn lock_is_exclusive_and_reports_would_block() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.lock");
-        let a = OpenOptions::new().read(true).write(true).create(true).open(&path).unwrap();
-        let b = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let a = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
+        let b = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
         lock_exclusive(&a, true).unwrap();
         let error = lock_exclusive(&b, true).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
@@ -508,10 +533,20 @@ mod tests {
     fn lock_released_when_handle_closes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("y.lock");
-        let a = OpenOptions::new().read(true).write(true).create(true).open(&path).unwrap();
+        let a = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
         lock_exclusive(&a, true).unwrap();
         drop(a);
-        let b = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let b = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
         lock_exclusive(&b, true).unwrap();
     }
 
@@ -554,11 +589,17 @@ mod tests {
         assert_eq!(fs::read(target.join("f")).unwrap(), b"x");
         // Protected, owner-only: exactly one ACE, inherited by children, no
         // Users/Everyone/Administrators grants.
-        let out = std::process::Command::new("icacls").arg(&target).output().unwrap();
+        let out = std::process::Command::new("icacls")
+            .arg(&target)
+            .output()
+            .unwrap();
         let text = String::from_utf8_lossy(&out.stdout).into_owned();
         let aces = text.matches("(OI)(CI)(F)").count();
         assert_eq!(aces, 1, "{text}");
-        assert!(!text.contains("Everyone") && !text.contains("BUILTIN\\Users"), "{text}");
+        assert!(
+            !text.contains("Everyone") && !text.contains("BUILTIN\\Users"),
+            "{text}"
+        );
     }
 
     #[test]

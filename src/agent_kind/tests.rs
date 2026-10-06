@@ -4,8 +4,11 @@
 use super::rules::classify_token_detailed;
 use super::*;
 use crate::config::{Config, EngineConfig, ProfileConfig};
+#[cfg_attr(windows, allow(unused_imports))]
 use std::fs;
+#[cfg_attr(windows, allow(unused_imports))]
 use std::path::{Path, PathBuf};
+#[cfg_attr(windows, allow(unused_imports))]
 use tempfile::TempDir;
 
 /// Canonical-only detection: no configured variation tokens.
@@ -108,6 +111,7 @@ fn node_wrapped_codex_is_detected() {
 /// A config carrying the built-in variant engine: `engine_family`
 /// maps `zcodex` onto codex, so the token derives from the config --
 /// no hardcoded rule.
+#[cfg_attr(windows, allow(dead_code))]
 fn zcodex_engine_variants() -> ProfileVariants {
     let mut config = Config::default();
     config.engines.insert(

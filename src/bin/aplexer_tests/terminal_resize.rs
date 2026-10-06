@@ -1,3 +1,4 @@
+#[cfg_attr(windows, allow(dead_code))]
 fn ctx_in_typing_mode() -> StatusBarCtx {
     let ctx = status_ctx_for_test(true);
     ctx.scroll.active.store(true, Ordering::SeqCst);

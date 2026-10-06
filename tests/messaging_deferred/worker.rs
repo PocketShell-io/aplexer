@@ -127,5 +127,4 @@ mod unix_worker {
             write_json(stream, &Response::ok(id, json!({}))).unwrap();
         }
     }
-
 }

@@ -1,8 +1,11 @@
 use crate::api::{claim_holder_pair, retire_reclaimed_holder};
+use crate::sys::ipc::{Listener, Stream};
 use crate::*;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+#[cfg(unix)]
+use std::collections::BTreeSet;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -12,10 +15,12 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use crate::sys::ipc::{Listener, Stream};
 use std::path::Path;
+#[cfg(unix)]
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
+#[cfg(unix)]
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -42,7 +47,9 @@ mod connection;
 use connection::*;
 mod attach;
 use attach::*;
-pub(crate) use termination::{disown_child_pid, own_child_pid};
+#[cfg(unix)]
+pub(crate) use termination::disown_child_pid;
+pub(crate) use termination::own_child_pid;
 
 #[derive(Debug, Clone)]
 enum OutputEvent {

@@ -3,6 +3,7 @@
 //! environment.
 
 use std::collections::{HashSet, VecDeque};
+#[cfg(unix)]
 use std::fs;
 use std::path::Path;
 

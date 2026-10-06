@@ -1,4 +1,4 @@
-﻿//! Job Objects: containment, tree kill, emptiness, accounting/usage, process
+//! Job Objects: containment, tree kill, emptiness, accounting/usage, process
 //! identity (pid + creation time), pinned process handles. Owner: agent "job".
 //!
 //! Seam API (all `io::Result`, no `anyhow`, so it can be unit-tested alone):
@@ -26,9 +26,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
-    ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER,
+    ERROR_MORE_DATA, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -236,9 +236,7 @@ impl PinnedProcess {
 
     /// Pin `identity` exactly. Outer `Err` is "could not tell"; the inner
     /// `Err` says why the recorded process is not there.
-    pub fn open_identity(
-        identity: &ProcessIdentity,
-    ) -> io::Result<Result<Self, IdentityCheck>> {
+    pub fn open_identity(identity: &ProcessIdentity) -> io::Result<Result<Self, IdentityCheck>> {
         let handle = match open_process(
             identity.pid,
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
@@ -493,7 +491,8 @@ impl Job {
         let rate = (u128::from(quota_us) * 10_000 / u128::from(period_us.max(1)) / u128::from(cpus))
             .clamp(1, 10_000) as u32;
         let mut info: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION = unsafe { zeroed() };
-        info.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+        info.ControlFlags =
+            JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
         info.Anonymous.CpuRate = rate;
         let ok = unsafe {
             SetInformationJobObject(
@@ -519,6 +518,7 @@ impl Job {
         self.assign_handle(process.as_raw())
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn assign_handle(&self, process: HANDLE) -> io::Result<()> {
         if unsafe { AssignProcessToJobObject(self.handle.as_raw(), process) } == 0 {
             return Err(last_error());
@@ -776,7 +776,9 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut found = false;
         while Instant::now() < deadline && !found {
-            found = child_pids(std::process::id()).unwrap().contains(&child.id());
+            found = child_pids(std::process::id())
+                .unwrap()
+                .contains(&child.id());
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(found);

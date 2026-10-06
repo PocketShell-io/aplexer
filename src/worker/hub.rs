@@ -383,6 +383,7 @@ impl OutputHub {
         self.terminate_all(OutputEvent::Error(message), |_| {});
     }
     #[cfg(test)]
+    #[cfg_attr(windows, allow(dead_code))]
     pub(super) fn inject_history_append_failure(&self, errno: i32) {
         lock(&self.inner)
             .expect("output hub lock")

@@ -7,6 +7,7 @@ use super::*;
 
 // The worker's contained descendant sweep is bounded at two seconds. Leave
 // another second for signal delivery, startup unwind, and record/fsync work.
+#[cfg_attr(windows, allow(dead_code))]
 pub(super) const STARTUP_TERM_GRACE: Duration = Duration::from_secs(3);
 pub(super) const STARTUP_REAP_POLL: Duration = Duration::from_millis(10);
 

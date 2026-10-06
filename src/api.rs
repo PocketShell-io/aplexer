@@ -41,12 +41,12 @@ use crate::agent_kind::{
 };
 use crate::{
     atomic_write_json, canonical_workspace, command_exists, ensure_private_dir,
-    ensure_sigchld_compatible_for_child_management, io_kind,
-    kill_grace_duration, list_records, parse_byte_size, public_session_record, read_frame,
-    read_persisted_history_tail, read_record, read_response, read_session_record, reap_verdict,
-    resolve_record, response_result, session_metadata_env, validate_tag, worker_executable,
-    write_frame, write_json, Config, ContainmentReap, FileLock, FrameKind, Limits, Operation,
-    Paths, Phase, Request, SessionRecord, MAX_FRAME_BYTES, SCHEMA_VERSION,
+    ensure_sigchld_compatible_for_child_management, io_kind, kill_grace_duration, list_records,
+    parse_byte_size, public_session_record, read_frame, read_persisted_history_tail, read_record,
+    read_response, read_session_record, reap_verdict, resolve_record, response_result,
+    session_metadata_env, validate_tag, worker_executable, write_frame, write_json, Config,
+    ContainmentReap, FileLock, FrameKind, Limits, Operation, Paths, Phase, Request, SessionRecord,
+    MAX_FRAME_BYTES, SCHEMA_VERSION,
 };
 
 #[cfg(target_os = "linux")]
@@ -83,6 +83,7 @@ fn signal_worker_group(pid: u32, signal: i32) -> io::Result<()> {
 /// other signal terminates the worker process (its Job Object, if already
 /// created, takes the workload down with it).
 #[cfg(windows)]
+#[allow(dead_code)]
 fn signal_worker_group(pid: u32, signal: i32) -> io::Result<()> {
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
     use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
@@ -99,7 +100,11 @@ fn signal_worker_group(pid: u32, signal: i32) -> io::Result<()> {
         return Err(error);
     }
     let ok = unsafe { TerminateProcess(handle, 1) };
-    let result = if ok != 0 { Ok(()) } else { Err(io::Error::last_os_error()) };
+    let result = if ok != 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    };
     unsafe { CloseHandle(handle) };
     result
 }
@@ -334,6 +339,7 @@ fn selected_record(paths: &Paths, selector: &str) -> Result<SessionRecord> {
 
 fn connect_control(record: &SessionRecord) -> Result<Stream> {
     let deadline = Instant::now() + CONTROL_RPC_TIMEOUT;
+    #[cfg_attr(windows, allow(clippy::never_loop))]
     let stream = loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {

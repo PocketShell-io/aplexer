@@ -373,7 +373,9 @@ mod retirement_tests {
         atomic_write_bytes(&target, b"two").unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"two");
         assert_eq!(
-            read_bounded_regular_file(&target, "t", 16).unwrap().unwrap(),
+            read_bounded_regular_file(&target, "t", 16)
+                .unwrap()
+                .unwrap(),
             b"two"
         );
         assert!(read_bounded_regular_file(&target, "t", 2).is_err());

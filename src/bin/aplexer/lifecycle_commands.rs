@@ -359,8 +359,8 @@ pub(crate) fn recover_broken_containment(
     // The grace window only validates the request: a job kill has no
     // graceful phase.
     kill_grace_duration(grace_ms)?;
-    let Some(job) = aplexer::sys::windows::job::Job::open(record.id)
-        .context("open session job object")?
+    let Some(job) =
+        aplexer::sys::windows::job::Job::open(record.id).context("open session job object")?
     else {
         return Ok(());
     };

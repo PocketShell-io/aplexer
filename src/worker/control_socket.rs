@@ -7,8 +7,7 @@ use super::*;
 
 pub(super) type FileIdentity = (u64, u64);
 #[cfg(unix)]
-pub(super) type RecoveredControlSocket =
-    (Listener, FileIdentity, Option<FileLock>, FileIdentity);
+pub(super) type RecoveredControlSocket = (Listener, FileIdentity, Option<FileLock>, FileIdentity);
 
 #[cfg(unix)]
 type PeerAddr = std::os::unix::net::SocketAddr;
@@ -34,11 +33,13 @@ pub(super) fn trusted_lock_identity(_path: &std::path::Path) -> Result<FileIdent
 }
 
 #[cfg(windows)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(super) fn trusted_socket_identity(_path: &std::path::Path) -> Result<FileIdentity> {
     Ok((0, 0))
 }
 
 #[cfg(windows)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(super) fn control_socket_matches_identity(
     _path: &std::path::Path,
     _identity: FileIdentity,
@@ -213,10 +214,7 @@ pub(super) fn recover_control_socket(
 /// cleanup software removed the runtime directory (`recover_control_socket`),
 /// and that the durable record still exists -- a worker whose record is gone
 /// is unreachable by every client and self-reaps instead (issue #21).
-#[cfg_attr(
-    windows,
-    allow(unused_mut, unused_variables, unused_assignments)
-)]
+#[cfg_attr(windows, allow(unused_mut, unused_variables, unused_assignments))]
 pub(super) fn serve_control_socket(
     mut listener: Listener,
     mut control_socket_identity: FileIdentity,

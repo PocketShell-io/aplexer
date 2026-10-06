@@ -27,6 +27,7 @@ pub(crate) enum WorkerIdentity {
     /// No live process holds that pid any more.
     Gone,
     /// The pid was recycled by a later process.
+    #[cfg_attr(windows, allow(dead_code))]
     PidReused { recorded: u64, current: u64 },
 }
 

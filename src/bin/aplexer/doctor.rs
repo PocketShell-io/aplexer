@@ -1,6 +1,7 @@
 use super::*;
 
 #[derive(Debug)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) struct CgroupLimitProbe {
     pub(crate) cgroup_v2: bool,
     pub(crate) controllers: Vec<String>,
@@ -94,6 +95,7 @@ pub(crate) fn probe_cgroup_limits() -> CgroupLimitProbe {
     }
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn cgroup_limits_check(probe: CgroupLimitProbe) -> Value {
     let required_controllers = ["cpu", "memory", "pids"];
     let controllers_ok = required_controllers

@@ -71,8 +71,7 @@ fn run_input_loop(config: InputThreadConfig) {
         // half-typed arrow chord has `CHORD_ESCAPE_TIMEOUT` to complete, and
         // a lone `Ctrl-b` has `KEY_OVERLAY_DELAY` before the keymap is drawn.
         // The short-circuit keeps this free with nothing pending.
-        let chord_expired =
-            scanner.awaiting_escape() && !readable(STDIN_FD, CHORD_ESCAPE_TIMEOUT);
+        let chord_expired = scanner.awaiting_escape() && !readable(STDIN_FD, CHORD_ESCAPE_TIMEOUT);
         if !chord_expired
             && !overlay_armed
             && scanner.awaiting_key()

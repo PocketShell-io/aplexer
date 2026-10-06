@@ -374,20 +374,25 @@ fn whoami_inside_session_survives_cleared_env() {
     let shell_argv = workload::interactive_shell_argv();
     let stdout = {
         let output = h.run(
-            &{ let mut args = vec![
-                "start",
-                "--json",
-                "--workspace",
-                &ws_str,
-                "--cwd",
-                &ws_str,
-                "--tag",
-                "me",
-                "--engine",
-                "shell",
-                "--startup-timeout-ms",
-                "15000",
-                "--", ]; args.extend(shell_argv.iter().map(String::as_str)); args },
+            &{
+                let mut args = vec![
+                    "start",
+                    "--json",
+                    "--workspace",
+                    &ws_str,
+                    "--cwd",
+                    &ws_str,
+                    "--tag",
+                    "me",
+                    "--engine",
+                    "shell",
+                    "--startup-timeout-ms",
+                    "15000",
+                    "--",
+                ];
+                args.extend(shell_argv.iter().map(String::as_str));
+                args
+            },
             Duration::from_secs(20),
         );
         assert!(
@@ -425,7 +430,8 @@ fn whoami_inside_session_survives_cleared_env() {
         env!("CARGO_BIN_EXE_aplexer")
     );
     h.run_ok(&["send", &id, "--enter", &command]);
-    let deadline = std::time::Instant::now() + workload::capture_deadline() + Duration::from_secs(3);
+    let deadline =
+        std::time::Instant::now() + workload::capture_deadline() + Duration::from_secs(3);
     let mut captured = String::new();
     while std::time::Instant::now() < deadline {
         let output = h.run(&["capture", &id, "--bytes", "4000"], Duration::from_secs(5));

@@ -35,12 +35,12 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_TYPE_CHAR, FILE_TYPE_PIPE, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Console::{
-    GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle, PeekConsoleInputW,
-    ReadConsoleInputW, SetConsoleCtrlHandler, SetConsoleMode, CONSOLE_SCREEN_BUFFER_INFO,
-    CTRL_BREAK_EVENT, CTRL_C_EVENT, DISABLE_NEWLINE_AUTO_RETURN, ENABLE_ECHO_INPUT,
-    ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT,
-    ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT,
-    INPUT_RECORD, KEY_EVENT, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle, PeekConsoleInputW, ReadConsoleInputW,
+    SetConsoleCtrlHandler, SetConsoleMode, CONSOLE_SCREEN_BUFFER_INFO, CTRL_BREAK_EVENT,
+    CTRL_C_EVENT, DISABLE_NEWLINE_AUTO_RETURN, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT,
+    ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT, INPUT_RECORD, KEY_EVENT,
+    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
@@ -88,7 +88,10 @@ fn size_of_handle(handle: HANDLE) -> Option<(u16, u16)> {
     let w = &info.srWindow;
     let rows = i32::from(w.Bottom) - i32::from(w.Top) + 1;
     let cols = i32::from(w.Right) - i32::from(w.Left) + 1;
-    Some((rows.clamp(0, i32::from(u16::MAX)) as u16, cols.clamp(0, i32::from(u16::MAX)) as u16))
+    Some((
+        rows.clamp(0, i32::from(u16::MAX)) as u16,
+        cols.clamp(0, i32::from(u16::MAX)) as u16,
+    ))
 }
 
 /// Visible window size `(rows, cols)` of the console `fd` belongs to. For
@@ -175,7 +178,10 @@ impl RawMode {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a console handle"))?;
         let old_input = console_mode(input).ok_or_else(io::Error::last_os_error)?;
         let raw = (old_input
-            & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_WINDOW_INPUT))
+            & !(ENABLE_LINE_INPUT
+                | ENABLE_ECHO_INPUT
+                | ENABLE_PROCESSED_INPUT
+                | ENABLE_WINDOW_INPUT))
             | ENABLE_VIRTUAL_TERMINAL_INPUT;
         if unsafe { SetConsoleMode(input, raw) } == 0 {
             return Err(io::Error::last_os_error());
@@ -230,9 +236,9 @@ fn console_readable(handle: HANDLE, deadline: Instant) -> bool {
         if unsafe { PeekConsoleInputW(handle, records.as_mut_ptr(), 32, &mut count) } == 0 {
             return true;
         }
-        let has_key = records[..count as usize].iter().any(|r| {
-            r.EventType == KEY_EVENT as u16 && unsafe { r.Event.KeyEvent.bKeyDown } != 0
-        });
+        let has_key = records[..count as usize]
+            .iter()
+            .any(|r| r.EventType == KEY_EVENT as u16 && unsafe { r.Event.KeyEvent.bKeyDown } != 0);
         if has_key {
             return true;
         }
@@ -255,7 +261,14 @@ fn pipe_readable(handle: HANDLE, deadline: Instant) -> bool {
     loop {
         let mut available = 0u32;
         let ok = unsafe {
-            PeekNamedPipe(handle, ptr::null_mut(), 0, ptr::null_mut(), &mut available, ptr::null_mut())
+            PeekNamedPipe(
+                handle,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                &mut available,
+                ptr::null_mut(),
+            )
         };
         if ok == 0 || available > 0 {
             // Broken pipe (EOF) or an error: a read will report it.
@@ -321,7 +334,10 @@ unsafe extern "system" fn ctrl_handler(event: u32) -> i32 {
             if left.is_zero() {
                 break;
             }
-            finished = cv.wait_timeout(finished, left).unwrap_or_else(|e| e.into_inner()).0;
+            finished = cv
+                .wait_timeout(finished, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
         }
     }
     1
@@ -357,7 +373,10 @@ impl CleanupSignals {
             *HANDLER.lock().unwrap_or_else(|e| e.into_inner()) = None;
             return Err(error);
         }
-        Ok(Self { done, installed: true })
+        Ok(Self {
+            done,
+            installed: true,
+        })
     }
 
     /// Uninstall; returns the exit code to finish with if an event was caught.
@@ -418,7 +437,10 @@ mod tests {
         assert_eq!(parse_signal_name(" KILL "), Ok(9));
         assert_eq!(parse_signal_name("9"), Ok(9));
         for bad in ["HUP", "SIGQUIT", "usr1", "USR2", "1", "bogus"] {
-            assert!(parse_signal_name(bad).unwrap_err().contains("Windows"), "{bad}");
+            assert!(
+                parse_signal_name(bad).unwrap_err().contains("Windows"),
+                "{bad}"
+            );
         }
     }
 

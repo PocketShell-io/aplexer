@@ -470,13 +470,16 @@ pub(super) fn install_termination_handlers() -> Result<()> {
 pub(crate) fn own_child_pid(_pid: u32) {}
 
 #[cfg(windows)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn disown_child_pid(_pid: u32) {}
 
 /// Nothing to arm; kept so the spawn path reads the same on both platforms.
 #[cfg(windows)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(super) fn install_child_reaper_handler() -> Result<()> {
     Ok(())
 }
 
 #[cfg(windows)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(super) fn run_child_reaper(_: ()) {}

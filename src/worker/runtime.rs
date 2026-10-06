@@ -73,6 +73,7 @@ pub(super) fn windows_signal_action(signal: i32) -> Result<WindowsSignal> {
 #[derive(Debug)]
 pub(super) struct WorkloadState {
     pub(super) running: bool,
+    #[cfg_attr(windows, allow(dead_code))]
     pub(super) pgid: i32,
 }
 
@@ -313,6 +314,7 @@ impl WorkerRuntime {
     /// the same arithmetic a caller could do, and there is no second way to
     /// ask for a size.
     #[cfg(test)]
+    #[cfg_attr(windows, allow(dead_code))]
     pub(super) fn shared_size(&self) -> Option<(u16, u16)> {
         lock(&self.terminal)
             .ok()
@@ -518,15 +520,14 @@ impl WorkerRuntime {
     /// (this worker's reaper thread, or the waiter for the leader) reaps
     /// it, which is immediate, so the answer is at most one poll late.
     pub(super) fn workload_still_populated(&self) -> Result<bool> {
+        // No process groups on Windows: always fall through to the job's own
+        // emptiness check in `workload_populated`.
+        #[cfg(windows)]
+        let signalable = false;
+        #[cfg(unix)]
         let signalable = {
             let workload = lock(&self.workload)?;
-            // No process groups on Windows: always fall through to the job's
-            // own emptiness check in `workload_populated`.
-            #[cfg(unix)]
-            let probe = workload.running && unsafe { libc::kill(-workload.pgid, 0) } == 0;
-            #[cfg(windows)]
-            let probe = false;
-            probe
+            workload.running && unsafe { libc::kill(-workload.pgid, 0) } == 0
         };
         if signalable {
             return Ok(true);

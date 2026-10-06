@@ -173,7 +173,9 @@ impl StartupGuard {
         if let Some(slot) = &self.child {
             match slot.lock() {
                 Ok(mut slot) => {
-                    if let Some(mut child) = slot.take() {
+                    if let Some(child) = slot.take() {
+                        #[cfg(unix)]
+                        let mut child = child;
                         #[cfg(unix)]
                         if let Err(error) = child.kill() {
                             if error.kind() != io::ErrorKind::InvalidInput {
@@ -182,9 +184,10 @@ impl StartupGuard {
                             }
                         }
                         #[cfg(windows)]
-                        if let Err(error) = child.terminate(crate::sys::windows::job::KILLED_EXIT_CODE) {
-                            cleanup_failures
-                                .push(format!("kill startup workload leader: {error}"));
+                        if let Err(error) =
+                            child.terminate(crate::sys::windows::job::KILLED_EXIT_CODE)
+                        {
+                            cleanup_failures.push(format!("kill startup workload leader: {error}"));
                         }
                         if let Err(error) = child.wait() {
                             cleanup_failures.push(format!("reap startup workload leader: {error}"));

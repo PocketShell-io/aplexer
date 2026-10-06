@@ -1,4 +1,4 @@
-﻿//! ConPTY: open/resize/close pseudoconsole, raw CreateProcessW with
+//! ConPTY: open/resize/close pseudoconsole, raw CreateProcessW with
 //! PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, detached worker spawn. Owner: agent "conpty".
 //!
 //! Depends only on `std` and `windows-sys` so it can be built standalone.
@@ -44,8 +44,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, SetHandleInformation, HANDLE, INVALID_HANDLE_VALUE,
-    HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
@@ -57,16 +57,12 @@ use windows_sys::Win32::System::Threading::{
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
     WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT,
-    INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES,
-    STARTUPINFOEXW,
+    INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
 fn hresult_err(hr: i32, what: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Other,
-        format!("{what} failed: HRESULT 0x{:08x}", hr as u32),
-    )
+    io::Error::other(format!("{what} failed: HRESULT 0x{:08x}", hr as u32))
 }
 
 fn last_err(what: &str) -> io::Error {
@@ -157,7 +153,11 @@ impl PtyMaster {
 
     /// Apply a new size (`ResizePseudoConsole`).
     pub fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
-        let guard = self.0.hpc.lock().map_err(|_| io::Error::other("poisoned"))?;
+        let guard = self
+            .0
+            .hpc
+            .lock()
+            .map_err(|_| io::Error::other("poisoned"))?;
         let hpc = guard
             .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "pseudoconsole is closed"))?;
         let hr = unsafe { ResizePseudoConsole(hpc as HPCON, coord(rows, cols)) };
@@ -331,14 +331,14 @@ fn append_arg(out: &mut Vec<u16>, arg: &OsStr) {
             backslashes += 1;
         } else {
             if c == b'"' as u16 {
-                out.extend(std::iter::repeat(b'\\' as u16).take(backslashes + 1));
+                out.extend(std::iter::repeat_n(b'\\' as u16, backslashes + 1));
             }
             backslashes = 0;
         }
         out.push(c);
     }
     if quote {
-        out.extend(std::iter::repeat(b'\\' as u16).take(backslashes));
+        out.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
         out.push(b'"' as u16);
     }
 }
@@ -430,7 +430,9 @@ fn find_executable_with_path(program: &OsStr, path_var: Option<&OsStr>) -> Optio
         .chars()
         .any(|c| c == '\\' || c == '/' || c == ':');
     if has_sep {
-        return with_ext_candidates(p, &exts).into_iter().find(|c| c.is_file());
+        return with_ext_candidates(p, &exts)
+            .into_iter()
+            .find(|c| c.is_file());
     }
     let path_var = path_var?;
     for dir in std::env::split_paths(path_var) {
@@ -595,10 +597,7 @@ pub fn spawn_workload<S: AsRef<OsStr>>(
             &mut pi,
         );
         if ok == 0 {
-            return Err(last_err(&format!(
-                "CreateProcessW({})",
-                app.display()
-            )));
+            return Err(last_err(&format!("CreateProcessW({})", app.display())));
         }
         let process = OwnedHandle::from_raw_handle(pi.hProcess as RawHandle);
         let thread = OwnedHandle::from_raw_handle(pi.hThread as RawHandle);
@@ -728,7 +727,8 @@ mod tests {
             while matches!(reader.read(&mut b), Ok(n) if n > 0) {}
             let _ = tx.send(());
         });
-        rx.recv_timeout(Duration::from_secs(10)).expect("reader EOF");
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("reader EOF");
     }
 
     #[test]

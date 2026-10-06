@@ -49,7 +49,11 @@ pub(crate) fn attach(
     // Windows consoles need VT processing before any snapshot byte is
     // written, even when stdin is not a console (no RawMode then).
     #[cfg(windows)]
-    let _vt_output = if display_tty { VtOutput::enable() } else { None };
+    let _vt_output = if display_tty {
+        VtOutput::enable()
+    } else {
+        None
+    };
     let _raw = if input_tty {
         Some(RawMode::enter(STDIN_FD)?)
     } else {

@@ -29,7 +29,11 @@ use uuid::Uuid;
 fn harness_with_fake_engine(script: &str) -> (Harness, TempDir, TempDir) {
     let harness = Harness::new();
     let engine_dir = TempDir::new().unwrap();
-    let fake = workload::toml_path(&workload::write_executable(engine_dir.path(), "fake-engine", script));
+    let fake = workload::toml_path(&workload::write_executable(
+        engine_dir.path(),
+        "fake-engine",
+        script,
+    ));
     let config = format!(
         r#"
 [engines.codex]
@@ -254,7 +258,8 @@ command = ["{}"]
 
 #[test]
 fn timeout_kills_only_the_task_group_and_exits_124() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::sleeping_engine_script(30));
+    let (harness, _engine_dir, cwd) =
+        harness_with_fake_engine(&workload::sleeping_engine_script(30));
     let prompt_path = write_prompt(cwd.path(), "sleeping task prompt");
     let output_dir = cwd.path().join("out-timeout");
 
@@ -733,7 +738,11 @@ fn unknown_engine_refuses_rather_than_guessing_flags() {
 [engines.codex]
 command = ["{}"]
 "#,
-        workload::toml_path(&workload::write_executable(cwd.path(), "unused-fake", &workload::fake_engine_script(true)))
+        workload::toml_path(&workload::write_executable(
+            cwd.path(),
+            "unused-fake",
+            &workload::fake_engine_script(true)
+        ))
     );
     fs::write(harness.paths().config_file, config).unwrap();
 

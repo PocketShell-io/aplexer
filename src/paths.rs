@@ -2,9 +2,9 @@
 //! private runtime/state directories (symlink and permission checks), and
 //! workspace canonicalization.
 
-use anyhow::{anyhow, Context, Result};
 #[cfg(unix)]
 use anyhow::bail;
+use anyhow::{anyhow, Context, Result};
 use std::env;
 #[cfg(unix)]
 use std::ffi::{CString, OsStr};

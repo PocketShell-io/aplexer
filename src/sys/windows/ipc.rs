@@ -28,10 +28,9 @@ use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, DuplicateHandle, GetLastError, LocalFree, DUPLICATE_SAME_ACCESS,
-    ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING,
-    ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
-    ERROR_PIPE_NOT_CONNECTED, ERROR_SEM_TIMEOUT, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_NO_DATA,
+    ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
+    ERROR_SEM_TIMEOUT, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -200,8 +199,7 @@ fn token_user_sid_bytes(token: HANDLE) -> io::Result<Vec<u8>> {
         return Err(last_err());
     }
     let mut buf = vec![0u8; len as usize];
-    if unsafe { GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len) }
-        == 0
+    if unsafe { GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len) } == 0
     {
         return Err(last_err());
     }
@@ -407,16 +405,18 @@ impl Stream {
         let deadline = (ms != 0).then(|| Instant::now() + Duration::from_millis(ms));
         let len = buf.len().min(1 << 30) as u32;
         let ptr = buf.as_mut_ptr();
-        let out = run_overlapped(self.handle.0, deadline, &self.shared.shutdown, |ov| unsafe {
-            ReadFile(self.handle.0, ptr.cast(), len, null_mut(), ov)
-        })?;
+        let out = run_overlapped(
+            self.handle.0,
+            deadline,
+            &self.shared.shutdown,
+            |ov| unsafe { ReadFile(self.handle.0, ptr.cast(), len, null_mut(), ov) },
+        )?;
         match out {
             Outcome::Done(n) => Ok(n as usize),
             Outcome::TimedOut(n) if n > 0 => Ok(n as usize),
-            Outcome::TimedOut(_) => Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "read timed out",
-            )),
+            Outcome::TimedOut(_) => {
+                Err(io::Error::new(io::ErrorKind::WouldBlock, "read timed out"))
+            }
             Outcome::Stopped(n) => Ok(n as usize),
             Outcome::Failed(code)
                 if code == ERROR_BROKEN_PIPE || code == ERROR_PIPE_NOT_CONNECTED =>
@@ -438,16 +438,18 @@ impl Stream {
         let deadline = (ms != 0).then(|| Instant::now() + Duration::from_millis(ms));
         let len = buf.len().min(1 << 30) as u32;
         let ptr = buf.as_ptr();
-        let out = run_overlapped(self.handle.0, deadline, &self.shared.shutdown, |ov| unsafe {
-            WriteFile(self.handle.0, ptr.cast(), len, null_mut(), ov)
-        })?;
+        let out = run_overlapped(
+            self.handle.0,
+            deadline,
+            &self.shared.shutdown,
+            |ov| unsafe { WriteFile(self.handle.0, ptr.cast(), len, null_mut(), ov) },
+        )?;
         match out {
             Outcome::Done(n) => Ok(n as usize),
             Outcome::TimedOut(n) if n > 0 => Ok(n as usize),
-            Outcome::TimedOut(_) => Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "write timed out",
-            )),
+            Outcome::TimedOut(_) => {
+                Err(io::Error::new(io::ErrorKind::WouldBlock, "write timed out"))
+            }
             Outcome::Stopped(n) if n > 0 => Ok(n as usize),
             Outcome::Stopped(_) => Err(io::ErrorKind::BrokenPipe.into()),
             Outcome::Failed(code)
@@ -528,14 +530,16 @@ impl Listener {
         };
         if h == INVALID_HANDLE_VALUE {
             let code = unsafe { GetLastError() };
-            return Err(if first && (code == ERROR_ACCESS_DENIED || code == ERROR_PIPE_BUSY) {
-                io::Error::new(
-                    io::ErrorKind::AddrInUse,
-                    format!("pipe name already in use (os error {code})"),
-                )
-            } else {
-                os_err(code)
-            });
+            return Err(
+                if first && (code == ERROR_ACCESS_DENIED || code == ERROR_PIPE_BUSY) {
+                    io::Error::new(
+                        io::ErrorKind::AddrInUse,
+                        format!("pipe name already in use (os error {code})"),
+                    )
+                } else {
+                    os_err(code)
+                },
+            );
         }
         Ok(OwnedHandle(h))
     }
@@ -726,23 +730,28 @@ mod tests {
         let l = Listener::bind(&path).unwrap();
         // accept timeout
         let t0 = Instant::now();
-        assert!(l.accept_timeout(Duration::from_millis(100)).unwrap().is_none());
+        assert!(l
+            .accept_timeout(Duration::from_millis(100))
+            .unwrap()
+            .is_none());
         assert!(t0.elapsed() >= Duration::from_millis(90));
         let c = connect(&path, Duration::from_secs(5)).unwrap();
         let s = l.accept_timeout(Duration::from_secs(5)).unwrap().unwrap();
         // read timeout surfaces as WouldBlock; connection stays usable
-        c.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        c.set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
         let mut b = [0u8; 1];
         let e = (&c).read(&mut b).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::WouldBlock);
         (&s).write_all(b"x").unwrap();
         assert_eq!((&c).read(&mut b).unwrap(), 1);
         // write timeout when nobody reads and the buffer fills
-        s.set_write_timeout(Some(Duration::from_millis(100))).unwrap();
+        s.set_write_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
         let chunk = vec![0u8; 1 << 20];
         let e = loop {
             match (&s).write(&chunk) {
-                Ok(_) => continue,
+                Ok(n) => assert!(n > 0),
                 Err(e) => break e,
             }
         };
@@ -750,7 +759,9 @@ mod tests {
         // connect timeout against a missing pipe is NotFound
         let missing = unique();
         assert_eq!(
-            connect(&missing, Duration::from_millis(100)).unwrap_err().kind(),
+            connect(&missing, Duration::from_millis(100))
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::NotFound
         );
     }
@@ -821,6 +832,9 @@ mod tests {
         wt.join().unwrap();
         assert!(got.iter().enumerate().all(|(i, b)| *b == (i % 251) as u8));
         let server_got = t.join().unwrap();
-        assert!(server_got.iter().enumerate().all(|(i, b)| *b == (i % 241) as u8));
+        assert!(server_got
+            .iter()
+            .enumerate()
+            .all(|(i, b)| *b == (i % 241) as u8));
     }
 }

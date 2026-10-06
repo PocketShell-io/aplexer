@@ -90,7 +90,9 @@ mod linux {
         let tasks = match fs::read_dir(&tasks_path) {
             Ok(tasks) => tasks,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error).with_context(|| format!("read {}", tasks_path.display())),
+            Err(error) => {
+                return Err(error).with_context(|| format!("read {}", tasks_path.display()))
+            }
         };
         let mut children = HashSet::new();
         for task in tasks {
@@ -107,7 +109,9 @@ mod linux {
             let text = match fs::read_to_string(&path) {
                 Ok(text) => text,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+                Err(error) => {
+                    return Err(error).with_context(|| format!("read {}", path.display()))
+                }
             };
             children.extend(
                 text.split_whitespace()
@@ -298,7 +302,6 @@ mod linux {
     }
 }
 
-
 /// Windows counterpart of the pidfd toolkit: process handles pinned to a
 /// `{pid, creation time}` identity, and process-tree walks through the
 /// session Job Object (or ToolHelp parent links when no job is installed).
@@ -328,6 +331,7 @@ mod windows_impl {
         walk_descendants(root, None, None)
     }
 
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn descendant_pids_until(
         root: u32,
         deadline: Deadline,
@@ -380,8 +384,8 @@ mod windows_impl {
         /// `Ok(None)` when there is no such live process.
         pub(crate) fn open(pid: u32, deadline: Option<Deadline>) -> Result<Option<Self>> {
             check(deadline, "opening process handle")?;
-            let process = PinnedProcess::open(pid)
-                .with_context(|| format!("identify process {pid}"))?;
+            let process =
+                PinnedProcess::open(pid).with_context(|| format!("identify process {pid}"))?;
             Ok(process.map(|process| Self { process }))
         }
 
@@ -390,10 +394,12 @@ mod windows_impl {
         }
 
         /// The creation FILETIME: the Windows "start time ticks".
+        #[cfg_attr(windows, allow(dead_code))]
         pub(crate) fn start_time_ticks(&self) -> u64 {
             self.process.creation_time()
         }
 
+        #[cfg_attr(windows, allow(dead_code))]
         pub(crate) fn exited(&self) -> Result<bool> {
             self.process
                 .is_exited()
@@ -481,4 +487,5 @@ mod windows_impl {
             child.wait().unwrap();
             assert!(found);
         }
-    }}
+    }
+}

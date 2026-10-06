@@ -162,6 +162,7 @@ impl OutputReceiver {
     /// terminal outcome as pending: those are delivered exactly once, by
     /// `recv`.
     #[cfg(test)]
+    #[cfg_attr(windows, allow(dead_code))]
     pub(in crate::worker) fn try_recv(&self) -> Option<OutputEvent> {
         self.shared.poisoned_lock().queue.pop_front()
     }

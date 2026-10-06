@@ -93,7 +93,7 @@ pub fn is_bare_executable(name: &str) -> bool {
 
 #[cfg(windows)]
 pub fn is_bare_executable(name: &str) -> bool {
-    !name.contains(['/', '\\']) && !(name.len() >= 2 && name.as_bytes()[1] == b':')
+    !(name.contains(['/', '\\']) || (name.len() >= 2 && name.as_bytes()[1] == b':'))
 }
 
 #[cfg(unix)]

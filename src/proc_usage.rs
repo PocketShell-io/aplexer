@@ -517,7 +517,11 @@ mod windows_tests {
             &[(id, std::process::id()), (ghost, u32::MAX - 1)],
         );
         let row = &snapshot.rows[&id];
-        assert!(row.processes >= 2, "worker + job member, got {}", row.processes);
+        assert!(
+            row.processes >= 2,
+            "worker + job member, got {}",
+            row.processes
+        );
         assert!(row.start_ticks > 0);
         assert_eq!(snapshot.rows[&ghost].processes, 0);
         assert!(clock_ticks_hz() == 10_000_000);

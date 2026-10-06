@@ -27,7 +27,11 @@ use tempfile::TempDir;
 fn harness_with_fake_engine(script: &str) -> (Harness, TempDir, TempDir) {
     let harness = Harness::new();
     let engine_dir = TempDir::new().unwrap();
-    let fake = workload::toml_path(&workload::write_executable(engine_dir.path(), "fake-engine", script));
+    let fake = workload::toml_path(&workload::write_executable(
+        engine_dir.path(),
+        "fake-engine",
+        script,
+    ));
     let config = format!(
         r#"
 [engines.codex]
@@ -90,7 +94,8 @@ fn status_json(harness: &Harness) -> Value {
 
 #[test]
 fn handoff_is_disabled_by_default_and_fire_is_a_noop() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(false));
+    let (harness, _engine_dir, cwd) =
+        harness_with_fake_engine(&workload::fake_engine_script(false));
 
     let status = harness
         .command()
@@ -122,7 +127,8 @@ fn handoff_is_disabled_by_default_and_fire_is_a_noop() {
 
 #[test]
 fn enable_is_opt_in_and_fire_launches_once_per_slot() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(false));
+    let (harness, _engine_dir, cwd) =
+        harness_with_fake_engine(&workload::fake_engine_script(false));
     let prompt = write_prompt(cwd.path(), "scheduled handoff prompt");
 
     // 00:00 local is always due for today's slot, whatever the wall clock.
@@ -206,7 +212,8 @@ fn enable_is_opt_in_and_fire_launches_once_per_slot() {
 
 #[test]
 fn fire_before_the_daily_time_is_a_noop() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(false));
+    let (harness, _engine_dir, cwd) =
+        harness_with_fake_engine(&workload::fake_engine_script(false));
     let prompt = write_prompt(cwd.path(), "not yet due");
     // Two minutes ahead of now; except within the midnight wrap window this
     // is strictly in the future, and the wrap is skipped explicitly below.
@@ -256,7 +263,8 @@ fn fire_before_the_daily_time_is_a_noop() {
 
 #[test]
 fn disable_removes_only_owned_state_and_is_idempotent() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(false));
+    let (harness, _engine_dir, cwd) =
+        harness_with_fake_engine(&workload::fake_engine_script(false));
     let prompt = write_prompt(cwd.path(), "disable me twice");
     let enable = |extra: &[&str], at: &str| {
         let mut args = vec![
@@ -330,7 +338,8 @@ fn disable_removes_only_owned_state_and_is_idempotent() {
 
 #[test]
 fn disable_never_cancels_a_running_task_or_foreign_processes() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::sleeping_engine_script(4));
+    let (harness, _engine_dir, cwd) =
+        harness_with_fake_engine(&workload::sleeping_engine_script(4));
     let prompt = write_prompt(cwd.path(), "must complete naturally");
     let enable = harness
         .command()
@@ -410,7 +419,8 @@ fn disable_never_cancels_a_running_task_or_foreign_processes() {
 
 #[test]
 fn enable_without_at_launches_when_fired() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(false));
+    let (harness, _engine_dir, cwd) =
+        harness_with_fake_engine(&workload::fake_engine_script(false));
     let prompt = write_prompt(cwd.path(), "no daily window");
 
     let enable = harness
@@ -451,10 +461,10 @@ fn enable_without_at_launches_when_fired() {
 
 #[test]
 fn cutoff_passthrough_routes_the_scheduled_launch() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(false));
+    let (harness, _engine_dir, cwd) =
+        harness_with_fake_engine(&workload::fake_engine_script(false));
     let prompt = write_prompt(cwd.path(), "routed by cutoff");
     let past = workload::date_shifted(-60, workload::DateFmt::Iso8601Seconds);
-
 
     let enable = harness
         .command()
@@ -493,7 +503,8 @@ fn cutoff_passthrough_routes_the_scheduled_launch() {
 
 #[test]
 fn enable_rejects_bad_input_without_writing_state() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(false));
+    let (harness, _engine_dir, cwd) =
+        harness_with_fake_engine(&workload::fake_engine_script(false));
     let prompt = write_prompt(cwd.path(), "never fired");
     let schedule = handoff_dir(&harness).join("schedule.json");
     let base = [
@@ -508,7 +519,6 @@ fn enable_rejects_bad_input_without_writing_state() {
     ];
 
     let past_naive = workload::date_shifted(-60, workload::DateFmt::NaiveIso);
-
 
     let bad_cases: Vec<Vec<String>> = vec![
         // Malformed daily times.
@@ -588,7 +598,8 @@ fn enable_rejects_bad_input_without_writing_state() {
 
 #[test]
 fn enable_twice_replaces_the_schedule() {
-    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(false));
+    let (harness, _engine_dir, cwd) =
+        harness_with_fake_engine(&workload::fake_engine_script(false));
     let prompt = write_prompt(cwd.path(), "replaceable");
 
     for (at, engine) in [("00:00", "codex"), ("01:00", "antigravity")] {

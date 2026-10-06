@@ -187,6 +187,7 @@ fn write_function_rollout(path: &Path, cwd: &Path) {
 }
 
 /// Restores read-permissions on drop so TempDir cleanup cannot fail.
+#[cfg_attr(windows, allow(dead_code))]
 struct WritableGuard(PathBuf);
 impl WritableGuard {
     fn read_only(dir: &Path) -> Self {

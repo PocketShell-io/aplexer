@@ -386,6 +386,7 @@ fn aliases_collapse_to_one_claim_and_relation_uses_checkout_facts() {
     );
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn run(command: &str) {
     let output = Command::new("bash")
         .arg("-c")
@@ -399,6 +400,7 @@ fn run(command: &str) {
     );
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn init_repo(path: std::path::PathBuf) -> std::path::PathBuf {
     run(&format!(
         "git init -q {} && git -C {} -c user.email=t@example.com -c user.name=t commit --allow-empty -q -m init",

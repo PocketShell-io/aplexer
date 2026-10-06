@@ -11,6 +11,7 @@ mod submission;
 
 use super::*;
 
+#[cfg_attr(windows, allow(unused_imports))]
 use std::ffi::OsString;
 
 use std::fs::{FileTimes, OpenOptions};

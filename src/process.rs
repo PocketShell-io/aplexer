@@ -614,6 +614,7 @@ mod windows_impl {
 
     /// Boot identity: system boot time (FILETIME) rendered as a string,
     /// from `NtQuerySystemInformation(SystemTimeOfDayInformation)`. Cached.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn linux_boot_id() -> Result<String> {
         #[repr(C)]
         struct TimeOfDay {
@@ -644,7 +645,10 @@ mod windows_impl {
             )
         };
         if status < 0 || info.boot_time == 0 {
-            bail!("query Windows boot time failed (NTSTATUS 0x{:08x})", status as u32);
+            bail!(
+                "query Windows boot time failed (NTSTATUS 0x{:08x})",
+                status as u32
+            );
         }
         let id = format!("boot-{}", info.boot_time);
         let _ = CACHED.set(id.clone());

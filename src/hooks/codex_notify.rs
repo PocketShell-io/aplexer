@@ -12,7 +12,11 @@ pub fn codex_notify_line(a_bin: &str) -> String {
     #[cfg(windows)]
     {
         // No `sh` on Windows: run the binary directly as the notify argv.
-        let argv = [a_bin.replace('\\', "/"), "state-report".into(), "idle".into()];
+        let argv = [
+            a_bin.replace('\\', "/"),
+            "state-report".into(),
+            "idle".into(),
+        ];
         let items: Vec<String> = argv
             .iter()
             .map(|word| serde_json::to_string(word).unwrap_or_else(|_| format!("{word:?}")))

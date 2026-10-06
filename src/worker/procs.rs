@@ -29,6 +29,7 @@ pub(super) fn direct_child_pids(pid: u32) -> Result<Vec<u32>> {
 
 /// The /proc root is ignored on Windows (ToolHelp parent links).
 #[cfg(windows)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(super) fn direct_child_pids(pid: u32) -> Result<Vec<u32>> {
     direct_child_pids_in(Path::new(""), pid)
 }

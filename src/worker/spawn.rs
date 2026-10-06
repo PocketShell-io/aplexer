@@ -12,10 +12,10 @@
 use super::*;
 #[cfg(unix)]
 use crate::cgroup::{Cgroup, ScopePlan};
-#[cfg(unix)]
-use std::ffi::OsString;
 #[cfg(windows)]
 use crate::process::{PtyMaster, Workload};
+#[cfg(unix)]
+use std::ffi::OsString;
 
 /// Wire signal numbers on Windows, where `libc` does not exist (the wire
 /// stays `i32`; see docs/windows-port.md).
@@ -88,8 +88,16 @@ pub(super) fn spawn_workload(
     for (key, value) in launch_environment {
         set(&mut env, key, Some(value.into()));
     }
-    set(&mut env, "APLEXER_SESSION_ID", Some(record.id.to_string().into()));
-    set(&mut env, "APLEXER_WORKSPACE", Some(record.workspace.as_os_str().to_os_string()));
+    set(
+        &mut env,
+        "APLEXER_SESSION_ID",
+        Some(record.id.to_string().into()),
+    );
+    set(
+        &mut env,
+        "APLEXER_WORKSPACE",
+        Some(record.workspace.as_os_str().to_os_string()),
+    );
     set(&mut env, "APLEXER_TAG", Some(record.tag.clone().into()));
     // Put the `a` next to this worker first on PATH.
     if let Ok(exe) = env::current_exe() {

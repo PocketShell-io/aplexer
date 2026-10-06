@@ -146,6 +146,7 @@ impl History {
         Ok(history)
     }
     #[cfg(test)]
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn inject_append_failure(&mut self, errno: i32) {
         self.append_failure = Some(errno);
     }

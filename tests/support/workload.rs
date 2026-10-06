@@ -9,7 +9,6 @@
 //!
 //! Unix: `/bin/sh -c <script>`.  Windows: `cmd.exe /c <script>` (or
 //! `powershell.exe` where unset-vs-empty environment reporting is needed).
-#![allow(dead_code)]
 
 use std::fs;
 use std::path::Path;

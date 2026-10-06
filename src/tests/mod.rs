@@ -23,6 +23,7 @@ use super::*;
 use crate::paths::absolute_override_path;
 #[cfg(unix)]
 use crate::paths::absolute_xdg_path;
+#[cfg_attr(windows, allow(unused_imports))]
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -39,8 +40,11 @@ use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
+#[cfg_attr(windows, allow(unused_imports))]
 use std::process::Command;
+#[cfg_attr(windows, allow(unused_imports))]
 use std::thread;
+#[cfg_attr(windows, allow(unused_imports))]
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 

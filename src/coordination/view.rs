@@ -630,7 +630,10 @@ fn absolute_components(base: &Path, scope: &str) -> Vec<String> {
 fn components_overlap(a: &[String], b: &[String]) -> bool {
     // NTFS paths compare case-insensitively.
     #[cfg(windows)]
-    return a.iter().zip(b.iter()).all(|(x, y)| x.eq_ignore_ascii_case(y));
+    return a
+        .iter()
+        .zip(b.iter())
+        .all(|(x, y)| x.eq_ignore_ascii_case(y));
     #[cfg(not(windows))]
     a.iter().zip(b.iter()).all(|(x, y)| x == y)
 }

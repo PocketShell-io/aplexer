@@ -1,7 +1,7 @@
 use super::*;
+use aplexer::sys::ipc::Stream;
 #[cfg(unix)]
 use std::os::fd::RawFd;
-use aplexer::sys::ipc::Stream;
 
 #[cfg(not(test))]
 pub(crate) const CONTROL_RPC_TIMEOUT: Duration = Duration::from_secs(3);

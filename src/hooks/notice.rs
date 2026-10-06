@@ -90,9 +90,8 @@ mod form_tests {
 
     #[test]
     fn both_tail_forms_identify_the_awareness_hook() {
-        let unix = format!(
-            "/bin/a context hook --engine claude 2>/dev/null || true # {AWARENESS_MARKER}"
-        );
+        let unix =
+            format!("/bin/a context hook --engine claude 2>/dev/null || true # {AWARENESS_MARKER}");
         let bare = "C:/bin/a.exe context hook --engine claude";
         for command in [unix.as_str(), bare] {
             assert!(reports_context(command, "claude"), "{command}");
@@ -100,8 +99,12 @@ mod form_tests {
             assert!(is_awareness_command(command), "{command}");
             assert!(is_managed_hook_command(command), "{command}");
         }
-        assert!(!is_awareness_command("a message hook-notice --engine claude"));
-        assert!(!is_awareness_command("a context hook --engine claude extra"));
+        assert!(!is_awareness_command(
+            "a message hook-notice --engine claude"
+        ));
+        assert!(!is_awareness_command(
+            "a context hook --engine claude extra"
+        ));
     }
 
     #[cfg(windows)]
