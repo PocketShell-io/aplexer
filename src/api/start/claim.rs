@@ -3,7 +3,7 @@
 //! anything is written.
 
 use super::*;
-use crate::ResolvedLaunch;
+use crate::{executable_available, ResolvedLaunch};
 
 /// The `workspace+tag` a start has claimed for its session, decided under
 /// the registry lock. `fence` is the pre-PID worker fence over a superseded
@@ -48,6 +48,12 @@ pub(super) fn resolve_launch(
             .extend(launch.skip_permissions_argv.iter().cloned());
     }
     if !command_exists(&launch.command) {
+        // Not on PATH: it may be a `~/.bashrc` alias or function, which only
+        // an interactive bash can resolve.
+        if let Some(wrapped) = bash_alias_argv(&launch.command) {
+            launch.command = wrapped;
+            return Ok((workspace, launch));
+        }
         bail!(
             "command is not executable or was not found in PATH: {}",
             launch
@@ -58,6 +64,46 @@ pub(super) fn resolve_launch(
         );
     }
     Ok((workspace, launch))
+}
+
+/// Rewrite `command` to run through an interactive bash when its first word
+/// is a bare name that bash (and so `~/.bashrc`) defines as an alias or
+/// function. The name sits at the start of the `-c` text so bash expands the
+/// alias at parse time; the remaining arguments pass through as `"$@"`.
+fn bash_alias_argv(command: &[String]) -> Option<Vec<String>> {
+    bash_alias_argv_with_home(command, None)
+}
+
+fn bash_alias_argv_with_home(command: &[String], home: Option<&Path>) -> Option<Vec<String>> {
+    let name = command.first()?;
+    let bare = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+'));
+    if !bare || !executable_available("bash") {
+        return None;
+    }
+    let mut probe = std::process::Command::new("bash");
+    probe
+        .args(["-ic", "type -t -- \"$0\"", name])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Some(home) = home {
+        probe.env("HOME", home);
+    }
+    let kind = probe.output().ok()?;
+    let kind = String::from_utf8_lossy(&kind.stdout);
+    if !matches!(kind.trim(), "alias" | "function") {
+        return None;
+    }
+    let mut argv = vec![
+        "bash".to_owned(),
+        "-ic".to_owned(),
+        format!("{name} \"$@\""),
+        name.clone(),
+    ];
+    argv.extend(command[1..].iter().cloned());
+    Some(argv)
 }
 
 /// Decide which pair this start owns and who, if anyone, it supersedes.
@@ -199,4 +245,33 @@ pub(crate) fn retire_reclaimed_holder(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod bash_alias_tests {
+    use super::*;
+
+    #[test]
+    fn bashrc_alias_is_wrapped_and_unknown_names_are_not() {
+        if !executable_available("bash") {
+            eprintln!("no bash on PATH; skipping");
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join(".bashrc"),
+            "alias zzaliasprobe='echo hi'\n",
+        )
+        .unwrap();
+        let cmd = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        let wrapped =
+            bash_alias_argv_with_home(&cmd(&["zzaliasprobe", "a b"]), Some(home.path())).unwrap();
+        assert_eq!(
+            wrapped,
+            cmd(&["bash", "-ic", "zzaliasprobe \"$@\"", "zzaliasprobe", "a b"])
+        );
+        assert!(bash_alias_argv_with_home(&cmd(&["zznosuchcmd"]), Some(home.path())).is_none());
+        assert!(bash_alias_argv_with_home(&cmd(&["./zzaliasprobe"]), Some(home.path())).is_none());
+    }
 }
