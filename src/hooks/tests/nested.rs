@@ -26,6 +26,7 @@ fn merge_is_idempotent() {
     assert_eq!(once, twice);
 }
 
+#[cfg(unix)]
 #[test]
 fn awareness_hook_is_bounded_and_installs_one_source_per_engine() {
     let doc = merged(&CLAUDE_EVENTS, json!({}));
@@ -156,6 +157,7 @@ fn migration_counts_inner_removal_in_a_mixed_group() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn post_tool_awareness_merges_and_unmerges_without_touching_foreign_hooks() {
     for (engine, events) in [

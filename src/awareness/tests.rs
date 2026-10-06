@@ -80,6 +80,7 @@ fn bound(id: Uuid, workspace: &std::path::Path) -> binding::BoundSession {
 // Payload schemas (real native shapes)
 // ---------------------------------------------------------------------
 
+#[cfg(unix)]
 #[test]
 fn claude_post_tool_use_payload_parses_snake_case() {
     let payload = payload_from(serde_json::json!({
@@ -156,6 +157,7 @@ fn relative_and_non_string_path_arguments_are_ignored() {
     assert!(payload.tool_paths.is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn antigravity_workspace_paths_are_collected() {
     let payload = payload_from(serde_json::json!({
@@ -831,6 +833,7 @@ fn foreign_peers_render_is_bounded_and_deduplicated() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn opencode_plugin_payload_contract_is_stable() {
     // The plugin sends the payload the parser actually reads; guard the

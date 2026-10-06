@@ -98,6 +98,9 @@ fn write_dead_session(h: &Harness, id: &str, cwd: &Path) -> PathBuf {
         .join("sessions")
         .join(id)
         .join("control.sock");
+    // Windows control endpoints are named pipes, not paths under the runtime dir.
+    #[cfg(windows)]
+    let socket_path = aplexer::sys::windows::ipc::pipe_name(id.parse().unwrap()).unwrap();
     let history_path = session_dir.join("history.bin");
     fs::write(
         &history_path,

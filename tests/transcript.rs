@@ -97,6 +97,9 @@ fn write_session(h: &Harness, id: &str, cwd: &Path, engine: &str) {
         .join("sessions")
         .join(id)
         .join("control.sock");
+    // Windows control endpoints are named pipes, not paths under the runtime dir.
+    #[cfg(windows)]
+    let socket_path = aplexer::sys::windows::ipc::pipe_name(id.parse().unwrap()).unwrap();
     let history_path = session_dir.join("history.bin");
     let record = json!({
         "schema_version": 1,

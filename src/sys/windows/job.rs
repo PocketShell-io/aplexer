@@ -700,7 +700,13 @@ mod tests {
         assert!(job.is_empty().unwrap());
         assert!(job.process_ids().unwrap().is_empty());
         child.wait().unwrap();
+        // The job drops a member from its active count a moment before the
+        // process object is signaled, so give the kernel a bounded beat.
         for pid in ids {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while process_alive(pid) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
             assert!(!process_alive(pid), "pid {pid} survived");
         }
     }

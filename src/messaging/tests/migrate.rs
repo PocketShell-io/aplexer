@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(unix)]
 #[test]
 fn ensure_workspace_migrates_valid_legacy_mailbox() {
     let root = TempDir::new().unwrap();

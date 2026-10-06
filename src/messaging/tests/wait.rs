@@ -141,6 +141,7 @@ fn acknowledged_messages_stay_hidden_and_timeout_preserves_cursor() {
     assert_eq!(fs::read(&cursor_path).unwrap(), before);
 }
 
+#[cfg(unix)]
 #[test]
 fn invalidated_watch_and_corrupt_cursor_report_errors() {
     let root = TempDir::new().unwrap();

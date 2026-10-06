@@ -23,8 +23,8 @@ pub(super) fn archive_superseded_session(paths: &Paths, id: Uuid) -> Result<Path
         )
     })?;
     if let Err(error) = (|| -> Result<()> {
-        File::open(paths.state_root.join("sessions"))?.sync_all()?;
-        File::open(&retired_root)?.sync_all()?;
+        crate::persist::sync_dir(&paths.state_root.join("sessions"))?;
+        crate::persist::sync_dir(&retired_root)?;
         Ok(())
     })() {
         return match restore_superseded_session(paths, id, &archived) {
@@ -83,9 +83,9 @@ pub(super) fn restore_superseded_session(paths: &Paths, id: Uuid, archived: &Pat
             destination.display()
         )
     })?;
-    File::open(paths.state_root.join("sessions"))?.sync_all()?;
+    crate::persist::sync_dir(&paths.state_root.join("sessions"))?;
     if let Some(parent) = archived.parent() {
-        File::open(parent)?.sync_all()?;
+        crate::persist::sync_dir(parent)?;
     }
     Ok(())
 }
@@ -97,7 +97,7 @@ pub(super) fn cleanup_superseded_archive(path: &Path) -> Result<()> {
     }
     fs::remove_dir_all(path).with_context(|| format!("remove archive {}", path.display()))?;
     if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
+        crate::persist::sync_dir(parent)?;
     }
     Ok(())
 }
@@ -163,6 +163,7 @@ mod reclaim_tests {
     /// pid). The caller's copy still says "dead, reclaimable"; disk says a
     /// process is running; the retire must refuse and leave the predecessor
     /// exactly where it was.
+    #[cfg(unix)]
     #[test]
     fn retiring_a_predecessor_re_reads_the_record_before_destroying_it() {
         let stale = zombie_record();

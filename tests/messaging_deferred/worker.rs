@@ -1,34 +1,16 @@
-//! Fake worker transport for deferred-delivery tests.
-//!
-//! Unix: a real `UnixListener` worker that records framed PTY writes.
-//! Windows: an inert stub (no worker is listening, nothing is ever written);
-//! only tests that expect delivery to be *rejected before transport* run there.
+//! Fake worker transport for deferred-delivery tests: a real control-socket
+//! listener (Unix domain socket, or a named pipe on Windows) that records
+//! framed PTY writes.
 
-#[cfg(windows)]
-pub(super) struct Worker;
+pub(super) use fake_worker::Worker;
 
-#[cfg(windows)]
-impl Worker {
-    pub(super) fn start(_record: &aplexer::SessionRecord, _lose_response: bool) -> Self {
-        Self
-    }
-
-    pub(super) fn finish(self) -> Vec<Vec<u8>> {
-        Vec::new()
-    }
-}
-
-#[cfg(unix)]
-pub(super) use unix_worker::Worker;
-
-#[cfg(unix)]
-mod unix_worker {
+mod fake_worker {
     use aplexer::{
         frame_json, read_frame, write_frame, write_json, FrameKind, Operation, Request, Response,
         SessionRecord,
     };
     use serde_json::json;
-    use std::os::unix::net::{UnixListener, UnixStream};
+    use aplexer::sys::ipc::{Listener, Stream};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -43,8 +25,12 @@ mod unix_worker {
 
     impl Worker {
         pub(crate) fn start(record: &SessionRecord, lose_response: bool) -> Self {
+            // The Unix socket lives under the runtime dir; a Windows pipe name has no
+            // parent directory.
+            #[cfg(unix)]
             std::fs::create_dir_all(record.socket_path.parent().unwrap()).unwrap();
-            let listener = UnixListener::bind(&record.socket_path).unwrap();
+            let listener = Listener::bind(&record.socket_path).unwrap();
+            #[cfg(unix)]
             listener.set_nonblocking(true).unwrap();
             let stop = Arc::new(AtomicBool::new(false));
             let (signal, record) = (stop.clone(), record.clone());
@@ -59,7 +45,7 @@ mod unix_worker {
     }
 
     fn serve(
-        listener: UnixListener,
+        listener: Listener,
         stop: Arc<AtomicBool>,
         record: SessionRecord,
         lose_response: bool,
@@ -67,24 +53,37 @@ mod unix_worker {
         let mut writes = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(15);
         while !stop.load(Ordering::SeqCst) && Instant::now() < deadline {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
+            match accept(&listener) {
+                Ok(Some(mut stream)) => {
                     stream
                         .set_read_timeout(Some(Duration::from_secs(3)))
                         .unwrap();
                     respond(&mut stream, &record, &mut writes, lose_response);
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(5))
-                }
+                Ok(None) => thread::sleep(Duration::from_millis(5)),
                 Err(error) => panic!("{error}"),
             }
         }
         writes
     }
 
+    /// One non-blocking accept: `Ok(None)` when nobody is connecting yet.
+    #[cfg(unix)]
+    fn accept(listener: &Listener) -> std::io::Result<Option<Stream>> {
+        match listener.accept() {
+            Ok((stream, _)) => Ok(Some(stream)),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(windows)]
+    fn accept(listener: &Listener) -> std::io::Result<Option<Stream>> {
+        listener.accept_timeout(Duration::from_millis(50))
+    }
+
     fn respond(
-        stream: &mut UnixStream,
+        stream: &mut Stream,
         record: &SessionRecord,
         writes: &mut Vec<Vec<u8>>,
         lose_response: bool,
@@ -113,7 +112,7 @@ mod unix_worker {
     }
 
     fn record_input(
-        stream: &mut UnixStream,
+        stream: &mut Stream,
         id: String,
         bytes: usize,
         writes: &mut Vec<Vec<u8>>,

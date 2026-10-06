@@ -8,6 +8,8 @@ fn workspace_key_stable_and_distinct() {
     assert_eq!(a, b);
     assert_ne!(a, c);
     assert_eq!(a.len(), 32);
+    // The pinned digest is of the Unix path bytes.
+    #[cfg(unix)]
     assert_eq!(a, "9c3c95a47c6557b18956e6903a57497f");
 }
 

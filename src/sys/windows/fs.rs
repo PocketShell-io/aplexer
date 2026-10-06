@@ -160,9 +160,55 @@ fn retry(mut operation: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     }
 }
 
-/// Atomically replace `to` with `from` (creating `to` if absent), writing
-/// through to disk. No directory fsync exists or is needed on NTFS.
-pub fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+/// Rename `from` over `to` with POSIX semantics
+/// (`FILE_RENAME_FLAG_POSIX_SEMANTICS | REPLACE_IF_EXISTS`): the new content
+/// appears under the name in one namespace step, and the replaced file may
+/// still be open (readers keep their handle). Unlike `MoveFileExW` /
+/// `ReplaceFileW` a concurrent reader never sees a missing file or a sharing
+/// violation. Needs Windows 10 1709+ on NTFS; `Err(Unsupported)` otherwise.
+fn rename_posix(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfoEx, SetFileInformationByHandle, DELETE, FILE_RENAME_INFO,
+    };
+    const REPLACE_IF_EXISTS_AND_POSIX: u32 = 0x1 | 0x2;
+    let source = OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(0x7)
+        .open(from)?;
+    let target = std::path::absolute(to)?;
+    let name: Vec<u16> = target.as_os_str().encode_wide().collect();
+    let name_bytes = name.len() * 2;
+    let total = std::mem::size_of::<FILE_RENAME_INFO>() + name_bytes;
+    // 8-byte aligned backing store for the variable-length struct.
+    let mut buffer = vec![0u64; total.div_ceil(8)];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: `buffer` is zeroed, aligned, and at least `total` bytes, which
+    // covers the fixed header plus the whole file name.
+    unsafe {
+        (*info).Anonymous.Flags = REPLACE_IF_EXISTS_AND_POSIX;
+        (*info).RootDirectory = null_mut();
+        (*info).FileNameLength = name_bytes as u32;
+        std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
+        if SetFileInformationByHandle(
+            source.as_raw_handle() as HANDLE,
+            FileRenameInfoEx,
+            info.cast::<c_void>(),
+            total as u32,
+        ) == 0
+        {
+            let error = io::Error::last_os_error();
+            return Err(match error.raw_os_error().map(|code| code as u32) {
+                // Older Windows or a filesystem without POSIX rename.
+                Some(1) | Some(50) | Some(87) => io::Error::new(io::ErrorKind::Unsupported, error),
+                _ => error,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn move_file_replace(from: &Path, to: &Path) -> io::Result<()> {
     let from = wide(from);
     let to = wide(to);
     retry(|| {
@@ -181,10 +227,51 @@ pub fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
     })
 }
 
+/// Atomically replace `to` with `from` (creating `to` if absent), writing
+/// through to disk. No directory fsync exists or is needed on NTFS.
+pub fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+    match retry(|| rename_posix(from, to)) {
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => move_file_replace(from, to),
+        other => other,
+    }
+}
+
 /// Like [`replace_file`] but the target must exist at publication time:
 /// a deleted target yields `ErrorKind::NotFound` and the staged file is left
 /// for the caller's cleanup guard.
 pub fn replace_existing_file(from: &Path, to: &Path) -> io::Result<()> {
+    // Hold a handle on the target across the rename: a target deleted by
+    // someone else is then delete-pending and refuses to be renamed over,
+    // instead of being resurrected by the rename.
+    let guard = open_existing_guard(to)?;
+    let result = match retry(|| rename_posix(from, to)) {
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+            drop(guard);
+            return replace_existing_file_legacy(from, to);
+        }
+        Err(error) if transient(&error) => {
+            // Delete-pending reads as access denied: report what it means.
+            if !to.exists() {
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            } else {
+                Err(error)
+            }
+        }
+        other => other,
+    };
+    drop(guard);
+    result
+}
+
+fn open_existing_guard(to: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    OpenOptions::new()
+        .access_mode(0x80) // FILE_READ_ATTRIBUTES
+        .share_mode(0x7)
+        .open(to)
+}
+
+fn replace_existing_file_legacy(from: &Path, to: &Path) -> io::Result<()> {
     let from = wide(from);
     let to = wide(to);
     retry(|| {

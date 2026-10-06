@@ -199,7 +199,9 @@ fn validate_scope(scope: &str) -> Result<String> {
         bail!("scope contains control characters");
     }
     let path = Path::new(scope);
-    if path.is_absolute() {
+    // `has_root` also catches Windows's rooted-but-not-absolute `\etc` and
+    // `/etc` (current-drive root); on Unix it is the same as `is_absolute`.
+    if path.is_absolute() || path.has_root() {
         bail!("scope {scope:?} must be relative to the workspace");
     }
     for component in path.components() {

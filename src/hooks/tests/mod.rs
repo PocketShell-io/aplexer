@@ -17,6 +17,7 @@ fn merged(events: &[(&str, &str)], start: Value) -> Value {
     doc
 }
 
+#[cfg(unix)]
 #[test]
 fn state_report_command_never_blocks() {
     let cmd = state_report_command("/home/u/.local/bin/a", "idle");

@@ -214,6 +214,7 @@ fn unsupported_config_version_is_reported_before_unknown_fields() {
 /// an unreadable file loaded silently as "no config". ENOTDIR (a regular
 /// file where the parent directory should be) is the same failure class,
 /// reproducible without root.
+#[cfg(unix)]
 #[test]
 fn unreadable_config_file_is_an_error_not_defaults() {
     let (root, mut paths) = temp_paths();
