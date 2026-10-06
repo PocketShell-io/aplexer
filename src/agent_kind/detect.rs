@@ -15,6 +15,7 @@ use super::{AgentKind, DetectedAgent, ProfileVariants};
 const MAX_SCANNED_PIDS: usize = 4096;
 
 /// `/proc/<pid>/comm`, trimmed. `None` when the pid is gone or unreadable.
+#[cfg(not(windows))]
 fn read_comm(proc_root: &Path, pid: u32) -> Option<String> {
     let text = fs::read_to_string(proc_root.join(pid.to_string()).join("comm")).ok()?;
     Some(text.trim().to_owned())
@@ -22,6 +23,7 @@ fn read_comm(proc_root: &Path, pid: u32) -> Option<String> {
 
 /// `/proc/<pid>/cmdline` (NUL-delimited) joined with spaces. `None` when the
 /// pid is gone or unreadable; an empty string for a kernel thread.
+#[cfg(not(windows))]
 fn read_cmdline(proc_root: &Path, pid: u32) -> Option<String> {
     let raw = fs::read(proc_root.join(pid.to_string()).join("cmdline")).ok()?;
     let decoded = String::from_utf8_lossy(&raw);
@@ -39,6 +41,7 @@ fn read_cmdline(proc_root: &Path, pid: u32) -> Option<String> {
 /// The value of `var` in `/proc/<pid>/environ` (NUL-delimited `KEY=value`
 /// words). `None` when the pid is gone, unreadable, or does not carry the
 /// variable -- the same defensive read every other /proc probe here does.
+#[cfg(not(windows))]
 fn read_environ_var(proc_root: &Path, pid: u32, var: &str) -> Option<String> {
     let raw = fs::read(proc_root.join(pid.to_string()).join("environ")).ok()?;
     let prefix = format!("{var}=");
@@ -46,6 +49,53 @@ fn read_environ_var(proc_root: &Path, pid: u32, var: &str) -> Option<String> {
         .split('\0')
         .find(|word| word.starts_with(&prefix))
         .map(|word| word[prefix.len()..].to_owned())
+}
+
+/// Windows backends: the process image name (`.exe` stripped), command line
+/// and environment come from `sys::windows::procinfo`; `proc_root` is unused.
+#[cfg(windows)]
+fn read_comm(_proc_root: &Path, pid: u32) -> Option<String> {
+    crate::sys::windows::procinfo::image_name(pid)
+}
+
+/// Command line normalised so the whole-word rules apply: backslashes become
+/// `/` and `.exe` is dropped (`C:\x\claude.exe` -> `C:/x/claude`).
+#[cfg(windows)]
+fn read_cmdline(_proc_root: &Path, pid: u32) -> Option<String> {
+    let raw = crate::sys::windows::procinfo::cmdline(pid)?;
+    Some(normalize_windows_cmdline(&raw))
+}
+
+#[cfg(windows)]
+fn read_environ_var(_proc_root: &Path, pid: u32, var: &str) -> Option<String> {
+    crate::sys::windows::procinfo::environ_var(pid, var)
+}
+
+#[cfg(windows)]
+pub(super) fn normalize_windows_cmdline(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw.replace('\\', "/");
+    while let Some(i) = rest.to_ascii_lowercase().find(".exe") {
+        let after = rest[i + 4..].chars().next();
+        if after.is_some_and(|c| c.is_alphanumeric()) {
+            out.push_str(&rest[..i + 4]);
+        } else {
+            out.push_str(&rest[..i]);
+        }
+        rest = rest[i + 4..].to_owned();
+    }
+    out.push_str(&rest);
+    out.trim().to_owned()
+}
+
+#[cfg(not(windows))]
+fn children_of(proc_root: &Path, pid: u32) -> Vec<u32> {
+    crate::worker::direct_child_pids_in(proc_root, pid).unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn children_of(_proc_root: &Path, pid: u32) -> Vec<u32> {
+    crate::sys::windows::procinfo::children(pid)
 }
 
 /// The profile id of the variation `kind` is running as on `pid`, from the
@@ -179,7 +229,7 @@ pub fn detect_agent_process(
         // A read error here is "this pid told us nothing", never a failure:
         // the strict, error-propagating variant is the containment walker's
         // contract (a truncated kill list is a bug), not detection's.
-        let mut children = crate::worker::direct_child_pids_in(proc_root, pid).unwrap_or_default();
+        let mut children = children_of(proc_root, pid);
         children.sort_unstable();
         for child in children {
             if seen.insert(child) {
@@ -188,4 +238,40 @@ pub fn detect_agent_process(
         }
     }
     None
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn cmdline_is_normalised_for_the_token_rules() {
+        assert_eq!(
+            normalize_windows_cmdline(r#""C:\Tools\Claude.EXE" --resume"#),
+            r#""C:/Tools/Claude" --resume"#
+        );
+        assert_eq!(normalize_windows_cmdline(r"C:\x\a.exec"), "C:/x/a.exec");
+        let variants = ProfileVariants::default();
+        let text = normalize_windows_cmdline(
+            r"node.exe C:\npm\node_modules\@anthropic-ai\claude-code\cli.js",
+        );
+        assert!(classify_token_detailed(&text, &variants).is_some());
+    }
+
+    #[test]
+    fn image_name_of_a_live_child_classifies() {
+        // `cmd` is not an agent, but the walk must read it without panicking.
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        let found = detect_agent(
+            Path::new("/proc"),
+            std::process::id(),
+            &ProfileVariants::default(),
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(found.is_none());
+    }
 }

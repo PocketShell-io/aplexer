@@ -316,6 +316,19 @@ fn ambiguity(
 /// mid-scan, an unreadable `/proc` entry) skip quietly -- the walk degrades
 /// to fewer candidates, never an error.
 pub fn open_jsonl_fds(proc_root: &Path, pid: u32) -> Vec<PathBuf> {
+    // Windows has no per-process fd directory; enumerating another process's
+    // handles is not worth it in v1. Degrade to no identity-backed candidates.
+    #[cfg(windows)]
+    {
+        let _ = (proc_root, pid);
+        Vec::new()
+    }
+    #[cfg(not(windows))]
+    open_jsonl_fds_proc(proc_root, pid)
+}
+
+#[cfg(not(windows))]
+fn open_jsonl_fds_proc(proc_root: &Path, pid: u32) -> Vec<PathBuf> {
     let fd_dir = proc_root.join(pid.to_string()).join("fd");
     let Ok(entries) = fs::read_dir(&fd_dir) else {
         return Vec::new();
@@ -444,7 +457,7 @@ pub fn claude_transcript_candidates(
     let config_dir = env
         .get("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude")));
+        .or_else(|| crate::agent_kind::user_home().map(|h| h.join(".claude")));
     let Some(config_dir) = config_dir else {
         return Vec::new();
     };
@@ -494,7 +507,7 @@ pub fn codex_transcript_candidates(
     let root = env
         .get("CODEX_HOME")
         .map(|h| PathBuf::from(h).join("sessions"))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex/sessions")));
+        .or_else(|| crate::agent_kind::user_home().map(|h| h.join(".codex").join("sessions")));
     let Some(root) = root else {
         return Vec::new();
     };
@@ -577,8 +590,8 @@ fn grok_sessions_root(env: &BTreeMap<String, String>) -> Option<PathBuf> {
     {
         return Some(PathBuf::from(home).join("sessions"));
     }
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".grok/sessions"))
+    let home = crate::agent_kind::user_home()?;
+    Some(home.join(".grok").join("sessions"))
 }
 
 pub(crate) fn encode_claude_cwd(cwd: &str) -> String {
@@ -586,7 +599,13 @@ pub(crate) fn encode_claude_cwd(cwd: &str) -> String {
     if trimmed.is_empty() {
         "-".into()
     } else {
-        trimmed.replace(['/', '.'], "-")
+        // On Windows the drive colon and backslashes join the replaced set:
+        // `C:\Users\me\x` -> `C--Users-me-x` (matches ~/.claude/projects).
+        #[cfg(windows)]
+        let encoded = trimmed.replace(['/', '\\', '.', ':'], "-");
+        #[cfg(not(windows))]
+        let encoded = trimmed.replace(['/', '.'], "-");
+        encoded
     }
 }
 
@@ -645,4 +664,27 @@ fn candidates_newest_first(
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     scored.into_iter().map(|(_, path)| path).collect()
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn encode_claude_cwd_handles_windows_paths() {
+        assert_eq!(
+            encode_claude_cwd(r"C:\Users\User\git\aplexer"),
+            "C--Users-User-git-aplexer"
+        );
+        assert_eq!(
+            encode_claude_cwd(r"C:\Users\User\git\aplexer\.claude\worktrees\x"),
+            "C--Users-User-git-aplexer--claude-worktrees-x"
+        );
+        assert_eq!(encode_claude_cwd("C:/a/b.c"), "C--a-b-c");
+    }
+
+    #[test]
+    fn open_jsonl_fds_degrades_to_empty() {
+        assert!(open_jsonl_fds(Path::new("/proc"), std::process::id()).is_empty());
+    }
 }

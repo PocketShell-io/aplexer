@@ -190,8 +190,20 @@ pub(crate) fn memory_indicator(record: &SessionRecord, raw: &Value) -> Option<St
 /// means), not information. Only an actually interesting foreground
 /// program -- something manually run inside the session that isn't just
 /// its own shell -- is worth surfacing.
-pub(crate) const PLAIN_SHELLS: &[&str] =
-    &["sh", "bash", "zsh", "dash", "fish", "ksh", "tcsh", "csh"];
+pub(crate) const PLAIN_SHELLS: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "fish",
+    "ksh",
+    "tcsh",
+    "csh",
+    // Windows shells (image names are normalised: lowercase, `.exe` stripped).
+    "pwsh",
+    "powershell",
+    "cmd",
+];
 
 /// The live foreground-command override for the status bar, if there's
 /// anything worth showing beyond `record.engine` alone (see
