@@ -94,6 +94,14 @@ pub(crate) fn cmd_capture(paths: &Paths, args: CaptureArgs, json_output: bool) -
             }
         }
     };
+    // `--screen --svg` renders the snapshot client-side (see
+    // capture_svg.rs): same dead-session semantics as the escape-sequence
+    // form, just a different encoding of the same picture.
+    let data = if args.svg {
+        capture_svg_document(paths, &record, &data).into_bytes()
+    } else {
+        data
+    };
     if let Some(path) = args.output {
         fs::write(&path, &data).with_context(|| format!("write {}", path.display()))?;
     } else if json_output {

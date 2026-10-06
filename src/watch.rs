@@ -307,6 +307,37 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_idle_survives_prompt_redraws_until_the_next_lifecycle_report() {
+        let mut record = sample_record(Phase::Running);
+        record.engine = "antigravity".into();
+        record.reported_state = Some("idle".into());
+        record.reported_state_at_ms = Some(1_000);
+        let much_later = 1_000 + REPORTED_STATE_STALE_MS + 60_000;
+        record.last_activity_ms = Some(much_later);
+        assert_eq!(reported_state_rejection(&record, much_later), None);
+        assert_eq!(
+            derive_agent_state_with_source(&record, much_later),
+            ("idle", "reported")
+        );
+
+        // The next PreInvocation hook, rather than a redraw, ends the rest.
+        record.reported_state = Some("working".into());
+        record.reported_state_at_ms = Some(much_later);
+        assert_eq!(
+            derive_agent_state_with_source(&record, much_later),
+            ("running", "reported")
+        );
+
+        // Process exit still takes precedence over an idle report.
+        record.reported_state = Some("idle".into());
+        record.phase = Phase::Exited;
+        assert_eq!(
+            derive_agent_state_with_source(&record, much_later),
+            ("exited", "heuristic")
+        );
+    }
+
+    #[test]
     fn newer_pty_output_retracts_a_reported_idle() {
         let mut record = sample_record(Phase::Running);
         record.reported_state = Some("idle".to_string());

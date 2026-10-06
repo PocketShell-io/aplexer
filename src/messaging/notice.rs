@@ -80,11 +80,19 @@ fn claim_notice(paths: &Paths, identity: &SessionIdentity) -> Result<Option<(usi
     // addressing and retained-message filtering, nonblocking locks); the
     // claim bookkeeping below is guarded by its own dedicated lock so two
     // concurrent callbacks can never both notice the same ids.
-    let snapshot = match crate::coordination::unread_messages(paths, identity.id) {
-        Ok(messages) => messages,
+    //
+    // An incomplete snapshot (a busy mailbox or cursor was skipped) must
+    // not touch the claim state at all: `retain` below treats `unread` as
+    // authoritative, and pruning against a partial answer would erase
+    // claims for messages the skip merely hid — the next callback would
+    // re-notice what a peer was already told about. Quietly doing nothing
+    // keeps the claim intact for the next pass.
+    let snapshot = match crate::coordination::inbox_snapshot(paths, identity.id) {
+        Ok(snapshot) if snapshot.complete => snapshot,
+        Ok(_) => return Ok(None),
         Err(_) => return Ok(None),
     };
-    let unread: Vec<Uuid> = snapshot.iter().map(|message| message.id).collect();
+    let unread: Vec<Uuid> = snapshot.unread.iter().map(|message| message.id).collect();
     let home = identity.workspace.as_deref().unwrap();
     let mp = match ensure_workspace_nonblocking(paths, home) {
         Ok(mp) => mp,

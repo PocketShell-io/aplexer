@@ -87,6 +87,22 @@ pub(crate) fn verify_workspace_metadata(
     Ok(())
 }
 
+/// The reverse mapping every mailbox carries: `workspace.json` names the
+/// canonical workspace the key directory was derived from. The mapping is
+/// only adopted when re-deriving the key from the named workspace reproduces
+/// the directory name — a stray or hand-edited metadata file contributes
+/// nothing rather than pointing the scan at a foreign mailbox.
+pub(crate) fn reverse_metadata(directory: &Path) -> Option<PathBuf> {
+    let metadata_path = directory.join("workspace.json");
+    let bytes = read_bounded_regular_file(&metadata_path, "mailbox metadata", 64 * 1024).ok()??;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let workspace = PathBuf::from(value.get("workspace")?.as_str()?);
+    if workspace_key(&workspace) != directory.file_name()?.to_str()? {
+        return None;
+    }
+    Some(workspace)
+}
+
 fn initialize_workspace_dir(mp: &MessagePaths, canonical_workspace: &Path) -> Result<()> {
     ensure_private_dir(&mp.workspace_dir)?;
     ensure_private_dir(&mp.msgs_dir)?;

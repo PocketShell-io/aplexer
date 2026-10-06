@@ -7,6 +7,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -165,4 +167,45 @@ fn json_capture_keeps_exact_utf8_as_an_optional_convenience() {
     assert_eq!(value["encoding"], "base64");
     assert_eq!(value["data"], "aGVsbG8sIOS4lueVjAo=");
     assert_eq!(value["utf8"], "hello, 世界\n");
+}
+
+#[test]
+fn screen_svg_capture_renders_a_live_session() {
+    let harness = Harness::new();
+    let workspace = TempDir::new().unwrap();
+    let start = harness
+        .command()
+        .args([
+            "--json",
+            "start",
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            "--tag",
+            "svgtest",
+            "--",
+            "/bin/bash",
+            "--norc",
+        ])
+        .output()
+        .unwrap();
+    assert!(start.status.success(), "{start:?}");
+    let record: Value = serde_json::from_slice(&start.stdout).unwrap();
+    let id = record["id"].as_str().unwrap().to_string();
+
+    // Give the shell a beat to draw its prompt, then capture the screen
+    // as SVG (client-side rendering -- no worker upgrade needed).
+    thread::sleep(Duration::from_millis(800));
+    let svg = harness
+        .command()
+        .args(["capture", &id, "--screen", "--svg"])
+        .output()
+        .unwrap();
+    let _ = harness.command().args(["kill", &id]).output();
+    assert!(svg.status.success(), "{svg:?}");
+    let text = String::from_utf8(svg.stdout).unwrap();
+    assert!(text.starts_with("<svg"), "{text}");
+    assert!(text.contains("</svg>"), "{text}");
+    // The status bar names the session, the grid carries the drawn prompt.
+    assert!(text.contains("svgtest"), "{text}");
+    assert!(text.contains("font-family"), "{text}");
 }

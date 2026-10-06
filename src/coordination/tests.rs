@@ -715,3 +715,49 @@ fn unread_and_mailbox_listing_tolerate_a_missing_record() {
     assert_eq!(unread.len(), 1);
     assert_eq!(unread[0].id, message.id);
 }
+
+/// The snapshot never blocks or errors on a busy mailbox: that pass skips
+/// it, and once the lock is released the next pass answers normally. The
+/// snapshot's two halves stay consistent with the standalone wrappers,
+/// which are the same single pass.
+#[test]
+fn snapshot_skips_a_busy_mailbox_and_matches_the_wrappers() {
+    use crate::messaging::mailbox_lock_path;
+    let isolated = isolated();
+    let home = TempDir::new().unwrap();
+    let foreign = TempDir::new().unwrap();
+    let me = record_at(
+        &isolated.paths,
+        home.path(),
+        "skipper",
+        Phase::Running,
+        true,
+    );
+    ensure_workspace(&isolated.paths, foreign.path()).unwrap();
+    let addressed = envelope(
+        foreign.path(),
+        Recipient::Tag {
+            tag: "skipper".to_string(),
+            session_id: Some(me),
+        },
+    );
+    write_message(&isolated.paths, &addressed).unwrap();
+    let foreign_canonical = canonical_workspace(foreign.path()).unwrap();
+
+    let mp = crate::messaging::message_paths(&isolated.paths, &foreign_canonical);
+    let held = crate::FileLock::exclusive(&mailbox_lock_path(&mp), true).unwrap();
+    let snapshot = inbox_snapshot(&isolated.paths, me).unwrap();
+    assert!(!snapshot.mailboxes.contains(&foreign_canonical));
+    assert!(snapshot.unread.is_empty());
+    drop(held);
+
+    let snapshot = inbox_snapshot(&isolated.paths, me).unwrap();
+    assert_eq!(
+        snapshot.unread.iter().map(|m| m.id).collect::<Vec<_>>(),
+        [addressed.id]
+    );
+    assert_eq!(
+        mailbox_workspaces(&isolated.paths, me).unwrap(),
+        snapshot.mailboxes
+    );
+}

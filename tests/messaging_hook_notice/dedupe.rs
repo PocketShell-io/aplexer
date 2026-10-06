@@ -20,6 +20,33 @@ fn concurrent_claims_dedupe_and_cooldown_retries() {
     assert_retry_after_cooldown(&harness, &recipient, &sent);
 }
 
+#[test]
+fn a_contended_pass_never_destroys_an_existing_notice_claim() {
+    let harness = Harness::new();
+    let sender = harness.record(Phase::Exited, None, b"");
+    let recipient = engine_record(&harness, sender.workspace.as_path(), "codex");
+    let sent = send(&harness, &sender, &recipient);
+    let first = notice(&harness, &recipient, "codex", &hook_input(false));
+    assert!(context(&first).contains(sent["id"].as_str().unwrap()));
+
+    // A hook firing while the mailbox lock is held must stay quiet without
+    // rewriting the claim file: its snapshot is partial, so pruning claims
+    // against it would erase the claim above and the next hook would
+    // re-notice a message that was already announced.
+    let mp = message_paths(&harness.paths(), &recipient.workspace);
+    let mailbox_lock = FileLock::exclusive(&mp.workspace_dir.join(".mailbox.lock"), false).unwrap();
+    let contended = notice(&harness, &recipient, "codex", &hook_input(false));
+    assert!(contended.status.success() && contended.stdout.is_empty());
+    drop(mailbox_lock);
+
+    let after = notice(&harness, &recipient, "codex", &hook_input(false));
+    assert!(after.status.success() && after.stdout.is_empty());
+    assert!(mp
+        .cursors_dir
+        .join(format!("{}.notice", recipient.id))
+        .exists());
+}
+
 fn parallel_hooks(harness: &Harness, recipient: &SessionRecord) -> Vec<Output> {
     let children: Vec<_> = (0..8)
         .map(|_| {

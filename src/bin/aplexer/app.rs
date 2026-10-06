@@ -60,6 +60,8 @@ mod attach_session;
 mod attach_threads;
 #[path = "capture_commands.rs"]
 mod capture_commands;
+#[path = "capture_svg.rs"]
+mod capture_svg;
 #[path = "cli.rs"]
 mod cli;
 #[path = "cli_coordination_args.rs"]
@@ -153,6 +155,7 @@ pub(crate) use attach_protocol::*;
 pub(crate) use attach_session::*;
 pub(crate) use attach_threads::*;
 pub(crate) use capture_commands::*;
+pub(crate) use capture_svg::*;
 pub(crate) use cli::*;
 pub(crate) use cli_coordination_args::*;
 pub(crate) use cli_message_args::*;
