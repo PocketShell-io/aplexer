@@ -36,11 +36,16 @@ pub(super) fn write_initial_record(
     // `a start`. Mode 0600: it carries secrets.
     let launch_environment_path = paths.runtime_session(id).join("launch-environment.json");
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Windows: the file inherits the owner-only DACL of the private
+        // runtime session directory created above.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
             .open(&launch_environment_path)
             .with_context(|| format!("create {}", launch_environment_path.display()))?;
         serde_json::to_writer_pretty(&mut file, &launch.env)
@@ -109,6 +114,7 @@ pub(super) fn spawn_worker_process(
     // setsid() launch with a printed reason -- the escape must never
     // turn into a broken start, and the honest placement warning from
     // `start_session` covers the degraded shape.
+    #[cfg(unix)]
     if crate::placement::system_scope_requested() {
         match crate::system_scope_escape_decision() {
             Ok(true) => {
@@ -146,6 +152,7 @@ pub(super) fn spawn_worker_process(
             .arg("--cols")
             .arg(cols.to_string());
     }
+    #[cfg(unix)]
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() < 0 {
@@ -172,7 +179,13 @@ pub(super) fn spawn_worker_process(
             Ok(())
         });
     }
-    startup.track_child(command.spawn().context("spawn worker")?);
+    #[cfg(unix)]
+    let child = command.spawn().context("spawn worker")?;
+    // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW, with job
+    // breakaway when the launcher's job allows it (see sys::windows::pty).
+    #[cfg(windows)]
+    let child = crate::process::spawn_detached_worker(&mut command).context("spawn worker")?;
+    startup.track_child(child);
     Ok(())
 }
 
