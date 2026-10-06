@@ -4,6 +4,8 @@
 mod codex_notify;
 mod drivers;
 mod nested;
+#[cfg(windows)]
+mod windows;
 
 use super::*;
 

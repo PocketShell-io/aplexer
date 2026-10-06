@@ -93,6 +93,8 @@ mod nested;
 mod notice;
 #[cfg(test)]
 mod tests;
+#[cfg(windows)]
+mod winshell;
 
 use crate::persist::atomic_write_bytes_with_mode;
 use anyhow::{Context, Result};
@@ -174,21 +176,6 @@ pub const OPENCODE_PLUGIN_FILENAME: &str = "aplexer-state-report.js";
 /// Shell-quote one argv word (the resolved `a` binary path) for embedding
 /// in a hook `command` string. Paths are almost always boring; quote only
 /// when needed so the common case stays readable in the user's config.
-#[cfg(windows)]
-fn shell_quote(word: &str) -> String {
-    // Forward slashes survive cmd, PowerShell and bash unquoted (a bare
-    // `C:\x\a.exe` loses its backslashes under bash); double quotes are the
-    // one quoting form cmd and bash share, and a path cannot contain `"`.
-    let word = word.replace('\\', "/");
-    if !word.is_empty()
-        && word
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"@%_-+=:,./".contains(&b))
-    {
-        return word;
-    }
-    format!("\"{word}\"")
-}
 #[cfg(not(windows))]
 fn shell_quote(word: &str) -> String {
     if !word.is_empty()
@@ -207,9 +194,12 @@ fn shell_quote(word: &str) -> String {
 pub fn state_report_command(a_bin: &str, state: &str) -> String {
     #[cfg(windows)]
     {
-        // `|| true` is not portable to cmd/PowerShell; `a state-report`'s
-        // exit status is the hook's.
-        format!("{} state-report {state}", shell_quote(a_bin))
+        // `|| true` is bash-only; see `winshell` for the per-shell forms.
+        winshell::command_line(
+            winshell::HookShell::from_env(),
+            a_bin,
+            &format!("state-report {state}"),
+        )
     }
     #[cfg(not(windows))]
     format!("{} state-report {state} || true", shell_quote(a_bin))
@@ -231,7 +221,17 @@ fn reports_state(command: &str, state: &str) -> bool {
     if let Some(engine) = state.strip_prefix("awareness:") {
         return reports_context(command, engine);
     }
-    let words: Vec<&str> = command.split_whitespace().collect();
+    // Windows forms may close a word with a wrapper quote or `;`.
+    let words: Vec<&str> = command
+        .split_whitespace()
+        .map(|w| {
+            if cfg!(windows) {
+                w.trim_end_matches(['"', '\'', ';'])
+            } else {
+                w
+            }
+        })
+        .collect();
     words
         .windows(2)
         .any(|pair| pair[0] == "state-report" && pair[1] == state)

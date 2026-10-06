@@ -27,7 +27,11 @@ const CONTEXT_INFIX: &str = " context hook --engine ";
 pub(crate) fn context_command(a_bin: &str, engine: &str) -> String {
     #[cfg(windows)]
     {
-        format!("{} context hook --engine {engine}", shell_quote(a_bin))
+        winshell::command_line(
+            winshell::HookShell::from_env(),
+            a_bin,
+            &format!("context hook --engine {engine}"),
+        )
     }
     #[cfg(not(windows))]
     format!(
@@ -39,6 +43,11 @@ pub(crate) fn context_command(a_bin: &str, engine: &str) -> String {
 /// The engine named by a current awareness command (either tail form), or
 /// `None` when the command is not one.
 fn awareness_engine(command: &str) -> Option<&str> {
+    // Windows forms (`|| exit 0`, `; exit 0` and its powershell wrapper
+    // quote) carry no marker; peel them first.
+    #[cfg(windows)]
+    let mut rest = winshell::strip_tail(command);
+    #[cfg(not(windows))]
     let mut rest = command.trim_end();
     let marker_tail = format!(" # {AWARENESS_MARKER}");
     let had_marker = if let Some(stripped) = rest.strip_suffix(&marker_tail) {
@@ -111,9 +120,10 @@ mod form_tests {
     #[test]
     fn windows_commands_avoid_posix_tails_and_quote_spaces() {
         let command = context_command(r"C:\Program Files\a\a.exe", "codex");
+        // Nonexistent path: no 8.3 name, so the universal wrapper.
         assert_eq!(
             command,
-            "\"C:/Program Files/a/a.exe\" context hook --engine codex"
+            "powershell.exe -NoProfile -NonInteractive -Command \"& 'C:/Program Files/a/a.exe' context hook --engine codex; exit 0\""
         );
         assert!(reports_context(&command, "codex"));
         let report = state_report_command(r"C:\bin\a.exe", "idle");

@@ -140,5 +140,76 @@ class TestArgumentForwarding(unittest.TestCase):
         finally:
             os.unlink(fake_binary)
 
+class TestWindowsLaunchCopy(unittest.TestCase):
+    """The Windows launcher runs a private copy so the wheel's exe stays unlocked."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.local = os.path.join(self.tmp.name, "local")
+        os.makedirs(self.local)
+        self.binary = os.path.join(self.tmp.name, "wheel", "aplexer.exe")
+        os.makedirs(os.path.dirname(self.binary))
+        with open(self.binary, "wb") as f:
+            f.write(b"v1" * 100)
+        patcher = mock.patch.dict(os.environ, {"LOCALAPPDATA": self.local})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("APLEXER_RUN_IN_PLACE", None)
+
+    def test_copy_is_created_once_and_reused(self):
+        first = _main._launch_copy(self.binary)
+        self.assertNotEqual(os.path.abspath(first), os.path.abspath(self.binary))
+        self.assertTrue(first.startswith(os.path.join(self.local, "aplexer", "bin")))
+        with open(first, "rb") as f:
+            self.assertEqual(f.read(), b"v1" * 100)
+        self.assertEqual(_main._launch_copy(self.binary), first)
+
+    def test_new_build_gets_its_own_copy_and_run_in_place_opts_out(self):
+        first = _main._launch_copy(self.binary)
+        with open(self.binary, "wb") as f:
+            f.write(b"v2" * 50)
+        second = _main._launch_copy(self.binary)
+        self.assertNotEqual(first, second)
+        with mock.patch.dict(os.environ, {"APLEXER_RUN_IN_PLACE": "1"}):
+            self.assertEqual(_main._launch_copy(self.binary), self.binary)
+
+    def test_stale_unused_copies_are_swept_but_fresh_ones_stay(self):
+        stale = _main._launch_copy(self.binary)
+        stale_dir = os.path.dirname(stale)
+        old = os.path.getmtime(stale_dir) - 7200
+        os.utime(stale_dir, (old, old))
+        with open(self.binary, "wb") as f:
+            f.write(b"v2" * 50)
+        fresh = _main._launch_copy(self.binary)
+        self.assertFalse(os.path.exists(stale_dir))
+        self.assertTrue(os.path.isfile(fresh))
+
+    def test_missing_localappdata_falls_back_to_bundled_binary(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("LOCALAPPDATA")
+            self.assertEqual(_main._launch_copy(self.binary), self.binary)
+
+    @unittest.skipUnless(sys.platform == "win32", "needs Windows file locking")
+    def test_running_copy_does_not_lock_the_wheel_binary(self):
+        system_exe = os.path.join(os.environ["SystemRoot"], "System32", "ping.exe")
+        shutil_copy = __import__("shutil").copyfile
+        shutil_copy(system_exe, self.binary)
+        target = _main._launch_copy(self.binary)
+        proc = subprocess.Popen(
+            [target, "-n", "30", "127.0.0.1"],
+            stdout=subprocess.DEVNULL,
+        )
+        try:
+            # The "upgrade": overwrite and delete the wheel's exe while a
+            # session still runs from the copy.
+            with open(self.binary, "wb") as f:
+                f.write(b"upgraded")
+            os.unlink(self.binary)
+            self.assertIsNone(proc.poll())
+        finally:
+            proc.kill()
+            proc.wait()
+
 if __name__ == "__main__":
     unittest.main()
