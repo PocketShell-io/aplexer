@@ -698,7 +698,10 @@ pub(crate) fn status_bar_sequence(
         .as_bytes(),
     );
     seq.extend_from_slice(format!("\x1b[{};1H", geom.rows).as_bytes());
-    seq.extend_from_slice(b"\x1b[2K\x1b[7m");
+    // Reset the pen BEFORE the erase: the workload's SGR (e.g. PSReadLine's
+    // colours) would otherwise tint the bar, and background-colour-erase
+    // would fill the cleared row with the workload's background.
+    seq.extend_from_slice(b"\x1b[0m\x1b[2K\x1b[7m");
     seq.extend_from_slice(text.as_bytes());
     seq.extend_from_slice(b"\x1b[0m");
     seq.extend_from_slice(restore);

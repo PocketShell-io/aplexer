@@ -753,3 +753,28 @@ fn status_bar_elides_siblings_instead_of_dropping_layouts() {
     let tiny = status_bar_text(&ctx, 24);
     assert!(tiny.contains("^b ?"), "{tiny:?}");
 }
+
+/// Regression: the bar is reverse video drawn over whatever SGR pen the
+/// workload left set (e.g. `\x1b[41m` from PSReadLine). Both bar paths must
+/// reset the pen before the erase (background-colour-erase) and before `7m`.
+#[test]
+fn bar_sequences_reset_the_pen_before_erase_and_reverse() {
+    let geom = TermGeom {
+        rows: 24,
+        cols: 80,
+        reserved: true,
+    };
+    let find = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).position(|w| w == needle);
+    for seq in [
+        status_bar_sequence(geom, "bar", None, b"\x1b[41m\x1b[5;5H"),
+        status_bar_sequence(geom, "bar", Some((2, 10)), b""),
+        scroll_bar_sequence(geom, "bar"),
+    ] {
+        let reset = find(&seq, b"\x1b[0m").expect("pen reset present");
+        let erase = find(&seq, b"\x1b[2K").expect("erase present");
+        let reverse = find(&seq, b"\x1b[7m").expect("reverse video present");
+        assert!(reset < erase, "reset must precede erase: {seq:?}");
+        assert!(reset < reverse, "reset must precede reverse: {seq:?}");
+        assert!(erase < reverse, "{seq:?}");
+    }
+}

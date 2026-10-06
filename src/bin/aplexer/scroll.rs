@@ -164,7 +164,9 @@ pub(crate) fn scroll_bar_sequence(geom: TermGeom, text: &str) -> Vec<u8> {
     let mut seq = Vec::new();
     seq.extend_from_slice(b"\x1b[?25l");
     seq.extend_from_slice(format!("\x1b[{};1H", geom.rows).as_bytes());
-    seq.extend_from_slice(b"\x1b[2K\x1b[7m");
+    // Reset the pen BEFORE the erase so neither the workload's colours nor
+    // background-colour-erase leak into the bar.
+    seq.extend_from_slice(b"\x1b[0m\x1b[2K\x1b[7m");
     seq.extend_from_slice(text.as_bytes());
     seq.extend_from_slice(b"\x1b[0m\x1b[?25l");
     seq
