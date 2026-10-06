@@ -40,14 +40,17 @@ use crate::agent_kind::{
     DEFAULT_PROC_ROOT,
 };
 use crate::{
-    atomic_write_json, canonical_workspace, cleanup_recorded_cgroup_until, command_exists,
-    ensure_private_dir, ensure_sigchld_compatible_for_child_management, io_kind,
+    atomic_write_json, canonical_workspace, command_exists, ensure_private_dir,
+    ensure_sigchld_compatible_for_child_management, io_kind,
     kill_grace_duration, list_records, parse_byte_size, public_session_record, read_frame,
     read_persisted_history_tail, read_record, read_response, read_session_record, reap_verdict,
     resolve_record, response_result, session_metadata_env, validate_tag, worker_executable,
     write_frame, write_json, Config, ContainmentReap, FileLock, FrameKind, Limits, Operation,
     Paths, Phase, Request, SessionRecord, MAX_FRAME_BYTES, SCHEMA_VERSION,
 };
+
+#[cfg(target_os = "linux")]
+use crate::cleanup_recorded_cgroup_until;
 
 struct LaunchEnvironmentGuard(PathBuf);
 

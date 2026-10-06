@@ -114,8 +114,14 @@ pub(super) struct StartupGuard {
     pub(super) failure_record: SessionRecord,
     pub(super) cgroup: Option<Cgroup>,
     pub(super) cgroup_setup_started: bool,
-    pub(super) child: Option<Arc<Mutex<Option<Child>>>>,
+    pub(super) child: Option<Arc<Mutex<Option<StartupChild>>>>,
 }
+
+/// The workload leader handle the guard owns until startup commits.
+#[cfg(unix)]
+pub(super) type StartupChild = Child;
+#[cfg(windows)]
+pub(super) type StartupChild = crate::sys::windows::pty::Workload;
 
 impl StartupGuard {
     pub(super) fn new(paths: &Paths, record: &SessionRecord) -> Self {
@@ -168,11 +174,17 @@ impl StartupGuard {
             match slot.lock() {
                 Ok(mut slot) => {
                     if let Some(mut child) = slot.take() {
+                        #[cfg(unix)]
                         if let Err(error) = child.kill() {
                             if error.kind() != io::ErrorKind::InvalidInput {
                                 cleanup_failures
                                     .push(format!("kill startup workload leader: {error}"));
                             }
+                        }
+                        #[cfg(windows)]
+                        if let Err(error) = child.terminate(crate::sys::windows::job::KILLED_EXIT_CODE) {
+                            cleanup_failures
+                                .push(format!("kill startup workload leader: {error}"));
                         }
                         if let Err(error) = child.wait() {
                             cleanup_failures.push(format!("reap startup workload leader: {error}"));
@@ -372,7 +384,10 @@ pub(super) fn bring_up(
         // wholesale. Record where we actually are while we can still read
         // it -- after a manager-wide kill the path is gone and the failure
         // is unprovable, exactly the incident's `yolo` post-mortem problem.
-        record.worker_cgroup = crate::placement::read_process_cgroup(std::process::id());
+        #[cfg(target_os = "linux")]
+        {
+            record.worker_cgroup = crate::placement::read_process_cgroup(std::process::id());
+        }
         record.updated_at_ms = now_ms();
         startup.failure_record = record.clone();
         // Publish this worker's registration by replacement, and probe
@@ -415,28 +430,72 @@ pub(super) fn bring_up(
         // scope's initial process), so the containment locator is only
         // known after the spawn below -- the durable record is written
         // immediately after, before any injected or real post-spawn failure.
-        let cgroup_plan =
-            ScopePlan::prepare(id, &record.limits).context("resolve workload scope")?;
-        startup_checkpoint("after_cgroup")?;
-        let (master_read, slave) = open_pty(rows, cols)?;
-        let master_write = master_read.try_clone()?;
-        let child_result = spawn_workload(
-            &record,
-            &launch_environment.0,
-            master_read.as_raw_fd(),
-            slave,
-            cgroup_plan,
-            || {
-                startup.cgroup_setup_started = true;
-            },
-        );
-        // Launch values are one-shot: overwrite them as soon as spawn has
-        // either succeeded or failed, never retaining them in the accept
-        // loop or its background threads.
-        drop(launch_environment);
-        let (child, cgroup, workload_pid) = child_result?;
+        #[cfg(unix)]
+        let (child, cgroup, workload_pid, master_read, master_write) = {
+            let cgroup_plan =
+                ScopePlan::prepare(id, &record.limits).context("resolve workload scope")?;
+            startup_checkpoint("after_cgroup")?;
+            let (master_read, slave) = open_pty(rows, cols)?;
+            let master_write = master_read.try_clone()?;
+            let child_result = spawn_workload(
+                &record,
+                &launch_environment.0,
+                master_read.as_raw_fd(),
+                slave,
+                cgroup_plan,
+                || {
+                    startup.cgroup_setup_started = true;
+                },
+            );
+            // Launch values are one-shot: overwrite them as soon as spawn has
+            // either succeeded or failed, never retaining them in the accept
+            // loop or its background threads.
+            drop(launch_environment);
+            let (child, cgroup, workload_pid) = child_result?;
+            (child, cgroup, workload_pid, master_read, master_write)
+        };
+        // Windows: ConPTY master, one named Job Object per session
+        // (`aplexer-<uuid>`, KILL_ON_JOB_CLOSE) that the workload is born
+        // inside, wrapped in the job-backed `Cgroup` shim so the runtime's
+        // containment code is shared with Linux.
+        #[cfg(windows)]
+        let (child, cgroup, workload_pid, master_read, master_write) = {
+            use crate::sys::windows::{job, pty::PtyMaster, signal};
+            startup_checkpoint("after_cgroup")?;
+            let pty = PtyMaster::open(rows, cols).context("create pseudoconsole")?;
+            let limits = job::JobLimits {
+                memory_bytes: record.limits.memory_bytes,
+                pids: record.limits.pids,
+                cpu_quota_us: record.limits.cpu_quota_us,
+                cpu_period_us: record.limits.cpu_period_us,
+            };
+            let session_job = job::Job::create(id, &limits).context("create session job")?;
+            job::install_session_job(session_job.clone());
+            let cgroup = Cgroup::new(session_job.clone());
+            // From here the job exists: let a failed startup kill it.
+            startup.cgroup = Some(cgroup.clone());
+            let input = pty.writer().context("duplicate PTY input handle")?;
+            signal::install_input_writer(move |bytes| {
+                let mut input = &input;
+                input.write_all(bytes)?;
+                input.flush()
+            });
+            let child_result = spawn_workload(
+                &record,
+                &launch_environment.0,
+                &pty,
+                Some(session_job.as_raw_handle()),
+            );
+            drop(launch_environment);
+            let (child, workload_pid) = child_result?;
+            let master_write = PtyWrite::new(pty.clone()).context("open PTY input")?;
+            (child, Some(cgroup), workload_pid, pty, master_write)
+        };
         startup.cgroup = cgroup.clone();
+        #[cfg(unix)]
         let pid = child.id();
+        #[cfg(windows)]
+        let pid = child.pid();
         // Claim the leader before any code path can wait on it. The reaper
         // thread does not exist yet, but the claim is what documents (and
         // enforces) that `run_child_waiter` owns this pid's exit status.
@@ -446,6 +505,8 @@ pub(super) fn bring_up(
         let child_slot = Arc::new(Mutex::new(Some(child)));
         startup.child = Some(Arc::clone(&child_slot));
         record.workload_pid = Some(workload_pid);
+        // Windows records no cgroup locator: the job name derives from the id.
+        #[cfg(unix)]
         if cgroup.is_some() {
             record.containment_cgroup =
                 cgroup.as_ref().map(|cgroup| cgroup.locator().to_path_buf());
@@ -458,15 +519,20 @@ pub(super) fn bring_up(
         // straight from the scope's membership, so a mismatch would mean
         // systemd placed something else; say so in worker.log instead of
         // silently trusting the persisted locator.
-        record.workload_cgroup = crate::placement::read_process_cgroup(workload_pid);
-        if let (Some(cgroup), Some(actual)) = (cgroup.as_ref(), record.workload_cgroup.as_deref()) {
-            let expected = cgroup.proc_path();
-            if actual != expected {
-                log_best_effort(&format!(
-                    "warning: workload pid {workload_pid} is in cgroup {actual}, not the recorded \
-                     containment scope {expected}; resource limits may not apply to the \
-                     workload's real location"
-                ));
+        #[cfg(target_os = "linux")]
+        {
+            record.workload_cgroup = crate::placement::read_process_cgroup(workload_pid);
+            if let (Some(cgroup), Some(actual)) =
+                (cgroup.as_ref(), record.workload_cgroup.as_deref())
+            {
+                let expected = cgroup.proc_path();
+                if actual != expected {
+                    log_best_effort(&format!(
+                        "warning: workload pid {workload_pid} is in cgroup {actual}, not the recorded \
+                         containment scope {expected}; resource limits may not apply to the \
+                         workload's real location"
+                    ));
+                }
             }
         }
         startup.failure_record = record.clone();

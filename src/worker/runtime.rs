@@ -14,8 +14,33 @@ use super::*;
 /// to be `Write` for `&PtyMaster` and to offer `resize(rows, cols)`).
 #[cfg(unix)]
 pub(super) type PtyWrite = File;
+pub(super) struct PtyWrite {
+    master: crate::sys::windows::pty::PtyMaster,
+    input: File,
+}
+
 #[cfg(windows)]
-pub(super) type PtyWrite = crate::sys::windows::pty::PtyMaster;
+impl PtyWrite {
+    pub(super) fn new(master: crate::sys::windows::pty::PtyMaster) -> io::Result<Self> {
+        let input = master.writer()?;
+        Ok(Self { master, input })
+    }
+
+    pub(super) fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
+        self.master.resize(rows, cols)
+    }
+}
+
+#[cfg(windows)]
+impl Write for &PtyWrite {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        (&self.input).write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (&self.input).flush()
+    }
+}
 
 /// Wire signal numbers (the Linux values; the wire format is `i32` on every
 /// platform, see docs/windows-port.md "Signals").
@@ -122,8 +147,8 @@ pub(super) struct WorkerRuntime {
     pub(super) pty_write: Mutex<Option<Arc<PtyWrite>>>,
     pub(super) workload: Mutex<WorkloadState>,
     pub(super) terminal: Mutex<TerminalState>,
-    /// Linux only: Windows containment is the session Job Object (job agent).
-    #[cfg(target_os = "linux")]
+    /// Linux: the cgroup scope; Windows: the session Job Object wrapped in the
+    /// job-backed Cgroup shim.
     pub(super) cgroup: Mutex<Option<Cgroup>>,
     pub(super) kill_gate: Mutex<()>,
     pub(super) output: OutputHub,
@@ -439,10 +464,8 @@ impl WorkerRuntime {
         let cleanup_deadline = grace_deadline
             .checked_add(DESCENDANT_KILL_TIMEOUT)
             .ok_or_else(|| anyhow!("kill cleanup deadline overflow"))?;
-        #[cfg(target_os = "linux")]
         let cgroup = lock(&self.cgroup)?.clone();
         if signal == WIRE_SIGKILL {
-            #[cfg(target_os = "linux")]
             if let Some(cg) = &cgroup {
                 cg.kill_all_until(cleanup_deadline)?;
                 return Ok(());
@@ -455,9 +478,7 @@ impl WorkerRuntime {
             // Graceful stop: Ctrl-C on the PTY input; the escalation below
             // tears the job down if the workload outlives the grace window.
             windows_signal_action(signal)?;
-            let _ = self.send(&[0x03]);
         }
-        #[cfg(target_os = "linux")]
         if let Some(cg) = &cgroup {
             cg.signal_all_until(signal, cleanup_deadline)?;
         } else {
@@ -476,7 +497,6 @@ impl WorkerRuntime {
             thread::sleep(KILL_POLL_INTERVAL);
         }
         if self.workload_populated()? {
-            #[cfg(target_os = "linux")]
             if let Some(cg) = &cgroup {
                 cg.kill_all_until(cleanup_deadline)?;
                 return Ok(());
@@ -519,7 +539,6 @@ impl WorkerRuntime {
     /// session. Limited sessions use the kernel's cgroup membership; ordinary
     /// sessions use the worker's subreaper descendant tree.
     pub(super) fn workload_populated(&self) -> Result<bool> {
-        #[cfg(target_os = "linux")]
         if let Some(cgroup) = lock(&self.cgroup)?.as_ref() {
             return cgroup.populated();
         }

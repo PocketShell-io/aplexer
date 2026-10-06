@@ -237,6 +237,9 @@ pub(super) fn status_value(runtime: &WorkerRuntime) -> Result<Value> {
     // rather than added to the persisted record, so this never
     // costs a disk write and an old client's `serde_json` simply
     // ignores the unrecognized field.
+    // Windows has no foreground process group on a ConPTY: the field is
+    // simply absent there.
+    #[cfg(unix)]
     if let Some(fd) = lock(&runtime.pty_write)?.as_ref().map(|f| f.as_raw_fd()) {
         if let Some(cmd) = foreground_command(fd) {
             value["foreground_command"] = json!(cmd);

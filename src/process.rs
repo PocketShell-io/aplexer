@@ -554,6 +554,16 @@ mod windows_impl {
         spawn_detached_worker, spawn_workload as spawn_conpty_workload, PtyMaster, Workload,
     };
 
+    /// No SIGCHLD on Windows: nothing to normalize or validate.
+    pub fn normalize_sigchld_for_child_management() -> Result<()> {
+        Ok(())
+    }
+
+    /// No SIGCHLD on Windows: nothing to normalize or validate.
+    pub fn ensure_sigchld_compatible_for_child_management() -> Result<()> {
+        Ok(())
+    }
+
     /// Whether `pid` names a process that has not exited. Fails closed: when
     /// the process cannot be opened for a reason other than "no such pid"
     /// (access denied) it is reported alive.
