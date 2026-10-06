@@ -39,6 +39,11 @@ const MAX_MAILBOX_SCAN: usize = 512;
 pub struct InboxSnapshot {
     pub mailboxes: Vec<PathBuf>,
     pub unread: Vec<MessageEnvelope>,
+    /// False when a mailbox or cursor lock was too busy to take this pass,
+    /// so `unread` may undercount. Callers that derive durable state from
+    /// the answer (the notice claim) must treat an incomplete snapshot as
+    /// "unknown", not as authoritative emptiness.
+    pub complete: bool,
 }
 
 /// What mailboxes `id` reads and what in them is unread.
@@ -51,7 +56,9 @@ pub struct InboxSnapshot {
 /// mailbox or cursor is skipped for this pass rather than waited on or
 /// answered with an error — message files are only ever replaced
 /// atomically, so the next call sees a consistent picture — because the
-/// hottest caller is a hook running inside ordinary agent tool turns.
+/// hottest caller is a hook running inside ordinary agent tool turns. The
+/// [`InboxSnapshot::complete`] flag reports whether any skip happened, so
+/// callers that persist conclusions from the answer can decline instead.
 pub fn inbox_snapshot(paths: &Paths, id: Uuid) -> Result<InboxSnapshot> {
     // Opportunistic global maintenance. Errors are swallowed: pruning must
     // never fail a read.
@@ -68,7 +75,7 @@ pub fn inbox_snapshot(paths: &Paths, id: Uuid) -> Result<InboxSnapshot> {
         }
     }
     for claim in state::load_tolerant(paths, id).unwrap_or_default() {
-        if !subscribed.iter().any(|w| *w == claim.workspace) {
+        if !subscribed.contains(&claim.workspace) {
             subscribed.push(claim.workspace);
         }
     }
@@ -93,6 +100,7 @@ pub fn inbox_snapshot(paths: &Paths, id: Uuid) -> Result<InboxSnapshot> {
     let mut snapshot = InboxSnapshot {
         mailboxes: subscribed.clone(),
         unread: Vec::new(),
+        complete: true,
     };
     for workspace in &subscribed {
         process_mailbox(&mut snapshot, paths, id, tag, engine, workspace, true)?;
@@ -104,7 +112,7 @@ pub fn inbox_snapshot(paths: &Paths, id: Uuid) -> Result<InboxSnapshot> {
         // A subscription workspace's discovered directory is already done:
         // the subscription phase read it (its own duplicate-free list means
         // only discovery needs the duplicate check).
-        if snapshot.mailboxes.iter().any(|m| *m == workspace) {
+        if snapshot.mailboxes.contains(&workspace) {
             continue;
         }
         process_mailbox(&mut snapshot, paths, id, tag, engine, &workspace, false)?;
@@ -134,6 +142,7 @@ fn process_mailbox(
     // nonblocking, and message files are only ever replaced atomically, so
     // the listing under these locks is a consistent snapshot.
     let Ok(_mailbox) = FileLock::exclusive(&mailbox_lock_path(&mp), true) else {
+        snapshot.complete = false;
         return Ok(());
     };
     let messages = list_messages_in(&mp, workspace)?;
@@ -142,6 +151,7 @@ fn process_mailbox(
     }
     snapshot.mailboxes.push(workspace.to_path_buf());
     let Ok(_cursor) = FileLock::exclusive(&cursor_lock_path(&mp.cursors_dir, id), true) else {
+        snapshot.complete = false;
         return Ok(());
     };
     let mut cursor = read_cursor_file(&mp.cursors_dir.join(format!("{id}.json")))?;
