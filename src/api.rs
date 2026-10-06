@@ -3,6 +3,8 @@
 //! These functions are the source of truth. The CLI prints them; the Python
 //! package calls them in-process (no subprocess of `a`).
 
+#[cfg(windows)]
+use crate::sys::windows::pty::WorkerChild as Child;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -17,7 +19,9 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
+use std::process::Child;
+use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
