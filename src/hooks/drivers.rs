@@ -86,7 +86,7 @@ function safeArgs(args) {{
   if (!args || typeof args !== "object") return out;
   for (const [from, to] of Object.entries(SAFE_ARG_KEYS)) {{
     const value = args[from];
-    if (typeof value === "string" && value.startsWith("/")) out[to] = value;
+    if (typeof value === "string" && (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\"))) out[to] = value;
   }}
   return out;
 }}

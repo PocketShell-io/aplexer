@@ -28,7 +28,7 @@ fn write_target(path: &Path) -> Result<PathBuf> {
         return Ok(path.to_path_buf());
     }
     if let Ok(real) = fs::canonicalize(path) {
-        return Ok(real);
+        return Ok(strip_verbatim(real));
     }
     let link = fs::read_link(path).with_context(|| format!("read link {}", path.display()))?;
     Ok(if link.is_absolute() {
@@ -36,6 +36,24 @@ fn write_target(path: &Path) -> Result<PathBuf> {
     } else {
         path.parent().unwrap_or(Path::new("")).join(link)
     })
+}
+
+/// Drop the `\\?\` verbatim prefix `canonicalize` adds on Windows so the
+/// resolved target prints and compares like the path the user wrote.
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            if rest.as_bytes().get(1) == Some(&b':') {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    path
 }
 
 /// Atomically write text, preserving the existing file's mode and using
@@ -48,9 +66,13 @@ fn atomic_write_text_preserving_mode(path: &Path, text: &str) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("create directory {}", parent.display()))?;
     }
+    #[cfg(unix)]
     let mode = fs::metadata(&target)
         .map(|meta| meta.permissions().mode() & 0o777)
         .unwrap_or(0o600);
+    // Windows has no mode bits; the file inherits the directory's ACL.
+    #[cfg(not(unix))]
+    let mode = 0o600;
     atomic_write_bytes_with_mode(&target, text.as_bytes(), mode)
         .with_context(|| format!("write {}", target.display()))
 }

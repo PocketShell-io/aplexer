@@ -194,6 +194,24 @@ pub(crate) fn foreign_peers(
         .collect())
 }
 
+/// Drop the `\\?\` verbatim prefix Windows `canonicalize` adds, so prefix
+/// comparison against a plainly spelled workspace works. No-op elsewhere.
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            if rest.as_bytes().get(1) == Some(&b':') {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    path
+}
+
 /// Resolve `raw` to the destination whose peers matter: the nearest
 /// existing ancestor of the path (a tool may target a file that does not
 /// exist yet, and `file_path` names a file whose *directory* is the
@@ -217,7 +235,8 @@ pub(crate) fn outside_workspace(raw: &Path, workspace: &Path) -> Option<PathBuf>
     } else {
         canonical.parent()?.to_path_buf()
     };
-    if destination.starts_with(workspace) {
+    let destination = strip_verbatim(destination);
+    if destination.starts_with(strip_verbatim(workspace.to_path_buf())) {
         return None;
     }
     Some(destination)

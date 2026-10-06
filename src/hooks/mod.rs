@@ -100,6 +100,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 /// Engines `a init` manages. `zcodex` is intentionally absent: it is a
@@ -173,6 +174,22 @@ pub const OPENCODE_PLUGIN_FILENAME: &str = "aplexer-state-report.js";
 /// Shell-quote one argv word (the resolved `a` binary path) for embedding
 /// in a hook `command` string. Paths are almost always boring; quote only
 /// when needed so the common case stays readable in the user's config.
+#[cfg(windows)]
+fn shell_quote(word: &str) -> String {
+    // Forward slashes survive cmd, PowerShell and bash unquoted (a bare
+    // `C:\x\a.exe` loses its backslashes under bash); double quotes are the
+    // one quoting form cmd and bash share, and a path cannot contain `"`.
+    let word = word.replace('\\', "/");
+    if !word.is_empty()
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"@%_-+=:,./".contains(&b))
+    {
+        return word;
+    }
+    format!("\"{word}\"")
+}
+#[cfg(not(windows))]
 fn shell_quote(word: &str) -> String {
     if !word.is_empty()
         && word
@@ -188,6 +205,13 @@ fn shell_quote(word: &str) -> String {
 /// module docs): `a state-report` exits 1 outside an aplexer session, and a
 /// hook must never hold the agent open because of that.
 pub fn state_report_command(a_bin: &str, state: &str) -> String {
+    #[cfg(windows)]
+    {
+        // `|| true` is not portable to cmd/PowerShell; `a state-report`'s
+        // exit status is the hook's.
+        format!("{} state-report {state}", shell_quote(a_bin))
+    }
+    #[cfg(not(windows))]
     format!("{} state-report {state} || true", shell_quote(a_bin))
 }
 /// Whether a hook command string is a state-report hook (ours, or one the
@@ -294,12 +318,29 @@ pub fn resolve_targets(
 /// the environment. Relative XDG/GROK overrides are ignored (same policy
 /// as `Paths`: those must be absolute to mean anything).
 pub fn resolve_targets_from_env(profile_envs: &[BTreeMap<String, String>]) -> Result<HookTargets> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
-    let config_home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute());
+    #[cfg(windows)]
+    let (home, config_home) = {
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("USERPROFILE is not set"))?;
+        // OpenCode keeps its global config under `~/.config` on every OS;
+        // honour XDG_CONFIG_HOME like it does and ignore %APPDATA%.
+        let config_home = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute());
+        (home, config_home)
+    };
+    #[cfg(not(windows))]
+    let (home, config_home) = {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+        let config_home = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute());
+        (home, config_home)
+    };
     let grok_home = std::env::var_os("GROK_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute());

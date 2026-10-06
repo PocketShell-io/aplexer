@@ -24,7 +24,7 @@ pub(crate) enum TaskCommand {
     /// Opt-in scheduled launches over `task run` (the handoff plugin's
     /// wrapper). Nothing is scheduled until `enable` writes its single owned
     /// state file, and no timer is ever installed: `fire` is what your own
-    /// scheduler (cron, systemd timer, …) calls.
+    /// scheduler (cron, systemd timer, Windows Task Scheduler, …) calls.
     Handoff(TaskHandoffArgs),
 }
 

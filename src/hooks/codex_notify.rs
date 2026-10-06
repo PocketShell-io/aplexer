@@ -9,6 +9,22 @@ use super::*;
 /// Render our notify argv for `config.toml`: a `sh -c` wrapper so the hook
 /// always exits 0 (same non-blocking guarantee as the `|| true` commands).
 pub fn codex_notify_line(a_bin: &str) -> String {
+    #[cfg(windows)]
+    {
+        // No `sh` on Windows: run the binary directly as the notify argv.
+        let argv = [a_bin.replace('\\', "/"), "state-report".into(), "idle".into()];
+        let items: Vec<String> = argv
+            .iter()
+            .map(|word| serde_json::to_string(word).unwrap_or_else(|_| format!("{word:?}")))
+            .collect();
+        format!("notify = [{}]", items.join(", "))
+    }
+    #[cfg(not(windows))]
+    codex_notify_line_sh(a_bin)
+}
+
+#[cfg(not(windows))]
+fn codex_notify_line_sh(a_bin: &str) -> String {
     let inner = state_report_command(a_bin, "idle");
     let mut rendered = String::from("notify = [\"sh\", \"-c\", ");
     rendered.push_str(&serde_json::to_string(&inner).unwrap_or_else(|_| format!("{inner:?}")));

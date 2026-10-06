@@ -67,4 +67,46 @@ fn canonicalize_against(path: &Path, base: &Path) -> Option<PathBuf> {
     } else {
         canonical_workspace(&base.join(path)).ok()
     }
+    .map(strip_verbatim)
+}
+
+/// Windows `canonicalize` yields `\\?\C:\x` (or `\\?\UNC\srv\share`); git
+/// and users spell these `C:\x`, and stored declarations must compare equal
+/// across both spellings. No-op elsewhere.
+pub(crate) fn strip_verbatim(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            if rest.as_bytes().get(1) == Some(&b':') {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    path
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::strip_verbatim;
+    use std::path::PathBuf;
+
+    #[test]
+    fn strips_verbatim_drive_and_unc_prefixes() {
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\C:\work\repo")),
+            PathBuf::from(r"C:\work\repo")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\UNC\srv\share\x")),
+            PathBuf::from(r"\\srv\share\x")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"C:\plain")),
+            PathBuf::from(r"C:\plain")
+        );
+    }
 }
