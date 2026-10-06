@@ -12,8 +12,10 @@ use super::*;
 
 pub(super) static TERMINATION_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+#[cfg(unix)]
 pub(super) static TERMINATION_EVENT_FD: AtomicI32 = AtomicI32::new(-1);
 
+#[cfg(unix)]
 pub(super) fn notify_event_fd(fd: RawFd) {
     let value = 1u64;
     unsafe {
@@ -29,6 +31,7 @@ pub(super) fn notify_event_fd(fd: RawFd) {
 /// request the TERM/INT handler makes. The monitor thread answers both the
 /// same way: kill the contained workload, and the lifecycle finalizes and
 /// exits the process.
+#[cfg(unix)]
 pub(super) fn request_termination() {
     TERMINATION_REQUESTED.store(true, Ordering::SeqCst);
     let fd = TERMINATION_EVENT_FD.load(Ordering::Relaxed);
@@ -40,10 +43,12 @@ pub(super) fn request_termination() {
     }
 }
 
+#[cfg(unix)]
 extern "C" fn request_worker_termination(_: libc::c_int) {
     request_termination();
 }
 
+#[cfg(unix)]
 pub(super) fn create_worker_event_fd(context: &'static str) -> Result<RawFd> {
     let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
     if fd < 0 {
@@ -53,6 +58,7 @@ pub(super) fn create_worker_event_fd(context: &'static str) -> Result<RawFd> {
     Ok(fd)
 }
 
+#[cfg(unix)]
 pub(super) fn wait_for_event_fd(fd: RawFd, context: &'static str) -> Result<()> {
     let mut pollfd = libc::pollfd {
         fd,
@@ -98,6 +104,7 @@ pub(super) fn wait_for_event_fd(fd: RawFd, context: &'static str) -> Result<()> 
     }
 }
 
+#[cfg(unix)]
 pub(super) fn wait_for_termination_request() -> Result<()> {
     while !TERMINATION_REQUESTED.load(Ordering::SeqCst) {
         let fd = TERMINATION_EVENT_FD.load(Ordering::SeqCst);
@@ -113,6 +120,7 @@ pub(super) fn wait_for_termination_request() -> Result<()> {
 /// the gap before these handlers exist. Install first, then explicitly
 /// unblock; a pending signal is delivered to the handler and becomes a normal
 /// startup cancellation whose guard can unwind all resources.
+#[cfg(unix)]
 pub(super) fn install_termination_handlers() -> Result<()> {
     TERMINATION_REQUESTED.store(false, Ordering::SeqCst);
     let event_fd = create_worker_event_fd("termination")?;
@@ -159,6 +167,7 @@ pub(super) fn install_termination_handlers() -> Result<()> {
 // signalable, which is how they corrupted liveness answers as well (see
 // `process_alive`).
 
+#[cfg(unix)]
 pub(super) static CHILD_EVENT_FD: AtomicI32 = AtomicI32::new(-1);
 
 /// Pids of children this worker spawned and intends to wait on itself.
@@ -189,15 +198,18 @@ pub(super) static CHILD_EVENT_FD: AtomicI32 = AtomicI32::new(-1);
 /// `own_child_pid` registering the pid, a SIGCHLD-driven sweep could reap
 /// the new child first. `own_child_pid` checks the invariant in debug
 /// builds.
+#[cfg(unix)]
 pub(super) static OWNED_CHILD_PIDS: Mutex<BTreeSet<u32>> = Mutex::new(BTreeSet::new());
 
 /// Set once the SIGCHLD-driven reaper is armed; see `OWNED_CHILD_PIDS`.
+#[cfg(unix)]
 static REAPER_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Claim `pid` before anything can wait on it. Must be called on the
 /// spawning thread, between `Command::spawn` returning and the pid becoming
 /// reachable by the reaper -- which is only possible while the reaper is
 /// not yet armed (see `OWNED_CHILD_PIDS`).
+#[cfg(unix)]
 pub(crate) fn own_child_pid(pid: u32) {
     debug_assert!(
         !REAPER_ARMED.load(Ordering::SeqCst),
@@ -212,6 +224,7 @@ pub(crate) fn own_child_pid(pid: u32) {
 /// earlier would reopen exactly the status-stealing race this set prevents;
 /// releasing at all matters because pids are recycled, and a later adopted
 /// descendant that reuses this number must still be reapable.
+#[cfg(unix)]
 pub(crate) fn disown_child_pid(pid: u32) {
     if let Ok(mut owned) = OWNED_CHILD_PIDS.lock() {
         owned.remove(&pid);
@@ -221,6 +234,7 @@ pub(crate) fn disown_child_pid(pid: u32) {
 /// A poisoned registry reports every pid as owned: the failure mode of
 /// leaking a zombie is recoverable, and the failure mode of eating the
 /// workload's exit status is not.
+#[cfg(unix)]
 pub(super) fn child_pid_is_owned(pid: u32) -> bool {
     OWNED_CHILD_PIDS
         .lock()
@@ -231,6 +245,7 @@ pub(super) fn child_pid_is_owned(pid: u32) -> bool {
 /// SIGCHLD is the wakeup, never the work. The handler does one
 /// async-signal-safe `write(2)` to a nonblocking eventfd; all waiting and
 /// procfs reading happens on the reaper thread.
+#[cfg(unix)]
 extern "C" fn note_child_state_change(_: libc::c_int) {
     let fd = CHILD_EVENT_FD.load(Ordering::Relaxed);
     if fd >= 0 {
@@ -249,6 +264,7 @@ extern "C" fn note_child_state_change(_: libc::c_int) {
 /// accumulates zombies between sweeps. Reaping on the signal costs exactly
 /// one wakeup per adopted descendant that dies and nothing at all otherwise,
 /// which is the correct shape for an event that is genuinely an event.
+#[cfg(unix)]
 pub(super) fn install_child_reaper_handler() -> Result<RawFd> {
     let event_fd = create_worker_event_fd("child exit")?;
     CHILD_EVENT_FD.store(event_fd, Ordering::SeqCst);
@@ -285,6 +301,7 @@ pub(super) fn install_child_reaper_handler() -> Result<RawFd> {
 
 /// Wait for one specific child, without blocking and without ever naming
 /// `-1`. Returns whether a zombie was actually consumed.
+#[cfg(unix)]
 pub(super) fn reap_child_pid(pid: u32) -> Result<bool> {
     loop {
         let mut status = 0;
@@ -316,6 +333,7 @@ pub(super) fn reap_child_pid(pid: u32) -> Result<bool> {
 /// Enumerating procfs on each pass rather than looping on a single wait is
 /// what makes signal coalescing harmless: several descendants dying at once
 /// may raise a single SIGCHLD, and this still finds all of them.
+#[cfg(unix)]
 pub(super) fn reap_adopted_descendants() -> Result<usize> {
     let mut reaped = 0;
     for pid in direct_child_pids(std::process::id())? {
@@ -341,6 +359,7 @@ pub(super) fn reap_adopted_descendants() -> Result<usize> {
 /// There is therefore no timer and no backstop poll: an idle worker with no
 /// dying descendants performs zero wakeups here, which is what
 /// `tests/worker_idle_wakeups.rs` asserts.
+#[cfg(unix)]
 pub(super) fn run_child_reaper(event_fd: RawFd) {
     loop {
         if let Err(error) = reap_adopted_descendants() {
@@ -357,6 +376,7 @@ pub(super) fn run_child_reaper(event_fd: RawFd) {
     }
 }
 
+#[cfg(unix)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,3 +405,78 @@ mod tests {
         assert_eq!(unsafe { libc::close(fd) }, 0);
     }
 }
+
+// --- Windows -------------------------------------------------------------------
+//
+// No eventfd, no signal handlers, no SIGCHLD reaper, no child-ownership
+// registry: Windows has no zombies and no subreaper. Termination requests come
+// from the console control handler (Ctrl-C/Break/Close/Shutdown) or from
+// `request_termination`, and wake `wait_for_termination_request` through a
+// condition variable (no timer, so an idle worker stays idle).
+
+#[cfg(windows)]
+static TERMINATION_WAKER: (Mutex<()>, Condvar) = (Mutex::new(()), Condvar::new());
+
+/// Ask the worker to terminate from ordinary thread context.
+#[cfg(windows)]
+pub(super) fn request_termination() {
+    TERMINATION_REQUESTED.store(true, Ordering::SeqCst);
+    let _guard = TERMINATION_WAKER.0.lock();
+    TERMINATION_WAKER.1.notify_all();
+}
+
+#[cfg(windows)]
+pub(super) fn wait_for_termination_request() -> Result<()> {
+    let mut guard = TERMINATION_WAKER
+        .0
+        .lock()
+        .map_err(|_| anyhow!("worker termination lock poisoned"))?;
+    while !TERMINATION_REQUESTED.load(Ordering::SeqCst) {
+        guard = TERMINATION_WAKER
+            .1
+            .wait(guard)
+            .map_err(|_| anyhow!("worker termination lock poisoned"))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn console_control_handler(event: u32) -> i32 {
+    // CTRL_C_EVENT, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT,
+    // CTRL_SHUTDOWN_EVENT.
+    if matches!(event, 0 | 1 | 2 | 5 | 6) {
+        request_termination();
+        1
+    } else {
+        0
+    }
+}
+
+/// Route console control events into `request_termination`. A worker without
+/// a console simply never receives them; `request_termination` still works.
+#[cfg(windows)]
+pub(super) fn install_termination_handlers() -> Result<()> {
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+
+    TERMINATION_REQUESTED.store(false, Ordering::SeqCst);
+    if unsafe { SetConsoleCtrlHandler(Some(console_control_handler), 1) } == 0 {
+        return Err(io::Error::last_os_error()).context("install console control handler");
+    }
+    Ok(())
+}
+
+/// Windows has no ownership registry to keep: nothing reaps by `waitpid(-1)`.
+#[cfg(windows)]
+pub(crate) fn own_child_pid(_pid: u32) {}
+
+#[cfg(windows)]
+pub(crate) fn disown_child_pid(_pid: u32) {}
+
+/// Nothing to arm; kept so the spawn path reads the same on both platforms.
+#[cfg(windows)]
+pub(super) fn install_child_reaper_handler() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(super) fn run_child_reaper(_: ()) {}

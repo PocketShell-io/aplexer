@@ -14,11 +14,15 @@ pub(super) const STARTUP_CONTAINMENT_TIMEOUT: Duration = Duration::from_secs(2);
 /// A corrupt or hostile startup tree must not consume every descriptor in the
 /// launcher. The actual limit is reduced further to fit the launcher's live
 /// RLIMIT_NOFILE budget before any process is stopped.
+#[cfg(unix)]
 pub(super) const STARTUP_MAX_DESCENDANTS: usize = 4096;
+#[cfg(unix)]
 pub(super) const STARTUP_FD_RESERVE: u64 = 16;
 
+#[cfg(unix)]
 pub(super) type StartupDescendant = PidHandle;
 
+#[cfg(unix)]
 pub(super) fn signal_startup_descendant(
     descendant: &StartupDescendant,
     signal: i32,
@@ -29,6 +33,7 @@ pub(super) fn signal_startup_descendant(
     deadline.check("signalling startup process tree")
 }
 
+#[cfg(unix)]
 pub(super) fn pidfd_exited(descendant: &StartupDescendant, deadline: Deadline) -> Result<bool> {
     let mut pollfd = libc::pollfd {
         fd: descendant.as_raw_fd(),
@@ -58,6 +63,7 @@ pub(super) fn pidfd_exited(descendant: &StartupDescendant, deadline: Deadline) -
     }
 }
 
+#[cfg(unix)]
 pub(super) fn process_state_and_start_time(
     pid: u32,
     deadline: Deadline,
@@ -87,6 +93,7 @@ pub(super) fn process_state_and_start_time(
     Ok(Some((state, start_time_ticks)))
 }
 
+#[cfg(unix)]
 pub(super) fn startup_descendant_quiescent(
     descendant: &StartupDescendant,
     deadline: Deadline,
@@ -110,6 +117,7 @@ pub(super) fn startup_descendant_quiescent(
     }
 }
 
+#[cfg(unix)]
 pub(super) fn ensure_startup_worker_stopped(
     pid: u32,
     start_time_ticks: u64,
@@ -131,6 +139,7 @@ pub(super) fn ensure_startup_worker_stopped(
 /// The stopped worker's live descendant tree, bounded by `max_descendants`
 /// and `deadline`; the worker must still be stopped on both sides of the
 /// walk, or the tree it describes is already stale.
+#[cfg(unix)]
 pub(super) fn startup_descendant_pids(
     root: u32,
     root_start_time: u64,
@@ -145,6 +154,7 @@ pub(super) fn startup_descendant_pids(
     Ok(descendants)
 }
 
+#[cfg(unix)]
 pub(super) fn wait_for_worker_stopped(
     pid: u32,
     start_time_ticks: u64,
@@ -169,6 +179,7 @@ pub(super) fn wait_for_worker_stopped(
     }
 }
 
+#[cfg(unix)]
 pub(super) fn stop_and_pin_startup_descendants(
     root: u32,
     root_start_time: u64,
@@ -219,6 +230,7 @@ pub(super) fn stop_and_pin_startup_descendants(
     }
 }
 
+#[cfg(unix)]
 pub(super) fn wait_for_descendant_exit(
     descendants: &BTreeMap<u32, StartupDescendant>,
     deadline: Deadline,
@@ -239,6 +251,7 @@ pub(super) fn wait_for_descendant_exit(
     }
 }
 
+#[cfg(unix)]
 pub(super) fn safe_startup_descendant_capacity(deadline: Deadline) -> Result<usize> {
     deadline.check("preflighting startup containment resources")?;
     let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
@@ -265,6 +278,7 @@ pub(super) fn safe_startup_descendant_capacity(deadline: Deadline) -> Result<usi
     startup_descendant_capacity(soft_limit, open_fds)
 }
 
+#[cfg(unix)]
 pub(super) fn startup_descendant_capacity(soft_limit: u64, open_fds: u64) -> Result<usize> {
     // One additional descriptor pins the worker itself. Keep a reserve for
     // diagnostics, record IO, and the registry lock so containment cannot
@@ -285,6 +299,7 @@ pub(super) fn startup_descendant_capacity(soft_limit: u64, open_fds: u64) -> Res
     Ok(capacity)
 }
 
+#[cfg(unix)]
 pub(super) fn kill_stopped_startup_tree(
     worker: &StartupDescendant,
     descendants: &BTreeMap<u32, StartupDescendant>,
@@ -314,6 +329,7 @@ pub(super) fn kill_stopped_startup_tree(
     }
 }
 
+#[cfg(unix)]
 pub(super) fn resume_stopped_startup_tree(
     worker: &StartupDescendant,
     descendants: &BTreeMap<u32, StartupDescendant>,
@@ -350,6 +366,7 @@ pub(super) fn resume_stopped_startup_tree(
     }
 }
 
+#[cfg(unix)]
 pub(super) fn hard_cleanup_startup_child(child: &mut Child, record_path: &Path) -> Result<()> {
     // All discovery, handle acquisition, signalling, and waits share this one
     // deadline. A large/forking tree cannot multiply the timeout by phases or
@@ -463,6 +480,45 @@ pub(super) fn hard_cleanup_startup_child(child: &mut Child, record_path: &Path) 
     }
 }
 
+/// Windows hard cleanup: there is no SIGSTOP/pidfd quiescence dance. The
+/// session's Job Object is the containment domain, so kill it until it is
+/// observed empty, then end the worker through a pinned handle and reap it.
+#[cfg(windows)]
+pub(super) fn hard_cleanup_startup_child(child: &mut Child, record_path: &Path) -> Result<()> {
+    use crate::sys::windows::job::Job;
+    use crate::sys::windows::signal::SIGKILL;
+
+    let deadline = Deadline::after(STARTUP_CONTAINMENT_TIMEOUT);
+    let worker_pid = child.id();
+    deadline.check("reading startup containment record")?;
+    let record = read_record(record_path).context("read startup containment record")?;
+    if record.worker_pid.is_some() && record.worker_pid != Some(worker_pid) {
+        bail!("startup record no longer belongs to worker {worker_pid}");
+    }
+    // Pin the worker before touching its job so a recycled pid is never hit.
+    let worker = PidHandle::open(worker_pid, Some(deadline))?;
+    if let Some(job) = Job::open(record.id).context("open startup session job")? {
+        job.kill_until_empty(deadline.instant())
+            .context("empty startup session job")?;
+    }
+    if let Some(worker) = &worker {
+        worker
+            .signal(SIGKILL)
+            .with_context(|| format!("kill startup worker {worker_pid}"))?;
+    }
+    loop {
+        deadline.check("reaping startup worker after kill")?;
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("reap startup worker {worker_pid}"));
+            }
+        }
+        deadline.sleep_poll(STARTUP_REAP_POLL, "reaping startup worker after kill")?;
+    }
+}
+#[cfg(unix)]
 #[cfg(test)]
 mod tests {
     use super::*;

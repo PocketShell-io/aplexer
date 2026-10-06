@@ -200,6 +200,7 @@ pub(super) fn terminate_and_reap_startup_child(
     record_path: &Path,
     failures: &mut Vec<String>,
 ) -> bool {
+    #[cfg_attr(windows, allow(unused_mut))]
     let mut reaped = match child.try_wait() {
         Ok(Some(_)) => true,
         Ok(None) => false,
@@ -212,6 +213,9 @@ pub(super) fn terminate_and_reap_startup_child(
         }
     };
 
+    // Windows has no TERM to a detached worker: skip the graceful rollback
+    // window and go straight to the Job Object hard cleanup below.
+    #[cfg(unix)]
     if !reaped {
         if let Err(error) = signal_worker_group(child.id(), libc::SIGTERM) {
             failures.push(format!("terminate worker session {}: {error}", child.id()));

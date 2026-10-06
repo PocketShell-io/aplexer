@@ -12,6 +12,12 @@
 
 use super::*;
 
+/// The wire number of the unconditional kill, per platform.
+#[cfg(unix)]
+const KILL_SIGNAL: i32 = libc::SIGKILL;
+#[cfg(windows)]
+const KILL_SIGNAL: i32 = crate::sys::windows::signal::SIGKILL;
+
 pub(super) enum LifeEvent {
     PtyEof,
     PtyError(String),
@@ -39,7 +45,7 @@ pub(super) fn kill_until_empty(cgroup: Option<&Cgroup>, deadline: Instant) -> Re
                 .kill_all_until(deadline)
                 .context("kill containment cgroup")?,
             None => {
-                signal_descendants(std::process::id(), libc::SIGKILL)
+                signal_descendants(std::process::id(), KILL_SIGNAL)
                     .context("kill contained descendants")?;
             }
         }

@@ -9,8 +9,16 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::{now_ms, process_alive};
+use crate::now_ms;
+#[cfg(unix)]
+use crate::process_alive;
+#[cfg(windows)]
+use crate::sys::windows::job::process_alive;
 
+#[cfg(unix)]
+mod identity;
+#[cfg(windows)]
+#[path = "record/identity_windows.rs"]
 mod identity;
 mod reap;
 
@@ -25,7 +33,13 @@ pub use reap::{containment_reap_verdict, reap_verdict, ContainmentReap};
 #[allow(unused_imports)]
 pub(crate) use identity::{ProcessIdentity, WORKER_IDENTITY_FILE};
 #[allow(unused_imports)]
-pub(crate) use reap::{containment_reap_verdict_with, recorded_cgroup_observed_empty};
+pub(crate) use reap::containment_reap_verdict_with;
+#[cfg(target_os = "linux")]
+#[allow(unused_imports)]
+pub(crate) use reap::recorded_cgroup_observed_empty;
+#[cfg(windows)]
+#[allow(unused_imports)]
+pub(crate) use reap::recorded_job_observed_empty;
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -456,11 +470,8 @@ impl SessionRecord {
         };
         match verify_worker_identity(&identity) {
             Ok(WorkerIdentity::Verified) => true,
-            Ok(
-                WorkerIdentity::Gone
-                | WorkerIdentity::DifferentBoot
-                | WorkerIdentity::PidReused { .. },
-            ) => false,
+            // Gone, a different boot (Linux), or a recycled pid.
+            Ok(_) => false,
             // Uncertainty fails closed: never let prune/tag replacement
             // delete a live worker over an unreadable probe.
             Err(_) => true,
