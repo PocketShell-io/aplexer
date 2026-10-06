@@ -144,7 +144,12 @@ pub(super) fn spawn_worker_process(
         .env("APLEXER_CONFIG", &paths.config_file)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::from(worker_log));
+        .stderr(Stdio::from(
+            #[cfg(unix)]
+            worker_log,
+            #[cfg(windows)]
+            worker_log.try_clone().context("clone worker log")?,
+        ));
     if let (Some(rows), Some(cols)) = (req.worker_rows, req.worker_cols) {
         command
             .arg("--rows")
@@ -184,7 +189,8 @@ pub(super) fn spawn_worker_process(
     // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW, with job
     // breakaway when the launcher's job allows it (see sys::windows::pty).
     #[cfg(windows)]
-    let child = crate::process::spawn_detached_worker(&mut command).context("spawn worker")?;
+    let child =
+        crate::process::spawn_detached_worker(&command, &worker_log).context("spawn worker")?;
     startup.track_child(child);
     Ok(())
 }

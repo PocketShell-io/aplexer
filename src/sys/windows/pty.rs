@@ -1,4 +1,4 @@
-//! ConPTY: open/resize/close pseudoconsole, raw CreateProcessW with
+﻿//! ConPTY: open/resize/close pseudoconsole, raw CreateProcessW with
 //! PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, detached worker spawn. Owner: agent "conpty".
 //!
 //! Depends only on `std` and `windows-sys` so it can be built standalone.
@@ -36,9 +36,8 @@ use std::io::{self, Read};
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Command;
 use std::ptr::{null, null_mut};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -626,72 +625,168 @@ pub fn spawn_workload<S: AsRef<OsStr>>(
 // Detached worker
 // ---------------------------------------------------------------------------
 
-/// Spawn the (already configured: args, env, stdio -> NUL / worker.log) worker
-/// fully detached from the launching console and process group. Tries
-/// `CREATE_BREAKAWAY_FROM_JOB` first so the worker survives the launcher's
-/// job being closed; if the job forbids breakaway, retries without it.
+/// A detached worker process: the `std::process::Child` subset the launcher
+/// uses (`id`, `try_wait`, `wait`, `kill`), backed by a raw process handle
+/// because the worker is created with `CreateProcessW` (see
+/// [`spawn_detached_worker`]), which `std` cannot do without inheriting every
+/// inheritable handle of the launcher.
+pub struct WorkerChild(Workload);
+
+impl WorkerChild {
+    pub fn id(&self) -> u32 {
+        self.0.pid()
+    }
+
+    pub fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        use std::os::windows::process::ExitStatusExt;
+        Ok(self.0.try_wait()?.map(std::process::ExitStatus::from_raw))
+    }
+
+    pub fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+        use std::os::windows::process::ExitStatusExt;
+        Ok(std::process::ExitStatus::from_raw(self.0.wait()?))
+    }
+
+    pub fn kill(&mut self) -> io::Result<()> {
+        self.0.terminate(1)
+    }
+}
+
+/// Spawn the worker described by `command` (program, args, env overrides and
+/// cwd are read from it; its stdio settings are ignored) fully detached from
+/// the launching console. stdin and stdout are NUL; stderr is `stderr`.
 ///
-/// std::process::Command always creates with InheritHandles = TRUE, so the
-/// launcher's own inheritable std handles (a pipe from  start | ..., a CI
-/// log capture) would leak into the long-lived worker and keep the reader
-/// waiting for EOF until the session ends. Their inherit flag is cleared for
-/// the duration of the spawn; the worker's own stdio is duplicated by std
-/// from the Stdio values and is unaffected.
-pub fn spawn_detached_worker(command: &mut Command) -> io::Result<Child> {
-    let _guard = NoStdHandleInherit::new();
+/// Created with raw `CreateProcessW` + `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
+/// naming exactly the stdio handles. `std::process::Command` always passes
+/// bInheritHandles = TRUE, so any other inheritable handle in the launcher
+/// (the SSH channel pipes under sshd/MSYS bash, a CI capture pipe, ...) would
+/// leak into the long-lived worker and keep the reader waiting for EOF until
+/// the session ends.
+///
+/// Tries `CREATE_BREAKAWAY_FROM_JOB` first so the worker survives the
+/// launcher's job being closed; if the job forbids breakaway, retries without.
+pub fn spawn_detached_worker(command: &Command, stderr: &File) -> io::Result<WorkerChild> {
+    let program = command.get_program();
+    let mut argv: Vec<OsString> = vec![program.to_os_string()];
+    argv.extend(command.get_args().map(OsStr::to_os_string));
+    let mut env = EnvOverrides::new();
+    for (k, v) in command.get_envs() {
+        env.insert(k.to_os_string(), v.map(OsStr::to_os_string));
+    }
+    let vars = effective_env(&env);
+    let path_var = vars
+        .iter()
+        .find(|(k, _)| upper(k) == "PATH")
+        .map(|(_, v)| v.clone());
+    let app = find_executable_with_path(program, path_var.as_deref()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("program not found: {}", program.to_string_lossy()),
+        )
+    })?;
+    let app_w = wide_z(app.as_os_str());
+    let envblock = env_block(&vars);
+    let cwd_w = command.get_current_dir().map(|d| wide_z(d.as_os_str()));
+    let nul = File::options().read(true).write(true).open("NUL")?;
+    let nul_h = nul.as_raw_handle() as HANDLE;
+    let err_h = stderr.as_raw_handle() as HANDLE;
+
+    // The handles must be inheritable to appear in the list; restore the
+    // caller's flags afterwards so nothing stays inheritable in this process.
+    let _inherit = [nul_h, err_h]
+        .into_iter()
+        .map(TempInherit::new)
+        .collect::<io::Result<Vec<_>>>()?;
+    let list: Vec<HANDLE> = if nul_h == err_h {
+        vec![nul_h]
+    } else {
+        vec![nul_h, err_h]
+    };
+
     // No CREATE_NEW_PROCESS_GROUP: it would disable Ctrl-C for the worker, and
     // that state is inherited by every workload, so the graceful signal (a
     // Ctrl-C byte on the pseudoconsole) would never reach them. DETACHED_PROCESS
     // already keeps console control events from the launcher away.
     let base = DETACHED_PROCESS | CREATE_NO_WINDOW;
-    match command
-        .creation_flags(base | CREATE_BREAKAWAY_FROM_JOB)
-        .spawn()
-    {
-        Ok(child) => Ok(child),
-        Err(e) if e.raw_os_error() == Some(5) => command.creation_flags(base).spawn(),
-        Err(e) => Err(e),
-    }
-}
-
-/// Clears HANDLE_FLAG_INHERIT on this process's std handles, restoring each
-/// one that had it set on drop.
-struct NoStdHandleInherit(Vec<(HANDLE, u32)>);
-
-impl NoStdHandleInherit {
-    fn new() -> Self {
-        use windows_sys::Win32::Foundation::GetHandleInformation;
-        use windows_sys::Win32::System::Console::{
-            GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
-        };
-        let mut saved = Vec::new();
-        for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-            let handle = unsafe { GetStdHandle(id) };
-            if handle.is_null() || handle == INVALID_HANDLE_VALUE {
-                continue;
-            }
-            let mut flags = 0u32;
-            if unsafe { GetHandleInformation(handle, &mut flags) } == 0 {
-                continue;
-            }
-            if flags & HANDLE_FLAG_INHERIT != 0
-                && unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } != 0
+    let create = |extra: u32| -> io::Result<Workload> {
+        unsafe {
+            let attrs = AttrList::new(1)?;
+            if UpdateProcThreadAttribute(
+                attrs.list,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                list.as_ptr() as *const c_void,
+                list.len() * size_of::<HANDLE>(),
+                null_mut(),
+                null(),
+            ) == 0
             {
-                saved.push((handle, HANDLE_FLAG_INHERIT));
+                return Err(last_err("UpdateProcThreadAttribute(HANDLE_LIST)"));
             }
+            let mut si: STARTUPINFOEXW = zeroed();
+            si.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+            si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            si.StartupInfo.hStdInput = nul_h;
+            si.StartupInfo.hStdOutput = nul_h;
+            si.StartupInfo.hStdError = err_h;
+            si.lpAttributeList = attrs.list;
+            let mut cmdline = build_command_line(&argv);
+            let mut pi: PROCESS_INFORMATION = zeroed();
+            let ok = CreateProcessW(
+                app_w.as_ptr(),
+                cmdline.as_mut_ptr(),
+                null(),
+                null(),
+                1,
+                base | extra | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                envblock.as_ptr() as *const c_void,
+                cwd_w.as_ref().map_or(null(), |c| c.as_ptr()),
+                &si.StartupInfo,
+                &mut pi,
+            );
+            if ok == 0 {
+                // Keep the raw OS error: the caller keys the breakaway
+                // fallback on ERROR_ACCESS_DENIED.
+                return Err(io::Error::last_os_error());
+            }
+            drop(OwnedHandle::from_raw_handle(pi.hThread as RawHandle));
+            Ok(Workload {
+                pid: pi.dwProcessId,
+                process: OwnedHandle::from_raw_handle(pi.hProcess as RawHandle),
+            })
         }
-        Self(saved)
+    };
+    let workload = match create(CREATE_BREAKAWAY_FROM_JOB) {
+        Err(e) if e.raw_os_error() == Some(5) => create(0),
+        other => other,
+    }
+    .map_err(|e| io::Error::new(e.kind(), format!("CreateProcessW({}): {e}", app.display())))?;
+    Ok(WorkerChild(workload))
+}
+
+/// Sets HANDLE_FLAG_INHERIT on a handle, restoring the previous flag on drop.
+struct TempInherit(HANDLE, u32);
+
+impl TempInherit {
+    fn new(handle: HANDLE) -> io::Result<Self> {
+        use windows_sys::Win32::Foundation::GetHandleInformation;
+        let mut flags = 0u32;
+        if unsafe { GetHandleInformation(handle, &mut flags) } == 0 {
+            return Err(last_err("GetHandleInformation"));
+        }
+        let old = flags & HANDLE_FLAG_INHERIT;
+        if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
+            return Err(last_err("SetHandleInformation"));
+        }
+        Ok(Self(handle, old))
     }
 }
 
-impl Drop for NoStdHandleInherit {
+impl Drop for TempInherit {
     fn drop(&mut self) {
-        for (handle, flags) in &self.0 {
-            unsafe { SetHandleInformation(*handle, HANDLE_FLAG_INHERIT, *flags) };
-        }
+        unsafe { SetHandleInformation(self.0, HANDLE_FLAG_INHERIT, self.1) };
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,7 +971,8 @@ mod tests {
     fn detached_worker_spawns() {
         let mut cmd = Command::new("cmd.exe");
         cmd.args(["/c", "exit", "0"]);
-        let mut child = spawn_detached_worker(&mut cmd).unwrap();
+        let log = File::create(std::env::temp_dir().join("aplexer-detached-test.log")).unwrap();
+        let mut child = spawn_detached_worker(&cmd, &log).unwrap();
         assert!(child.wait().unwrap().success());
     }
 }

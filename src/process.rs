@@ -344,7 +344,7 @@ pub fn worker_executable() -> Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
     // One executable is both the user-facing CLI and the worker: re-exec
-    // this same binary as `<self> worker --id …`. current_exe resolves
+    // this same binary as `<self> worker --id â€¦`. current_exe resolves
     // symlinks, so reaching it through the `a` alias still lands on the
     // real aplexer binary. When this code runs embedded in another program
     // (the Python bindings), the host executable is not aplexer -- fall
@@ -551,7 +551,8 @@ mod windows_impl {
     };
 
     pub use crate::sys::windows::pty::{
-        spawn_detached_worker, spawn_workload as spawn_conpty_workload, PtyMaster, Workload,
+        spawn_detached_worker, spawn_workload as spawn_conpty_workload, PtyMaster, WorkerChild,
+        Workload,
     };
 
     /// No SIGCHLD on Windows: nothing to normalize or validate.
