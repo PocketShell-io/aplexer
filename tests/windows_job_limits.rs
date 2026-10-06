@@ -29,6 +29,12 @@ impl Harness {
             .env("APLEXER_RUNTIME_DIR", self.runtime.path())
             .env("APLEXER_STATE_DIR", self.state.path())
             .env("APLEXER_CONFIG", self.runtime.path().join("config.toml"))
+            // Do not inherit an enclosing aplexer session's identity: with
+            // APLEXER_WORKSPACE/SESSION_ID set (tests run from inside an agent
+            // session), `status <tag>` resolves in the OUTER workspace.
+            .env_remove("APLEXER_WORKSPACE")
+            .env_remove("APLEXER_SESSION_ID")
+            .env_remove("APLEXER_TAG")
             .current_dir(self.work.path())
             .args(args)
             .output()

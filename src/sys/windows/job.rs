@@ -441,7 +441,12 @@ impl Job {
         if limits.memory_bytes.is_some() || limits.pids.is_some() {
             // Best effort: without the listener limits are still enforced,
             // they just are not reported.
-            let _ = job.start_limit_listener();
+            if let Err(err) = job.start_limit_listener() {
+                eprintln!(
+                    "aplexer: warning: job limit listener not started ({err}); \
+                     OOM and pids-limit events will not be reported"
+                );
+            }
         }
         Ok(job)
     }
