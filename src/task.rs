@@ -6,7 +6,7 @@
 //! file, a noninteractive engine exec, stdout/stderr/result files, the real
 //! exit code, and an identity-bound completion notice). Everything session- or
 //! registry-shaped is deliberately left to the existing machinery: the caller
-//! hosts a task in a durable session with `a start -- a task run …` (which
+//! hosts a task in a durable session with `a start -- a task run â€¦` (which
 //! records the real `parent_session` lineage), and the completion notice rides
 //! the ordinary workspace mailbox with the calling session's own identity.
 //!
@@ -43,7 +43,7 @@ pub const DEFAULT_OUTPUT_ROOT: &str = ".aplexer-tasks";
 
 // -- Time helpers: RFC 3339 with an explicit UTC offset, no new dependency --
 
-/// Parse an RFC 3339 timestamp that carries its UTC offset (`Z` or `±HH:MM`)
+/// Parse an RFC 3339 timestamp that carries its UTC offset (`Z` or `Â±HH:MM`)
 /// into seconds since the Unix epoch. A naive timestamp (no offset) is an
 /// error on purpose: cutoff comparison must be timezone-aware, never silently
 /// local. Fractional seconds are accepted and truncated.
@@ -122,7 +122,7 @@ fn offset_seconds(offset: &str) -> Option<i64> {
             let body = &offset[1..];
             let (hh, mm) = match body.split_once(':') {
                 Some((hh, mm)) => (hh.parse::<i64>().ok()?, mm.parse::<i64>().ok()?),
-                // ±HHMM compact form is legal RFC 3339.
+                // Â±HHMM compact form is legal RFC 3339.
                 None if body.len() == 4 => (body[..2].parse().ok()?, body[2..].parse().ok()?),
                 _ => return None,
             };
@@ -179,7 +179,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// Which engine a *new* task launch uses: `engine`, unless a cutoff instant
 /// (parsed timezone-aware from its own explicit offset) has passed, in which
-/// case `cutoff_engine`. Purely a launch-time decision — nothing running is
+/// case `cutoff_engine`. Purely a launch-time decision â€” nothing running is
 /// ever interrupted, and the caller owns any context handoff between engines.
 pub fn route_engine(
     engine: &str,
@@ -218,7 +218,7 @@ pub fn noninteractive_argv(engine: &str, configured: Option<&[String]>) -> Optio
 /// Built-in noninteractive argv by engine id, falling back to the engine's
 /// transcript family (`engine_family`, e.g. a user-configured `zcodex` fork
 /// speaking the codex wire format). Engines with genuinely unknown
-/// noninteractive flags return `None` — a refusal, never a guess.
+/// noninteractive flags return `None` â€” a refusal, never a guess.
 fn builtin_task_argv(engine: &str) -> Option<&'static [&'static str]> {
     let family = crate::engine_family(engine);
     match family {
@@ -253,7 +253,7 @@ pub struct TaskStartRecord {
     pub prompt_sha256: String,
     pub cwd: PathBuf,
     pub output_dir: PathBuf,
-    /// The session `a task run` ran inside — the real parent of this task,
+    /// The session `a task run` ran inside â€” the real parent of this task,
     /// exactly the identity the completion notice is sent as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session: Option<ParentSession>,
@@ -296,7 +296,7 @@ pub struct TaskResultRecord {
 }
 
 /// The calling session a task ran inside. Recorded from the ambient
-/// `APLEXER_SESSION_ID` plus its live session record — never from a flag, so
+/// `APLEXER_SESSION_ID` plus its live session record â€” never from a flag, so
 /// it can only be a real session this process actually belongs to.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ParentSession {
@@ -327,7 +327,7 @@ impl NoticeRecord {
     }
 }
 
-/// SHA-256 of arbitrary bytes, hex-encoded — the prompt fingerprint in the
+/// SHA-256 of arbitrary bytes, hex-encoded â€” the prompt fingerprint in the
 /// START/RESULT records.
 pub fn sha256_hex(content: &[u8]) -> String {
     use sha2::{Digest, Sha256};
@@ -378,7 +378,7 @@ pub struct ChildOutcome {
 /// environment and `env_unset` removed last (the same strip-wins ordering the
 /// worker uses), stdout/stderr into the given files, and wait at most
 /// `timeout`; on expiry SIGKILL the child's own process group and report exit
-/// 124. The kill goes to the group spawned for this child only — never the
+/// 124. The kill goes to the group spawned for this child only â€” never the
 /// caller's group, a session worker, or any unrelated process.
 pub fn run_task_child(
     argv: &[String],
@@ -403,7 +403,7 @@ pub fn run_task_child(
     // Own process group: the timeout kill below addresses exactly this
     // group and nothing else (a foreign-process kill can never be a side
     // effect of a task timeout). On Windows the same containment is a Job
-    // Object holding only this child (see `task_job`).
+    // Object holding only this child (`sys::windows::job::Job`).
     #[cfg(unix)]
     command.process_group(0);
     // Provider-key / configured strip, applied LAST so it wins over env_set,
@@ -422,8 +422,12 @@ pub fn run_task_child(
     #[cfg(windows)]
     let job = {
         use std::os::windows::io::AsRawHandle;
-        let job = task_job::Job::create_kill_on_close().context("create task job object")?;
-        job.assign_process(child.as_raw_handle() as _)
+        let job = crate::sys::windows::job::Job::create(
+            format!("task-{}", Uuid::new_v4()),
+            &crate::sys::windows::job::JobLimits::default(),
+        )
+        .context("create task job object")?;
+        job.assign_handle(child.as_raw_handle() as _)
             .context("assign task child to job object")?;
         job
     };
@@ -486,66 +490,6 @@ fn exit_signal_of(status: &std::process::ExitStatus) -> Option<i32> {
 #[cfg(windows)]
 fn exit_signal_of(_status: &std::process::ExitStatus) -> Option<i32> {
     None
-}
-
-/// Minimal local Job Object wrapper for task timeouts. Same names as the
-/// shared `sys::windows::job::Job::{create_kill_on_close, assign_process,
-/// terminate}`; switch to that once it lands.
-#[cfg(windows)]
-mod task_job {
-    use std::io;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-
-    pub struct Job(HANDLE);
-
-    impl Job {
-        pub fn create_kill_on_close() -> io::Result<Job> {
-            unsafe {
-                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-                if handle.is_null() {
-                    return Err(io::Error::last_os_error());
-                }
-                let job = Job(handle);
-                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-                let ok = SetInformationJobObject(
-                    handle,
-                    JobObjectExtendedLimitInformation,
-                    &info as *const _ as *const _,
-                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                );
-                if ok == 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(job)
-            }
-        }
-
-        pub fn assign_process(&self, process: HANDLE) -> io::Result<()> {
-            if unsafe { AssignProcessToJobObject(self.0, process) } == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        }
-
-        pub fn terminate(&self, exit_code: u32) -> io::Result<()> {
-            if unsafe { TerminateJobObject(self.0, exit_code) } == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        }
-    }
-
-    impl Drop for Job {
-        fn drop(&mut self) {
-            unsafe { CloseHandle(self.0) };
-        }
-    }
 }
 
 /// SIGKILL the child's own process group. ESRCH (already gone) is success;
@@ -745,4 +689,49 @@ mod tests {
         assert_eq!(argv[2], "<prompt: 42 bytes, sha256=abc123>");
         assert_eq!(argv.len(), 3);
     }
-}
+
+    /// Timeout must kill the whole tree, not just the direct child: a
+    /// grandchild started by powershell has to die with the job.
+    #[cfg(windows)]
+    #[test]
+    fn windows_timeout_kills_whole_process_tree() {
+        use crate::sys::windows::job::process_alive;
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("grandchild.pid");
+        let script = format!(
+            "$p = Start-Process ping -ArgumentList '-n','120','127.0.0.1' -PassThru -WindowStyle Hidden; \
+             Set-Content -Path '{}' -Value $p.Id; Start-Sleep 120",
+            pidfile.display()
+        );
+        let argv = vec![
+            "powershell.exe".to_string(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            script,
+        ];
+        let started = std::time::Instant::now();
+        let outcome = run_task_child(
+            &argv,
+            dir.path(),
+            &BTreeMap::new(),
+            &[],
+            &dir.path().join("out.log"),
+            &dir.path().join("err.log"),
+            Some(Duration::from_secs(8)),
+        )
+        .unwrap();
+        assert!(outcome.timed_out);
+        assert_eq!(outcome.exit_code, 124);
+        assert!(started.elapsed() < Duration::from_secs(60));
+        let pid: u32 = std::fs::read_to_string(&pidfile)
+            .expect("grandchild pid file written before timeout")
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while process_alive(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(!process_alive(pid), "grandchild {pid} survived task timeout");
+    }}
