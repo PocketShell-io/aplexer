@@ -32,7 +32,7 @@ pub(crate) use std::os::windows::process::CommandExt;
 // NOTE: assumes `aplexer::sys::transport::Stream` (cfg(windows) re-export of
 // sys::windows::ipc); if it is absent, point this at `sys::windows::ipc::Stream`.
 #[cfg(windows)]
-pub(crate) use aplexer::sys::transport::Stream as UnixStream;
+pub(crate) use aplexer::sys::ipc::Stream as UnixStream;
 pub(crate) use std::path::{Path, PathBuf};
 pub(crate) use std::process::Command;
 pub(crate) use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};

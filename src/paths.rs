@@ -87,8 +87,18 @@ impl Paths {
     pub fn state_session(&self, id: Uuid) -> PathBuf {
         self.state_root.join("sessions").join(id.to_string())
     }
+    /// Unix: the control socket node. Windows: the named-pipe name (the pipe
+    /// namespace has no filesystem path; see sys::windows::ipc::pipe_name).
     pub fn socket(&self, id: Uuid) -> PathBuf {
-        self.runtime_session(id).join("control.sock")
+        #[cfg(windows)]
+        {
+            crate::sys::windows::ipc::pipe_name(id)
+                .unwrap_or_else(|_| PathBuf::from(format!(r"\\.\pipe\aplexer-unknown-{id}")))
+        }
+        #[cfg(not(windows))]
+        {
+            self.runtime_session(id).join("control.sock")
+        }
     }
     pub fn record(&self, id: Uuid) -> PathBuf {
         self.state_session(id).join("session.json")

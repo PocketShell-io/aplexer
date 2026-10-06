@@ -291,6 +291,14 @@ fn kill_already_finished(
     Ok(())
 }
 
+/// Windows: the session Job Object (KILL_ON_JOB_CLOSE) is the containment
+/// domain and is addressable by name, so there is no locator to validate.
+#[cfg(windows)]
+pub(crate) fn preflight_broken_containment_recovery(_record: &SessionRecord) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
 pub(crate) fn preflight_broken_containment_recovery(record: &SessionRecord) -> Result<()> {
     if record.containment_proven_empty() {
         return Ok(());
@@ -340,6 +348,27 @@ pub(crate) fn mark_broken_workload_killed(paths: &Paths, record: &SessionRecord)
 /// which pins the case where an escaped `setsid` descendant outlives the
 /// reap). `a kill` never does that: it still refuses, and still preserves
 /// both directories, because unlike prune it would be claiming a cleanup.
+/// Windows: reopen the session's named job. A job that no longer exists means
+/// every handle closed and KILL_ON_JOB_CLOSE already ended its members.
+#[cfg(windows)]
+pub(crate) fn recover_broken_containment(
+    record: &SessionRecord,
+    _signal: i32,
+    grace_ms: u64,
+) -> Result<()> {
+    // The grace window only validates the request: a job kill has no
+    // graceful phase.
+    kill_grace_duration(grace_ms)?;
+    let Some(job) = aplexer::sys::windows::job::Job::open(record.id)
+        .context("open session job object")?
+    else {
+        return Ok(());
+    };
+    job.kill_until_empty(Instant::now() + Duration::from_secs(5))
+        .context("recover session job containment")
+}
+
+#[cfg(unix)]
 pub(crate) fn recover_broken_containment(
     record: &SessionRecord,
     signal: i32,

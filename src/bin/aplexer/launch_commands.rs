@@ -122,6 +122,18 @@ pub(crate) fn cmd_launch_exec(paths: &Paths, args: LaunchArgs) -> Result<()> {
     }
     // CommandExt::exec() only returns on failure (it replaces this process
     // on success), so reaching this line is always an error.
-    let error = command.exec();
-    Err(error).with_context(|| format!("exec {program}"))
+    #[cfg(unix)]
+    {
+        let error = command.exec();
+        Err(error).with_context(|| format!("exec {program}"))
+    }
+    // Windows has no exec(2): run the command to completion and exit with its
+    // status, which is the same contract for the caller.
+    #[cfg(windows)]
+    {
+        let status = command
+            .status()
+            .with_context(|| format!("spawn {program}"))?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
 }
