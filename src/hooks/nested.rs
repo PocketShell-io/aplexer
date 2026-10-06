@@ -67,12 +67,11 @@ fn wiring_timeout(state: &str) -> Option<i64> {
 /// Returns 1 when the document changed.
 fn refresh_managed_entry(group: &mut Value, state: &str, a_bin: &str) -> usize {
     let timeout = wiring_timeout(state);
-    let current_command = match state.strip_prefix("awareness:") {
-        Some(engine) => Some(context_command(a_bin, engine)),
-        // State-report commands are not converged: `|| true` makes a stale
-        // path harmless, and rewriting them is not this wiring's business.
-        None => None,
-    };
+    // State-report commands are not converged: `|| true` makes a stale
+    // path harmless, and rewriting them is not this wiring's business.
+    let current_command = state
+        .strip_prefix("awareness:")
+        .map(|engine| context_command(a_bin, engine));
     let Some(inner) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
         return 0;
     };

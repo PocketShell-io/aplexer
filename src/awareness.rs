@@ -86,7 +86,7 @@ pub fn hook_context(paths: &Paths, engine: &str, input: impl Read) -> Result<Opt
     let unread = &snapshot.unread[..];
     let mailboxes = &snapshot.mailboxes[..];
     let foreign = render::foreign_peers(paths, &session, &payload)?;
-    let print = state::fingerprint(&rendered, &unread, &foreign);
+    let print = state::fingerprint(&rendered, unread, &foreign);
     let admission = state::admit(
         paths,
         session.id,
@@ -102,8 +102,8 @@ pub fn hook_context(paths: &Paths, engine: &str, input: impl Read) -> Result<Opt
     let text = render::compose(&render::Composition {
         session: &session,
         rendered: &rendered,
-        unread: &unread,
-        mailboxes: &mailboxes,
+        unread,
+        mailboxes,
         foreign: &foreign,
         bootstrap: admission.needs_bootstrap,
     });
