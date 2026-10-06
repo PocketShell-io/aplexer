@@ -1,4 +1,5 @@
 use super::*;
+use aplexer::sys::ipc::Stream;
 
 /// One control round-trip: connect, send `operation` (plus an optional data
 /// frame), and read the matching response. Returns the stream too, for the
@@ -8,7 +9,7 @@ pub(crate) fn rpc_call(
     record: &SessionRecord,
     operation: Operation,
     data: Option<&[u8]>,
-) -> Result<(UnixStream, Value)> {
+) -> Result<(Stream, Value)> {
     rpc_call_within(record, operation, data, CONTROL_RPC_TIMEOUT)
 }
 
@@ -20,7 +21,7 @@ pub(crate) fn rpc_call_within(
     operation: Operation,
     data: Option<&[u8]>,
     response_timeout: Duration,
-) -> Result<(UnixStream, Value)> {
+) -> Result<(Stream, Value)> {
     let mut stream = connect(record)?;
     let request = Request::new(record.id, operation);
     let id = request.request_id.clone();
@@ -36,7 +37,7 @@ pub(crate) fn rpc_call_within(
 }
 
 /// The data frame a response promised, named by `what` in the error.
-pub(crate) fn read_data_frame(stream: &mut UnixStream, what: &str) -> Result<Vec<u8>> {
+pub(crate) fn read_data_frame(stream: &mut Stream, what: &str) -> Result<Vec<u8>> {
     let frame = read_frame(stream)?.ok_or_else(|| anyhow!("missing {what}"))?;
     if frame.kind != FrameKind::Data {
         bail!("expected {what}");

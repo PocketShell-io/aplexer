@@ -6,12 +6,15 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::ffi::CString;
 use std::fs::{self, File};
 use std::io;
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -19,6 +22,8 @@ use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+use crate::sys::ipc::Stream;
 
 mod start;
 mod startup_containment;
@@ -56,6 +61,7 @@ impl Drop for LaunchEnvironmentGuard {
 /// the worker's cancellation handler to unwind startup and clean its separate
 /// workload containment domain; signalling the leader's group is only the
 /// last-resort way to stop the worker itself after that grace period.
+#[cfg(unix)]
 fn signal_worker_group(pid: u32, signal: i32) -> io::Result<()> {
     let pid = libc::pid_t::try_from(pid)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "worker pid exceeds pid_t"))?;
@@ -68,6 +74,31 @@ fn signal_worker_group(pid: u32, signal: i32) -> io::Result<()> {
     } else {
         Err(error)
     }
+}
+
+/// Windows has no process groups or signals: signal 0 is a no-op probe, any
+/// other signal terminates the worker process (its Job Object, if already
+/// created, takes the workload down with it).
+#[cfg(windows)]
+fn signal_worker_group(pid: u32, signal: i32) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    if signal == 0 {
+        return Ok(());
+    }
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle.is_null() {
+        let error = io::Error::last_os_error();
+        // The worker already exited: same as ESRCH.
+        if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            return Ok(());
+        }
+        return Err(error);
+    }
+    let ok = unsafe { TerminateProcess(handle, 1) };
+    let result = if ok != 0 { Ok(()) } else { Err(io::Error::last_os_error()) };
+    unsafe { CloseHandle(handle) };
+    result
 }
 
 pub fn engines_json(paths: &Paths) -> Result<Value> {
@@ -298,7 +329,7 @@ fn selected_record(paths: &Paths, selector: &str) -> Result<SessionRecord> {
     resolve_record(paths, Some(selector), None, None)
 }
 
-fn connect_control(record: &SessionRecord) -> Result<UnixStream> {
+fn connect_control(record: &SessionRecord) -> Result<Stream> {
     let deadline = Instant::now() + CONTROL_RPC_TIMEOUT;
     let stream = loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -307,6 +338,9 @@ fn connect_control(record: &SessionRecord) -> Result<UnixStream> {
         }
         match connect_startup_control(&record.socket_path, remaining) {
             Ok(stream) => break stream,
+            // Unix: a full AF_UNIX listen backlog. Windows has no such state;
+            // busy pipe instances are retried inside the connect itself.
+            #[cfg(unix)]
             Err(error)
                 if error.raw_os_error() == Some(libc::EAGAIN) && Instant::now() < deadline =>
             {

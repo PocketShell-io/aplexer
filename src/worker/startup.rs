@@ -153,8 +153,15 @@ impl StartupGuard {
             if let Err(error) = cgroup.kill_all_until(deadline) {
                 cleanup_failures.push(format!("kill startup cgroup: {error:#}"));
             }
-        } else if let Err(error) = signal_descendants(std::process::id(), libc::SIGKILL) {
-            cleanup_failures.push(format!("kill startup descendants: {error:#}"));
+        } else {
+            // Windows: the session Job Object (KILL_ON_JOB_CLOSE) owns the
+            // descendants; there is no process-tree walk to do here.
+            #[cfg(unix)]
+            {
+                if let Err(error) = signal_descendants(std::process::id(), libc::SIGKILL) {
+                    cleanup_failures.push(format!("kill startup descendants: {error:#}"));
+                }
+            }
         }
 
         if let Some(slot) = &self.child {
@@ -345,13 +352,13 @@ pub(super) fn bring_up(
     paths: &Paths,
     mut record: SessionRecord,
     initial_size: Option<(u16, u16)>,
-) -> Result<(UnixListener, FileIdentity, Arc<WorkerRuntime>)> {
+) -> Result<(Listener, FileIdentity, Arc<WorkerRuntime>)> {
     let id = record.id;
     let record_path = paths.record(id);
     let legacy_environment = LaunchEnvironment(std::mem::take(&mut record.env));
     record.env = session_metadata_env(&legacy_environment.0);
     let mut startup = StartupGuard::new(paths, &record);
-    let setup = (|| -> Result<(UnixListener, FileIdentity, Arc<WorkerRuntime>)> {
+    let setup = (|| -> Result<(Listener, FileIdentity, Arc<WorkerRuntime>)> {
         startup_checkpoint("after_worker_lock")?;
         let launch_environment_path = paths.runtime_session(id).join("launch-environment.json");
         let launch_environment =
@@ -378,14 +385,25 @@ pub(super) fn bring_up(
             .context("session state filesystem must support RENAME_EXCHANGE")?;
         startup_checkpoint("after_worker_record")?;
 
+        // On Windows paths.socket(id) is the named-pipe name
+        // (sys::windows::ipc::pipe_name): no stale node to remove and no
+        // inode identity to track. FIRST_PIPE_INSTANCE makes a squatted name
+        // fail the bind with AddrInUse instead of being adopted.
         let socket_path = paths.socket(id);
-        if socket_path.exists() {
-            fs::remove_file(&socket_path).context("remove stale control socket")?;
+        #[cfg(unix)]
+        {
+            if socket_path.exists() {
+                fs::remove_file(&socket_path).context("remove stale control socket")?;
+            }
         }
-        let listener = UnixListener::bind(&socket_path)
+        let listener = Listener::bind(&socket_path)
             .with_context(|| format!("bind {}", socket_path.display()))?;
+        #[cfg(unix)]
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
+        #[cfg(unix)]
         let socket_identity = trusted_socket_identity(&socket_path)?;
+        #[cfg(windows)]
+        let socket_identity: FileIdentity = (0, 0);
         startup_checkpoint("after_control_socket")?;
 
         let requested_size = initial_size.unwrap_or((24, 80));
