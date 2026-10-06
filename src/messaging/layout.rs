@@ -15,7 +15,7 @@ pub fn now_secs() -> u64 {
 /// a path already run through `canonical_workspace` (open question 8) so
 /// two sessions in the same workspace can never straddle two mailboxes.
 pub fn workspace_key(canonical_workspace: &Path) -> String {
-    let digest = Sha256::digest(canonical_workspace.as_os_str().as_bytes());
+    let digest = Sha256::digest(crate::util::os_str_bytes(canonical_workspace.as_os_str()));
     hex_encode(&digest[..16])
 }
 

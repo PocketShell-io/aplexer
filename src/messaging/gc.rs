@@ -104,7 +104,7 @@ pub(crate) fn prune_workspace_locked(
     }
 
     if directory_changed {
-        fs::File::open(&mp.msgs_dir)?.sync_all()?;
+        crate::persist::sync_dir(&mp.msgs_dir)?;
     }
     // Exact acknowledgements for removed messages are harmless, and are
     // compacted on the consumer's next read/ack. Keep append quota
@@ -235,7 +235,7 @@ pub(crate) fn maintain_workspace_cursors_locked(
         }
     }
     if directory_changed {
-        fs::File::open(&mp.cursors_dir)?.sync_all()?;
+        crate::persist::sync_dir(&mp.cursors_dir)?;
     }
     Ok(())
 }

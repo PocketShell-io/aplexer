@@ -66,6 +66,19 @@ pub fn parse_env(values: &[String]) -> Result<BTreeMap<String, String>> {
     Ok(out)
 }
 
+/// Stable bytes for an `OsStr`: the raw bytes on Unix, UTF-16LE code units on
+/// Windows. Used where a path is hashed into a persistent key.
+pub(crate) fn os_str_bytes(value: &OsStr) -> std::borrow::Cow<'_, [u8]> {
+    #[cfg(unix)]
+    {
+        std::borrow::Cow::Borrowed(std::os::unix::ffi::OsStrExt::as_bytes(value))
+    }
+    #[cfg(windows)]
+    {
+        std::borrow::Cow::Owned(crate::sys::windows::fs::os_str_bytes(value))
+    }
+}
+
 pub fn os_to_utf8(value: &OsStr, what: &str) -> Result<String> {
     value
         .to_str()

@@ -198,7 +198,7 @@ fn apply_mailbox_merge(actions: Vec<MailboxMigration>) -> Result<()> {
         }
     }
     for dir in changed_dirs {
-        fs::File::open(&dir)?.sync_all()?;
+        crate::persist::sync_dir(&dir)?;
     }
     Ok(())
 }
@@ -225,7 +225,7 @@ fn remove_drained_legacy_cursor_locks(legacy: &MessagePaths) -> Result<()> {
         }
     }
     if directory_changed {
-        fs::File::open(&legacy.cursors_dir)?.sync_all()?;
+        crate::persist::sync_dir(&legacy.cursors_dir)?;
     }
     Ok(())
 }

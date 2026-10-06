@@ -1,8 +1,13 @@
-//! Event-driven unread mailbox waits on Linux.
+//! Unread mailbox waits: event-driven (inotify) on Linux, a short-interval
+//! directory poll on Windows.
 
 use super::*;
+#[cfg(unix)]
 use std::ffi::CString;
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::time::{Duration, Instant};
 
 /// Return unread messages immediately, or wait until one arrives or `timeout`
@@ -74,10 +79,63 @@ fn retry_contention<T>(deadline: Instant, mut operation: impl FnMut() -> Result<
     }
 }
 
+/// Windows has no inotify equivalent worth the complexity (ReadDirectoryChangesW
+/// needs overlapped plumbing for a hint that is re-verified under lock anyway),
+/// so the watch polls the mailbox directory's modification time. Events are
+/// only wake hints, so an occasional spurious wake costs one locked rescan.
+#[cfg(windows)]
+struct MailboxWatch {
+    directory: PathBuf,
+    last: std::cell::Cell<Option<std::time::SystemTime>>,
+}
+
+#[cfg(windows)]
+const WINDOWS_POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// Rescan at least this often even if the directory time did not move
+/// (coarse filesystem timestamps), so no publication is ever missed.
+#[cfg(windows)]
+const WINDOWS_RESCAN_INTERVAL: Duration = Duration::from_millis(250);
+
+#[cfg(windows)]
+impl MailboxWatch {
+    fn subscribe(directory: &Path) -> Result<Self> {
+        let modified = fs::metadata(directory)
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        Ok(Self {
+            directory: directory.to_path_buf(),
+            last: std::cell::Cell::new(modified),
+        })
+    }
+
+    fn wait_for_change(&self, deadline: Instant) -> Result<()> {
+        let started = Instant::now();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(());
+            }
+            std::thread::sleep(remaining.min(WINDOWS_POLL_INTERVAL));
+            let modified = fs::metadata(&self.directory)
+                .and_then(|metadata| metadata.modified())
+                .ok();
+            if modified != self.last.get() {
+                self.last.set(modified);
+                return Ok(());
+            }
+            if started.elapsed() >= WINDOWS_RESCAN_INTERVAL {
+                return Ok(());
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
 struct MailboxWatch {
     fd: OwnedFd,
 }
 
+#[cfg(unix)]
 impl MailboxWatch {
     fn subscribe(directory: &Path) -> Result<Self> {
         let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
@@ -153,6 +211,7 @@ impl MailboxWatch {
     }
 }
 
+#[cfg(unix)]
 fn check_events(bytes: &[u8]) -> Result<()> {
     let mut offset = 0;
     let header = std::mem::size_of::<libc::inotify_event>();

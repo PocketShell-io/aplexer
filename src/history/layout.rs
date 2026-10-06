@@ -74,11 +74,15 @@ pub(crate) fn open_optional_history_file(
     write: bool,
 ) -> Result<Option<File>> {
     let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(write)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = match options.open(path) {
+    options.read(true).write(write);
+    #[cfg(unix)]
+    let opened = options
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path);
+    // Windows: refuse any reparse point instead of O_NOFOLLOW.
+    #[cfg(windows)]
+    let opened = crate::sys::windows::fs::open_no_follow(path, &mut options);
+    let file = match opened {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
@@ -88,7 +92,12 @@ pub(crate) fn open_optional_history_file(
     let metadata = file
         .metadata()
         .with_context(|| format!("inspect {label} {}", path.display()))?;
-    if !metadata.file_type().is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+    // Windows has no uid; the private-DACL directory is the ownership boundary.
+    #[cfg(unix)]
+    let foreign = metadata.uid() != unsafe { libc::geteuid() };
+    #[cfg(windows)]
+    let foreign = false;
+    if !metadata.file_type().is_file() || foreign {
         bail!("{label} {} is not a trusted regular file", path.display());
     }
     Ok(Some(file))
