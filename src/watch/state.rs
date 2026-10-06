@@ -51,7 +51,9 @@ pub(super) const ACTIVITY_THRESHOLD_MS: u64 = 3_000;
 /// ended, and the heuristic's best guess for a quiet terminal
 /// ("running" for a shell session) is exactly the "says working but
 /// actually idle" failure. An `idle` push instead stays authoritative
-/// until the PTY contradicts it; see `fresh_reported_state`.
+/// until the PTY contradicts it; see `fresh_reported_state`. Antigravity
+/// redraws even at its idle prompt, so its rest instead ends at the next
+/// lifecycle report.
 pub(super) const REPORTED_STATE_STALE_MS: u64 = 8_000;
 
 /// How much PTY output is allowed to land *after* an `idle` push without
@@ -118,6 +120,12 @@ pub fn reported_state_rejection(record: &SessionRecord, now: u64) -> Option<&'st
 }
 
 fn idle_was_contradicted(record: &SessionRecord, at: u64) -> bool {
+    // Antigravity's TUI keeps producing output while idle. Its native
+    // PreInvocation hook reports working before the next model call, so
+    // terminal redraws cannot override the Stop hook's semantic rest.
+    if record.engine == "antigravity" {
+        return false;
+    }
     // Idle has no clock TTL: only PTY activity beyond the render grace
     // retracts it. Quiet resting sessions have no follow-up refresh event.
     record
