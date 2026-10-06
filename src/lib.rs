@@ -1,4 +1,6 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", windows))]
+
+pub mod sys;
 
 pub mod agent_events;
 pub mod agent_kind;
