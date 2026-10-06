@@ -12,8 +12,8 @@
 //!
 //! On Unix the current command carries a `2>/dev/null || true # <marker>`
 //! tail. That tail is not valid under cmd/PowerShell, so on Windows the
-//! command is the bare `a context hook --engine <engine>`; detection accepts
-//! both forms on every platform so configs survive a move between shells.
+//! command is the bare `a context hook --engine <engine>`. Windows detection
+//! accepts both forms; elsewhere only the marker form counts.
 
 use super::*;
 
@@ -63,6 +63,12 @@ fn awareness_engine(command: &str) -> Option<&str> {
         // A marker with an unrecognised tail is not ours to interpret.
         return None;
     }
+    // Off Windows the marker is the only proof the command is ours: a foreign
+    // `echo context hook --engine X` must never be claimed.
+    #[cfg(not(windows))]
+    if !had_marker {
+        return None;
+    }
     let (_, engine) = rest.rsplit_once(CONTEXT_INFIX)?;
     (!engine.is_empty() && !engine.contains(char::is_whitespace)).then_some(engine)
 }
@@ -102,11 +108,20 @@ mod form_tests {
         let unix =
             format!("/bin/a context hook --engine claude 2>/dev/null || true # {AWARENESS_MARKER}");
         let bare = "C:/bin/a.exe context hook --engine claude";
-        for command in [unix.as_str(), bare] {
+        let mut commands = vec![unix.as_str()];
+        if cfg!(windows) {
+            commands.push(bare);
+        }
+        for command in commands {
             assert!(reports_context(command, "claude"), "{command}");
             assert!(!reports_context(command, "codex"), "{command}");
             assert!(is_awareness_command(command), "{command}");
             assert!(is_managed_hook_command(command), "{command}");
+        }
+        if !cfg!(windows) {
+            // A foreign command that merely mentions the infix is not ours.
+            assert!(!reports_context(bare, "claude"));
+            assert!(!is_awareness_command("echo context hook --engine claude"));
         }
         assert!(!is_awareness_command(
             "a message hook-notice --engine claude"
