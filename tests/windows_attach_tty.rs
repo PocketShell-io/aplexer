@@ -51,6 +51,8 @@ impl Env {
         c.env("APLEXER_STATE_DIR", self.state.path());
         c.env("APLEXER_CONFIG", self.config());
         c.env_remove("APLEXER_SESSION");
+        // The default shell is Git Bash; this file drives PowerShell/cmd.
+        c.env("APLEXER_SHELL", "powershell");
         c
     }
 
@@ -63,6 +65,7 @@ impl Env {
         m.insert("APLEXER_STATE_DIR".into(), Some(self.state.path().into()));
         m.insert("APLEXER_CONFIG".into(), Some(self.config().into()));
         m.insert("APLEXER_SESSION".into(), None);
+        m.insert("APLEXER_SHELL".into(), Some("powershell".into()));
         m
     }
 
@@ -505,8 +508,7 @@ fn switching_and_picker() {
     t.wait_screen("typed-after-picker");
     // Ctrl-b n creates a fresh sibling session and switches to it.
     t.send(b"\x02n");
-    // The default shell prefers pwsh.exe ("PowerShell 7.x") over
-    // powershell.exe ("Windows PowerShell"); either banner contains this.
+    // APLEXER_SHELL=powershell (see Env): the "Windows PowerShell" banner.
     t.wait_screen("PowerShell");
     t.wait_screen(":main");
     t.send(b"\x02d");

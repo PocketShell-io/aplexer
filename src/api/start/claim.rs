@@ -3,7 +3,7 @@
 //! anything is written.
 
 use super::*;
-use crate::{executable_available, ResolvedLaunch};
+use crate::ResolvedLaunch;
 
 /// The `workspace+tag` a start has claimed for its session, decided under
 /// the registry lock. `fence` is the pre-PID worker fence over a superseded
@@ -80,10 +80,13 @@ fn bash_alias_argv_with_home(command: &[String], home: Option<&Path>) -> Option<
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+'));
-    if !bare || !executable_available("bash") {
+    if !bare {
         return None;
     }
-    let mut probe = std::process::Command::new("bash");
+    // On Windows a bare `bash` on PATH can be the WSL launcher; use the
+    // resolved Git-for-Windows bash instead.
+    let bash = crate::bash_program()?;
+    let mut probe = std::process::Command::new(&bash);
     probe
         .args(["-ic", "type -t -- \"$0\"", name])
         .stdin(std::process::Stdio::null())
@@ -97,7 +100,7 @@ fn bash_alias_argv_with_home(command: &[String], home: Option<&Path>) -> Option<
         return None;
     }
     let mut argv = vec![
-        "bash".to_owned(),
+        bash,
         "-ic".to_owned(),
         format!("{name} \"$@\""),
         name.clone(),
@@ -253,10 +256,10 @@ mod bash_alias_tests {
 
     #[test]
     fn bashrc_alias_is_wrapped_and_unknown_names_are_not() {
-        if !executable_available("bash") {
-            eprintln!("no bash on PATH; skipping");
+        let Some(bash) = crate::bash_program() else {
+            eprintln!("no bash available; skipping");
             return;
-        }
+        };
         let home = tempfile::tempdir().unwrap();
         std::fs::write(
             home.path().join(".bashrc"),
@@ -269,7 +272,7 @@ mod bash_alias_tests {
             bash_alias_argv_with_home(&cmd(&["zzaliasprobe", "a b"]), Some(home.path())).unwrap();
         assert_eq!(
             wrapped,
-            cmd(&["bash", "-ic", "zzaliasprobe \"$@\"", "zzaliasprobe", "a b"])
+            cmd(&[&bash, "-ic", "zzaliasprobe \"$@\"", "zzaliasprobe", "a b"])
         );
         assert!(bash_alias_argv_with_home(&cmd(&["zznosuchcmd"]), Some(home.path())).is_none());
         assert!(bash_alias_argv_with_home(&cmd(&["./zzaliasprobe"]), Some(home.path())).is_none());

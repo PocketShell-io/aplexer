@@ -577,7 +577,44 @@ atomically); `-AddToPath` adds that directory to your user `PATH`, and
 `-BinDir` installs elsewhere. Prebuilt `a-windows-amd64.exe` and
 `aplexer-windows-amd64.exe` are attached to each GitHub release.
 
-Sessions default to `pwsh.exe`, then `powershell.exe`, then `%COMSPEC%`.
+Sessions default to Git for Windows' `bash.exe` (started as `bash --login -i`
+so `~/.bashrc` aliases and functions load, with `TERM=xterm-256color`), then
+`pwsh.exe`, then `powershell.exe`, then `%COMSPEC%`. Git Bash is found at
+`%ProgramFiles%\Git`, `%LOCALAPPDATA%\Programs\Git`, next to the `git.exe` on
+`PATH`, or as another `bash.exe` on `PATH`; the WSL launcher
+(`C:\Windows\System32\bash.exe`) is never picked. Linux defaults are
+unchanged (`$SHELL -l`).
+
+**Choosing the shell.** Highest precedence first: `APLEXER_SHELL`, an explicit
+`[engines.shell]` table, the top-level `shell` key in
+`%APPDATA%\aplexer\config.toml`, then the default order above. A value is a
+name (`bash`, `pwsh`, `powershell`, `cmd`) or a full path, optionally with
+arguments; the array form is used verbatim:
+
+```toml
+shell = "pwsh"                                  # switch back to PowerShell
+# shell = "C:\\Program Files\\Git\\bin\\bash.exe"
+# shell = ["bash", "--login", "-i"]
+```
+
+```powershell
+$env:APLEXER_SHELL = "powershell"               # for this console only
+a start -- pwsh                                 # one session, any command
+```
+
+A shell that cannot be found is an error naming the setting (it does not fall
+back), and `a doctor` shows which shell is selected and why.
+
+**PowerShell and `codex.ps1 cannot be loaded`.** If you use PowerShell,
+npm's `.ps1` shims (`codex`, `claude`) are blocked while the execution policy
+is `Restricted`. The safer user-level fix is
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. Alternatively, opt in
+per session with `powershell_execution_policy = "bypass"` in the config file
+(also `remotesigned`, `unrestricted`, `allsigned`): aplexer then starts
+PowerShell with `-ExecutionPolicy <value>`, which applies to that process
+only. It is off by default and aplexer never changes the machine's policy.
+Bash runs npm's `sh` shims and is not affected.
+
 State lives in `%LOCALAPPDATA%\aplexer`, config in
 `%APPDATA%\aplexer\config.toml`.
 

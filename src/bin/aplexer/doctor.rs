@@ -301,6 +301,42 @@ fn config_check(paths: &Paths) -> Value {
     }
 }
 
+/// Which shell `a start` runs by default, and why. A configured shell that
+/// cannot be found is a warning naming the setting.
+fn shell_check(paths: &Paths) -> Value {
+    let config = match Config::load(paths) {
+        Ok(config) => config,
+        Err(error) => {
+            return json!({
+                "name": "shell", "ok": false, "severity": "warning", "required": false,
+                "detail": format!("config did not load ({error:#}); shell not resolved"),
+            })
+        }
+    };
+    if let Some(error) = &config.shell_error {
+        return json!({
+            "name": "shell", "ok": false, "severity": "warning", "required": false,
+            "detail": format!("{error}; `a start` of the shell engine will fail until fixed"),
+        });
+    }
+    match &config.shell_selection {
+        Some(selection) => json!({
+            "name": "shell",
+            "ok": true,
+            "detail": format!(
+                "{} (selected by {}){}",
+                selection.argv.join(" "),
+                selection.source.as_str(),
+                if selection.notes.is_empty() { String::new() } else { format!(": {}", selection.notes.join("; ")) },
+            ),
+            "argv": selection.argv,
+            "source": selection.source.as_str(),
+            "notes": selection.notes,
+        }),
+        None => json!({"name": "shell", "ok": true, "detail": "built-in default"}),
+    }
+}
+
 /// One row of the `engine_resolution` check's `executables` array.
 fn engine_resolution_row_json(row: &ResolutionRow) -> Value {
     json!({
@@ -461,6 +497,7 @@ fn environment_checks(paths: &Paths) -> Vec<Value> {
         named_pipe_path_check(paths),
         job_object_check(),
         config_check(paths),
+        shell_check(paths),
         engine_resolution_check(paths),
     ]
 }
@@ -475,6 +512,7 @@ fn environment_checks(paths: &Paths) -> Vec<Value> {
         cgroup_limits_check(probe_cgroup_limits()),
         launch_placement_check(paths),
         config_check(paths),
+        shell_check(paths),
         engine_resolution_check(paths),
     ]
 }

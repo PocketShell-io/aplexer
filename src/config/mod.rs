@@ -7,12 +7,14 @@ mod discovery;
 mod pathfix;
 mod provider_env;
 mod schema;
+mod shell;
 
 pub use builtins::*;
 pub(crate) use discovery::*;
 pub use pathfix::*;
 pub(crate) use provider_env::*;
 pub use schema::*;
+pub use shell::*;
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::BTreeMap;
@@ -97,21 +99,65 @@ impl Config {
             profiles: discover_profiles(),
             ..Config::default()
         };
-        config.merge_user_file(paths)?;
+        let user_defined_shell = config.merge_user_file(paths)?;
         config.validate()?;
+        config.apply_shell(
+            user_defined_shell,
+            &ShellContext::from_env(),
+            std::env::var("APLEXER_SHELL").ok().as_deref(),
+        );
         Ok(config)
+    }
+
+    /// Settle the `shell` engine: `APLEXER_SHELL`, then an explicit
+    /// `[engines.shell]`, then the `shell` key, then the platform default.
+    /// A failure is recorded (not returned) so it only breaks the `shell`
+    /// engine, with a message naming the setting.
+    pub(crate) fn apply_shell(
+        &mut self,
+        user_defined_engine: bool,
+        ctx: &ShellContext,
+        env_override: Option<&str>,
+    ) {
+        let env_set = env_override.is_some_and(|v| !v.trim().is_empty());
+        if user_defined_engine && !env_set {
+            if let Some(engine) = self.engines.get("shell") {
+                self.shell_selection = Some(ShellSelection {
+                    argv: engine.command.clone(),
+                    env: engine.env.clone(),
+                    source: ShellSource::ConfigEngine,
+                    notes: vec!["[engines.shell] in the config file defines the command".into()],
+                });
+            }
+            return;
+        }
+        match select_shell(
+            ctx,
+            env_override,
+            self.shell.as_ref(),
+            self.powershell_execution_policy.as_deref(),
+        ) {
+            Ok(selection) => {
+                if let Some(engine) = self.engines.get_mut("shell") {
+                    engine.command = selection.argv.clone();
+                    engine.env.extend(selection.env.clone());
+                }
+                self.shell_selection = Some(selection);
+            }
+            Err(error) => self.shell_error = Some(format!("{error:#}")),
+        }
     }
 
     /// Merges the user's config file over the built-in defaults. Options
     /// with an "unset" state (default engine/profile) only override when
     /// set; maps extend so a user entry wins on key collision.
-    fn merge_user_file(&mut self, paths: &Paths) -> Result<()> {
+    fn merge_user_file(&mut self, paths: &Paths) -> Result<bool> {
         let text = match fs::read_to_string(&paths.config_file) {
             Ok(text) => text,
             // No file is the common case and means "defaults". Any other
             // failure (EACCES, ENOTDIR, ...) is a file the user wrote and
             // we could not honour; it must not silently become defaults.
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(error) => {
                 return Err(error).with_context(|| format!("read {}", paths.config_file.display()))
             }
@@ -126,13 +172,16 @@ impl Config {
         if user.default_profile.is_some() {
             self.default_profile = user.default_profile;
         }
+        let user_defined_shell = user.engines.contains_key("shell");
         self.engines.extend(user.engines);
         self.profiles.extend(user.profiles);
+        self.shell = user.shell;
+        self.powershell_execution_policy = user.powershell_execution_policy;
         // A bool has no "unset" value to test the way the options above
         // do, and the built-in default is `false`, so the user's parsed
         // value simply is the answer.
         self.keep_exited = user.keep_exited;
-        Ok(())
+        Ok(user_defined_shell)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -163,6 +212,11 @@ impl Config {
             .or_else(|| profile.and_then(|p| p.engine.clone()))
             .or_else(|| self.default_engine.clone())
             .unwrap_or_else(|| "shell".into());
+        if selected_engine == "shell" {
+            if let Some(error) = &self.shell_error {
+                bail!("{error}");
+            }
+        }
         let engine = self
             .engines
             .get(&selected_engine)

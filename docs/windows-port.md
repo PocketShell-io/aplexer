@@ -20,7 +20,10 @@ Unix behaviour must not change. Unix code stays in place behind `#[cfg(unix)]`
   config `%APPDATA%\aplexer\config.toml`; keep `APLEXER_*` overrides. Home via `USERPROFILE`.
 - **Locks**: `LockFileEx` in place of `flock`. Atomic replace via `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`;
   no dir fsync; no `RENAME_EXCHANGE`.
-- **Shell default**: `pwsh.exe` -> `powershell.exe` -> `%COMSPEC%`, no `-l`.
+- **Shell default**: `APLEXER_SHELL` -> `[engines.shell]` -> config `shell` -> Git for Windows `bash.exe --login -i`
+  (`CHERE_INVOKING=1`, `TERM=xterm-256color`; never the System32 WSL launcher) -> `pwsh.exe` -> `powershell.exe` -> `%COMSPEC%`.
+  Resolution lives in `src/config/shell.rs`; `a doctor` reports the choice. Switch back with `shell = "pwsh"`.
+  Opt-in `powershell_execution_policy = "bypass"` adds process-scope `-ExecutionPolicy` for PowerShell shells.
 - **Gated off on Windows v1** (`#[cfg(target_os = "linux")]`): `cgroup/*`, `placement`, systemd scopes,
   `startup-test-hooks`, subreaper/SIGCHLD.
 - **Process inspection** (`sys/windows/procinfo.rs`) replaces `/proc` for cwd tracking, the

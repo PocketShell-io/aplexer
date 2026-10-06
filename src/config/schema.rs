@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use super::{ordered_unique_env_names, PROVIDER_ENV_UNSET_VARS};
+use super::{ordered_unique_env_names, ShellSelection, ShellSetting, PROVIDER_ENV_UNSET_VARS};
 use crate::{Limits, Paths};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -103,6 +103,25 @@ pub struct Config {
     /// `run_lifecycle` in src/worker.rs).
     #[serde(default)]
     pub keep_exited: bool,
+    /// Which program the built-in `shell` engine runs: a name (`"bash"`,
+    /// `"pwsh"`, `"powershell"`, `"cmd"`), a full path, or an argv array.
+    /// `APLEXER_SHELL` overrides it; an explicit `[engines.shell]` table
+    /// overrides it too. See `config::shell`.
+    #[serde(default)]
+    pub shell: Option<ShellSetting>,
+    /// Opt-in: start a PowerShell shell with `-ExecutionPolicy <value>`
+    /// (process scope only): `bypass`, `remotesigned`, `unrestricted` or
+    /// `allsigned`. Unset by default; never changes the machine's policy.
+    #[serde(default)]
+    pub powershell_execution_policy: Option<String>,
+    /// The shell resolution outcome (filled by `Config::load`).
+    #[serde(skip)]
+    pub shell_selection: Option<ShellSelection>,
+    /// Set when the configured shell could not be resolved; starting the
+    /// `shell` engine then fails with this message instead of falling back,
+    /// and `a doctor` reports it.
+    #[serde(skip)]
+    pub shell_error: Option<String>,
 }
 pub(crate) fn default_config_version() -> u32 {
     1

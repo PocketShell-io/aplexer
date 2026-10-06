@@ -1,7 +1,6 @@
 //! The engines every installation starts with.
 
 use std::collections::BTreeMap;
-use std::env;
 
 use super::{Config, EngineConfig};
 
@@ -22,24 +21,13 @@ pub fn engine_family(engine: &str) -> &str {
     }
 }
 
-/// The default `shell` engine argv. Unix: `$SHELL -l` (login shell).
-#[cfg(unix)]
+/// The default `shell` engine argv (see `config::shell` for the order and
+/// for how `APLEXER_SHELL` / the `shell` config key override it;
+/// `Config::load` applies those over this placeholder).
 fn default_shell_argv() -> Vec<String> {
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    vec![shell, "-l".to_string()]
-}
-
-/// Windows: `pwsh.exe` if on PATH, else `powershell.exe`, else `%COMSPEC%`
-/// (then `cmd.exe`). No login flag: Windows shells have none.
-#[cfg(windows)]
-fn default_shell_argv() -> Vec<String> {
-    let path = env::var("PATH").unwrap_or_default();
-    for candidate in ["pwsh.exe", "powershell.exe"] {
-        if let Some(found) = super::pathfix::which_in(candidate, &path) {
-            return vec![found.to_string_lossy().into_owned()];
-        }
-    }
-    vec![env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())]
+    super::select_shell(&super::ShellContext::from_env(), None, None, None)
+        .map(|selection| selection.argv)
+        .unwrap_or_else(|_| vec!["/bin/sh".to_string()])
 }
 
 impl Config {
