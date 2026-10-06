@@ -1,4 +1,4 @@
-"""Tests for the wheel-building script (scripts/build-wheels.py)."""
+﻿"""Tests for the wheel-building script (scripts/build-wheels.py)."""
 
 import importlib.util
 import os
@@ -134,6 +134,7 @@ class TestMainMatrixEnforcement(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertEqual(stdout, "")
             self.assertIn("required platform linux-arm64", stderr)
+            self.assertIn("required platform windows-amd64", stderr)
             self.assertIn("refusing a partial wheel matrix", stderr)
             self.assertFalse(os.path.exists(output_dir))
 
@@ -208,6 +209,7 @@ class TestMainMatrixEnforcement(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertIn("required platform linux-amd64", stderr)
             self.assertIn("required platform linux-arm64", stderr)
+            self.assertIn("required platform windows-amd64", stderr)
             self.assertFalse(os.path.exists(output_dir))
 
 
