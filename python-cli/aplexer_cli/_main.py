@@ -11,18 +11,21 @@ import platform
 import sys
 
 
-# Release wheels exist only for Linux x86_64 and Linux aarch64. Linux normally
+# Release wheels exist for Linux x86_64, Linux aarch64 and Windows x86_64.
+# Linux normally
 # reports the latter as "aarch64", but accept "arm64" as an equivalent machine
 # spelling when locating the same bundled binary.
 _PLATFORM_MAP = {
     ("linux", "x86_64"): "",
     ("linux", "aarch64"): "",
     ("linux", "arm64"): "",
+    ("win32", "AMD64"): ".exe",
 }
 
 _SUPPORTED_PLATFORMS = [
     "Linux x86_64",
     "Linux aarch64 (arm64)",
+    "Windows x86_64",
 ]
 
 # The one binary this wheel bundles; both console scripts execute it.
@@ -69,6 +72,12 @@ def _run():
 
     args = [binary_path] + sys.argv[1:]
 
+    if sys.platform == "win32":
+        # os.exec* on Windows spawns a new process and returns immediately, so
+        # wait for the child and forward its exit status instead.
+        import subprocess
+
+        sys.exit(subprocess.call(args))
     os.execvp(binary_path, args)
 
 

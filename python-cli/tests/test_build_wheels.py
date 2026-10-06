@@ -76,12 +76,13 @@ class TestBuildWheel(unittest.TestCase):
                 self.assertIn("Requires-Python: >=3.11\n", metadata)
                 self.assertIn("Requires-Dist: aplexer-client==0.1.0\n", metadata)
 
-    def test_release_targets_are_linux_only_with_matching_architecture_tags(self):
+    def test_release_targets_have_matching_architecture_tags(self):
         self.assertEqual(
             build_wheels.TARGETS,
             [
                 ("linux-amd64", "linux_x86_64", ""),
                 ("linux-arm64", "linux_aarch64", ""),
+                ("windows-amd64", "win_amd64", ".exe"),
             ],
         )
 
@@ -91,8 +92,9 @@ class TestMainMatrixEnforcement(unittest.TestCase):
     def write_binaries(root, platform):
         artifact_dir = os.path.join(root, "aplexer-bins-" + platform)
         os.makedirs(artifact_dir)
+        suffix = ".exe" if platform.startswith("windows") else ""
         for name in build_wheels.BINARY_NAMES:
-            with open(os.path.join(artifact_dir, name), "wb") as f:
+            with open(os.path.join(artifact_dir, name + suffix), "wb") as f:
                 f.write(("#!/bin/sh\necho " + name + "\n").encode("ascii"))
 
     @staticmethod
@@ -124,6 +126,7 @@ class TestMainMatrixEnforcement(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertEqual(stdout, "")
             self.assertIn("required platform linux-arm64", stderr)
+            self.assertIn("required platform windows-amd64", stderr)
             self.assertIn("refusing a partial wheel matrix", stderr)
             self.assertFalse(os.path.exists(output_dir))
 
@@ -150,18 +153,20 @@ class TestMainMatrixEnforcement(unittest.TestCase):
             os.makedirs(binaries_dir)
             self.write_binaries(binaries_dir, "linux-amd64")
             self.write_binaries(binaries_dir, "linux-arm64")
+            self.write_binaries(binaries_dir, "windows-amd64")
             output_dir = os.path.join(tmpdir, "dist")
 
             result, stdout, stderr = self.run_main(binaries_dir, output_dir)
 
             self.assertEqual(result, 0)
             self.assertEqual(stderr, "")
-            self.assertIn("2 wheels built, 0 skipped", stdout)
+            self.assertIn("3 wheels built, 0 skipped", stdout)
             self.assertEqual(
                 set(os.listdir(output_dir)),
                 {
                     "aplexer-0.1.0-py3-none-linux_x86_64.whl",
                     "aplexer-0.1.0-py3-none-linux_aarch64.whl",
+                    "aplexer-0.1.0-py3-none-win_amd64.whl",
                 },
             )
 
@@ -197,6 +202,7 @@ class TestMainMatrixEnforcement(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertIn("required platform linux-amd64", stderr)
             self.assertIn("required platform linux-arm64", stderr)
+            self.assertIn("required platform windows-amd64", stderr)
             self.assertFalse(os.path.exists(output_dir))
 
 

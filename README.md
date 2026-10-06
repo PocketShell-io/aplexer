@@ -545,6 +545,50 @@ and `APLEXER_WORKER` identify it to tools like `a whoami`.
 
 </details>
 
+## Windows
+
+aplexer also runs natively on Windows (x86_64), without WSL.
+
+**Requirements**
+
+- Windows 10 version 1809 or newer, or Windows Server 2019 or newer (the
+  session PTY uses ConPTY, which first shipped in 1809)
+- Python 3.11+ for the pip install (the binary is precompiled), or Rust 1.85+
+  with the MSVC toolchain to build from source
+
+**Install**
+
+```powershell
+python -m pip install aplexer
+```
+
+or from a checkout:
+
+```powershell
+scripts\install.ps1 -AddToPath
+```
+
+The script installs `aplexer.exe` and an `a.exe` copy of it to
+`%LOCALAPPDATA%\Programs\aplexer\bin` (replacing any previous install
+atomically); `-AddToPath` adds that directory to your user `PATH`, and
+`-BinDir` installs elsewhere. Prebuilt `a-windows-amd64.exe` and
+`aplexer-windows-amd64.exe` are attached to each GitHub release.
+
+Sessions default to `pwsh.exe`, then `powershell.exe`, then `%COMSPEC%`.
+State lives in `%LOCALAPPDATA%\aplexer`, config in
+`%APPDATA%\aplexer\config.toml`.
+
+**Known v1 limits**
+
+- No cgroup-style resource limits (`--memory`, `--pids`, `--cpu-*`); each
+  session's process tree is contained and killed together by a Job Object
+  instead.
+- Signals are limited to `INT` and `TERM` (delivered as Ctrl-C to the PTY)
+  and `KILL` (terminates the whole job). Others report an "unsupported on
+  Windows" error.
+- The status bar does not show the foreground command, and working-directory
+  tracking is best effort.
+
 ## Troubleshooting
 
 Start with `a doctor`, which checks the runtime and state directories, socket

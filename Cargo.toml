@@ -3,7 +3,7 @@ name = "aplexer"
 version = "0.1.9"
 edition = "2021"
 rust-version = "1.85"
-description = "Daemonless, durable PTY session workers for Linux"
+description = "Daemonless, durable PTY session workers for Linux and Windows"
 license = "Apache-2.0"
 repository = "https://github.com/PocketShell-io/aplexer"
 
