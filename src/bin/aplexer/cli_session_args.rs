@@ -255,6 +255,10 @@ pub(crate) struct CaptureArgs {
     #[arg(long, requires = "screen")]
     pub(crate) plain: bool,
 }
+#[cfg(unix)]
+const DEFAULT_KILL_SIGNAL: &str = "HUP";
+#[cfg(windows)]
+const DEFAULT_KILL_SIGNAL: &str = "TERM";
 #[derive(Args)]
 pub(crate) struct KillArgs {
     #[command(flatten)]
@@ -267,7 +271,10 @@ pub(crate) struct KillArgs {
     /// the conventional "terminal went away" signal and terminates both
     /// shells and typical agents/servers via the default disposition; pass
     /// --signal TERM explicitly for a graceful TERM-first shutdown.
-    #[arg(long, default_value = "HUP")]
+    ///
+    /// Windows has no HUP: the default is TERM, which writes Ctrl-C to the
+    /// session's pseudoconsole before the grace-then-KILL escalation.
+    #[arg(long, default_value = DEFAULT_KILL_SIGNAL)]
     pub(crate) signal: String,
     /// How long to wait after --signal before escalating to SIGKILL
     #[arg(long, default_value_t = 2_000)]

@@ -55,9 +55,9 @@ use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT,
-    INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+    CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
@@ -630,8 +630,20 @@ pub fn spawn_workload<S: AsRef<OsStr>>(
 /// fully detached from the launching console and process group. Tries
 /// `CREATE_BREAKAWAY_FROM_JOB` first so the worker survives the launcher's
 /// job being closed; if the job forbids breakaway, retries without it.
+///
+/// std::process::Command always creates with InheritHandles = TRUE, so the
+/// launcher's own inheritable std handles (a pipe from  start | ..., a CI
+/// log capture) would leak into the long-lived worker and keep the reader
+/// waiting for EOF until the session ends. Their inherit flag is cleared for
+/// the duration of the spawn; the worker's own stdio is duplicated by std
+/// from the Stdio values and is unaffected.
 pub fn spawn_detached_worker(command: &mut Command) -> io::Result<Child> {
-    let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+    let _guard = NoStdHandleInherit::new();
+    // No CREATE_NEW_PROCESS_GROUP: it would disable Ctrl-C for the worker, and
+    // that state is inherited by every workload, so the graceful signal (a
+    // Ctrl-C byte on the pseudoconsole) would never reach them. DETACHED_PROCESS
+    // already keeps console control events from the launcher away.
+    let base = DETACHED_PROCESS | CREATE_NO_WINDOW;
     match command
         .creation_flags(base | CREATE_BREAKAWAY_FROM_JOB)
         .spawn()
@@ -639,6 +651,44 @@ pub fn spawn_detached_worker(command: &mut Command) -> io::Result<Child> {
         Ok(child) => Ok(child),
         Err(e) if e.raw_os_error() == Some(5) => command.creation_flags(base).spawn(),
         Err(e) => Err(e),
+    }
+}
+
+/// Clears HANDLE_FLAG_INHERIT on this process's std handles, restoring each
+/// one that had it set on drop.
+struct NoStdHandleInherit(Vec<(HANDLE, u32)>);
+
+impl NoStdHandleInherit {
+    fn new() -> Self {
+        use windows_sys::Win32::Foundation::GetHandleInformation;
+        use windows_sys::Win32::System::Console::{
+            GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        let mut saved = Vec::new();
+        for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let handle = unsafe { GetStdHandle(id) };
+            if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+                continue;
+            }
+            let mut flags = 0u32;
+            if unsafe { GetHandleInformation(handle, &mut flags) } == 0 {
+                continue;
+            }
+            if flags & HANDLE_FLAG_INHERIT != 0
+                && unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } != 0
+            {
+                saved.push((handle, HANDLE_FLAG_INHERIT));
+            }
+        }
+        Self(saved)
+    }
+}
+
+impl Drop for NoStdHandleInherit {
+    fn drop(&mut self) {
+        for (handle, flags) in &self.0 {
+            unsafe { SetHandleInformation(*handle, HANDLE_FLAG_INHERIT, *flags) };
+        }
     }
 }
 

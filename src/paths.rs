@@ -326,7 +326,7 @@ pub fn canonical_workspace(path: &Path) -> Result<PathBuf> {
     } else {
         env::current_dir()?.join(path)
     };
-    fs::canonicalize(&absolute).or_else(|_| {
+    let canonical = fs::canonicalize(&absolute).or_else(|_| {
         let parent = absolute
             .parent()
             .ok_or_else(|| anyhow!("invalid workspace"))?;
@@ -334,5 +334,31 @@ pub fn canonical_workspace(path: &Path) -> Result<PathBuf> {
             .file_name()
             .ok_or_else(|| anyhow!("invalid workspace"))?;
         Ok::<PathBuf, anyhow::Error>(fs::canonicalize(parent)?.join(leaf))
-    })
+    })?;
+    #[cfg(windows)]
+    {
+        Ok(strip_verbatim_prefix(canonical))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(canonical)
+    }
+}
+
+/// Windows `canonicalize` returns `\\?\C:\...`. Workspaces are handed to
+/// workloads as their cwd and shown to users, and `cmd.exe` refuses a
+/// verbatim cwd (it silently falls back to `C:\Windows`), so keep the plain
+/// drive or UNC form.
+#[cfg(windows)]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        if rest.as_bytes().get(1) == Some(&b':') {
+            return PathBuf::from(rest);
+        }
+    }
+    path
 }
