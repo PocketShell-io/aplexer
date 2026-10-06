@@ -564,7 +564,7 @@ mod stall_guard_tests {
 
     #[test]
     fn a_peer_that_never_drains_is_reaped() {
-        let (mut writer, _peer) = pair().unwrap();
+        let (mut writer, _peer) = pair();
         fill_until_blocked(&writer);
         let mut guard = StallGuard::new(TEST_STALL_TICKS);
         let payload = vec![7u8; 64];
@@ -578,7 +578,7 @@ mod stall_guard_tests {
 
     #[test]
     fn a_slowly_draining_peer_is_never_reaped() {
-        let (mut writer, peer) = pair().unwrap();
+        let (mut writer, peer) = pair();
         fill_until_blocked(&writer);
         // Drain everything available every few ms -- `TIOCOUTQ` only drops
         // when whole skbs are consumed, so this is the "slow but real" peer
@@ -617,7 +617,7 @@ mod stall_guard_tests {
         // carry those bytes twice and every later frame would parse as
         // garbage. The transfer must resume exactly where the socket left
         // off, and the peer must read header+payload exactly once.
-        let (mut writer, peer) = pair().unwrap();
+        let (mut writer, peer) = pair();
         writer.set_write_timeout(Some(TEST_STALL_TICK)).unwrap();
         let payload: Vec<u8> = (0..=255u8).cycle().take(300_000).collect();
         let mut transfer = FrameTransfer::new(FrameKind::Data, &payload).unwrap();

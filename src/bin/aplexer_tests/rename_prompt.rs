@@ -56,6 +56,7 @@ fn rename_prompt_keys_route_by_byte() {
 
 /// While the prompt is up it owns the bar: it beats the normal status text
 /// and a flash, and it is padded to the row width like every other bar.
+#[cfg(unix)]
 #[test]
 fn status_bar_prefers_the_rename_prompt_over_everything_else() {
     // flash_status forces a bar redraw on the way in, which writes fd 1.

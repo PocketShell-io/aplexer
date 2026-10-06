@@ -545,6 +545,7 @@ fn terminal_reset_disables_every_snapshot_input_mode_variant() {
 /// re-enabled `alternateScroll` -- the wheel typing arrow keys into the
 /// agent -- for the rest of the attach whenever the client did not hold
 /// the mouse.
+#[cfg(unix)]
 #[test]
 fn switch_reset_keeps_the_hosts_own_modes() {
     assert!(

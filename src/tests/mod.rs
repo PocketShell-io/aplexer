@@ -20,7 +20,9 @@ mod util;
 mod warnings;
 
 use super::*;
-use crate::paths::{absolute_override_path, absolute_xdg_path};
+use crate::paths::absolute_override_path;
+#[cfg(unix)]
+use crate::paths::absolute_xdg_path;
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;

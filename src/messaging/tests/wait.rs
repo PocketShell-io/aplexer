@@ -263,6 +263,7 @@ fn assert_lock_deadline(
         .contains("timed out acquiring mailbox state"));
 }
 
+#[cfg(unix)]
 #[test]
 fn event_batches_leave_time_to_rescan_under_publication_storm() {
     let root = TempDir::new().unwrap();

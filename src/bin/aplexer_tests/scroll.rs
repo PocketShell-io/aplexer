@@ -250,6 +250,7 @@ fn an_empty_pager_says_why_it_is_empty() {
 /// A pager whose "back to live" gesture needs a second keystroke to
 /// actually hand the keyboard back is the confusion this mode exists to
 /// avoid, so scrolling down past the live screen leaves the mode.
+#[cfg(unix)]
 #[test]
 fn scrolling_down_past_the_live_screen_leaves_scroll_mode() {
     let ctx = status_ctx_for_test(true);
@@ -276,6 +277,7 @@ fn scrolling_down_past_the_live_screen_leaves_scroll_mode() {
 
 /// `Ctrl-b [` opens the pager without moving it, and without immediately
 /// closing it again -- the `Stay` command exists for exactly that.
+#[cfg(unix)]
 #[test]
 fn ctrl_b_bracket_opens_the_pager_at_the_live_screen() {
     let ctx = status_ctx_for_test(true);
@@ -304,6 +306,7 @@ fn scan_ctrl_b_bracket_opens_scroll_mode() {
 /// The routing layer, not just the decoder: with the pager up, a chunk
 /// of ordinary typing comes back empty -- nothing to send to the
 /// workload.
+#[cfg(unix)]
 #[test]
 fn scroll_input_forwards_nothing_while_the_pager_is_up() {
     let ctx = status_ctx_for_test(true);
@@ -344,6 +347,7 @@ fn scroll_input_forwards_nothing_while_the_pager_is_up() {
 /// is exactly the "worker went away between the keystroke and the
 /// rebuild" case: `Ctrl-b [` still opens the pager on whatever the live
 /// model has, which is the pre-refresh behavior.
+#[cfg(unix)]
 #[test]
 fn pager_entry_survives_a_failed_history_refresh() {
     let ctx = status_ctx_for_test(true);
@@ -367,6 +371,7 @@ fn pager_entry_survives_a_failed_history_refresh() {
 /// swallowed (the client borrowed the mouse; the workload never asked
 /// for it), and a lone Esc takes the keyboard back with the pager still
 /// up, paging again.
+#[cfg(unix)]
 #[test]
 fn type_through_forwards_text_until_esc_returns_to_paging() {
     let ctx = status_ctx_for_test(true);
@@ -483,6 +488,7 @@ fn pane_delivery_appends_enter_by_default_and_no_enter_drops_it() {
 /// roll up opens the pager -- with no `Ctrl-b` first, which is the
 /// gesture the user actually reported as broken. Ordinary typing in the
 /// same chunk still gets through.
+#[cfg(unix)]
 #[test]
 fn wheel_up_opens_the_pager_with_no_prefix_and_typing_still_passes() {
     let ctx = status_ctx_for_test(true);
@@ -503,6 +509,7 @@ fn wheel_up_opens_the_pager_with_no_prefix_and_typing_still_passes() {
 
 /// A mouse report split across two reads is reassembled rather than
 /// leaking its tail into the workload as text.
+#[cfg(unix)]
 #[test]
 fn a_split_mouse_report_is_buffered_not_leaked_to_the_workload() {
     let ctx = status_ctx_for_test(true);
@@ -517,6 +524,7 @@ fn a_split_mouse_report_is_buffered_not_leaked_to_the_workload() {
     assert!(ctx.scroll.is_active());
 }
 
+#[cfg(unix)]
 #[test]
 fn workload_mouse_mode_keeps_clicks_but_routes_both_wheel_directions_to_the_pane() {
     let mut ctx = status_ctx_for_test(true);
@@ -561,6 +569,7 @@ fn alternate_screen_workload_receives_its_wheel_reports() {
     assert!(!ctx.scroll.is_active());
 }
 
+#[cfg(unix)]
 #[test]
 fn alternate_screen_without_workload_mouse_still_uses_the_pager() {
     let mut ctx = status_ctx_for_test(true);
@@ -579,6 +588,7 @@ fn alternate_screen_without_workload_mouse_still_uses_the_pager() {
     assert!(ctx.scroll.is_active());
 }
 
+#[cfg(unix)]
 #[test]
 fn legacy_and_utf8_mouse_reports_are_split_safely_and_keep_clicks() {
     let mut ctx = status_ctx_for_test(true);
@@ -678,6 +688,7 @@ fn live_repaint_reasserts_alternate_scroll_off() {
 /// The counterpart guarantee: a bare `ESC` at the end of a chunk is
 /// forwarded immediately while the pager is down, so pressing Escape in
 /// an editor inside the session does not wait for the next keystroke.
+#[cfg(unix)]
 #[test]
 fn a_bare_escape_is_never_held_back_from_the_workload() {
     let ctx = status_ctx_for_test(true);

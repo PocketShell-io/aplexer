@@ -5,6 +5,7 @@ fn ctx_in_typing_mode() -> StatusBarCtx {
     ctx
 }
 
+#[cfg(unix)]
 #[test]
 fn typing_bar_waits_for_an_escape_boundary_and_parks_until_one() {
     let _fd1 = FD1_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
@@ -45,6 +46,7 @@ fn typing_bar_waits_for_an_escape_boundary_and_parks_until_one() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn layout_erase_while_typing_repairs_an_unchanged_bar_row() {
     let _fd1 = FD1_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
@@ -77,6 +79,7 @@ fn layout_erase_while_typing_repairs_an_unchanged_bar_row() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn pager_bar_without_typing_still_writes_unconditionally() {
     // Deliberate asymmetry, pinned so it reads as decided rather than
@@ -120,6 +123,7 @@ fn resize_config(ctx: &StatusBarCtx) -> ResizeThreadConfig {
 /// scrolled-back frame. That frame is written under `StreamSuspended`, so
 /// painting it here put old history under live bytes, and did so even
 /// mid-escape-sequence, where a live injection has to wait.
+#[cfg(unix)]
 #[test]
 #[cfg(unix)]
 fn resize_while_typing_repaints_the_live_screen_not_the_pager() {
@@ -168,6 +172,7 @@ fn resize_while_typing_repaints_the_live_screen_not_the_pager() {
 /// workload is silent. In type-through it must deliver a parked resize the
 /// way the frame loop would, or a deferred DECSTBM on a quiet session stays
 /// parked until the pager closes.
+#[cfg(unix)]
 #[test]
 fn typing_tick_delivers_a_parked_resize_on_a_silent_workload() {
     let _fd1 = FD1_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
@@ -393,6 +398,7 @@ fn deferred_resize_is_written_once_the_defer_limit_expires() {
 /// scrolling behavior; it does not erase the bar that was painted at the
 /// old bottom. The production wrapper must therefore repaint the model so
 /// the old row is cleared and the only visible bar is on the new bottom.
+#[cfg(unix)]
 #[test]
 fn resize_repaints_the_status_bar_at_the_new_bottom() {
     let _fd1 = FD1_GUARD.lock().unwrap_or_else(PoisonError::into_inner);
