@@ -505,7 +505,9 @@ fn switching_and_picker() {
     t.wait_screen("typed-after-picker");
     // Ctrl-b n creates a fresh sibling session and switches to it.
     t.send(b"\x02n");
-    t.wait_screen("Windows PowerShell");
+    // The default shell prefers pwsh.exe ("PowerShell 7.x") over
+    // powershell.exe ("Windows PowerShell"); either banner contains this.
+    t.wait_screen("PowerShell");
     t.wait_screen(":main");
     t.send(b"\x02d");
     assert_eq!(t.wait_exit(), 0);

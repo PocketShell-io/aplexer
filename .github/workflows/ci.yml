@@ -101,7 +101,7 @@ jobs:
       # Executed-test floor for scripts/validate.ps1 (passed + failed only).
       # Conservative placeholder: measure a real Windows run and raise it to
       # sit well under the actual count, like the Linux floors in validate.sh.
-      WINDOWS_MIN_TESTS: "395"
+      WINDOWS_MIN_TESTS: "430"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
