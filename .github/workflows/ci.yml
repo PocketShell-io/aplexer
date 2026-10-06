@@ -99,9 +99,10 @@ jobs:
     timeout-minutes: 45
     env:
       # Executed-test floor for scripts/validate.ps1 (passed + failed only).
-      # Conservative placeholder: measure a real Windows run and raise it to
-      # sit well under the actual count, like the Linux floors in validate.sh.
-      WINDOWS_MIN_TESTS: "430"
+      # Measured 2026-10-06: a full `cargo test --all-targets` executes ~725
+      # tests on Windows. The floor sits at ~52% of that, the same margin the
+      # Linux floors in validate.sh use, so it only catches a collapsed suite.
+      WINDOWS_MIN_TESTS: "380"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 

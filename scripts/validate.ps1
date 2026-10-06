@@ -3,12 +3,12 @@
 #   scripts/validate.ps1
 #
 # The executed-test floor comes from the WINDOWS_MIN_TESTS environment
-# variable (or -MinTests). The default of 40 is a deliberately conservative
-# placeholder: it MUST be measured against a real Windows run and raised to
-# sit well under the actual executed count, like the Linux floors.
+# variable (or -MinTests). The default of 380 was measured on 2026-10-06
+# (~725 tests executed by `cargo test --all-targets`) and sits at ~52% of that,
+# like the Linux floors; re-measure it when the suite grows substantially.
 [CmdletBinding()]
 param(
-    [int]$MinTests = $(if ($env:WINDOWS_MIN_TESTS) { [int]$env:WINDOWS_MIN_TESTS } else { 40 })
+    [int]$MinTests = $(if ($env:WINDOWS_MIN_TESTS) { [int]$env:WINDOWS_MIN_TESTS } else { 380 })
 )
 
 $ErrorActionPreference = 'Stop'

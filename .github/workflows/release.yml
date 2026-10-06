@@ -148,9 +148,9 @@ jobs:
       run:
         shell: pwsh
     env:
-      # Executed-test floor (passed + failed only). Conservative placeholder:
-      # measure a real Windows run and raise it, as for the Linux floors.
-      WINDOWS_MIN_TESTS: "430"
+      # Executed-test floor (passed + failed only). Measured 2026-10-06: ~725
+      # tests run on Windows; the floor is ~52% of that, as for the Linux floors.
+      WINDOWS_MIN_TESTS: "380"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
