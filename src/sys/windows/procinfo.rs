@@ -4,7 +4,7 @@
 //! Seam API (all best-effort, `None`/empty on any failure, never panics):
 //! - [`normalize_image_name`]`(&str) -> String`: basename, `.exe` stripped, lowercased.
 //! - [`image_name`]`(pid) -> Option<String>`: normalized image name.
-//! - [`cmdline`]`(pid) -> Option<String>`: raw command line (PEB, x64 targets only).
+//! - [`cmdline`]`(pid) -> Option<String>`: raw command line (PEB; x64 and WOW64 targets).
 //! - [`environ`]`(pid) -> Option<Vec<(String, String)>>` / [`environ_var`]`(pid, name)`
 //!   (case-insensitive name match, as on Windows).
 //! - [`cwd`]`(pid) -> Option<PathBuf>`: current directory (PEB).
@@ -12,7 +12,8 @@
 //!   via `CreateToolhelp32Snapshot`.
 //!
 //! PEB reads need `PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ`, so they
-//! work for same-user processes only and not for 32-bit (WOW64) targets.
+//! work for same-user processes only (others yield `None`); 32-bit (WOW64)
+//! targets are read through their PEB32.
 
 use std::ffi::{c_void, OsString};
 use std::os::windows::ffi::OsStringExt;
@@ -35,12 +36,37 @@ use windows_sys::Win32::System::Threading::{
 /// Upper bound on any single remote read (environment blocks can be large).
 const MAX_READ: usize = 4 * 1024 * 1024;
 
-// x64 layouts (stable since Windows 8; EnvironmentSize since Vista).
-const PEB_PROCESS_PARAMETERS: usize = 0x20;
-const PARAMS_CURRENT_DIRECTORY: usize = 0x38; // UNICODE_STRING DosPath
-const PARAMS_COMMAND_LINE: usize = 0x70; // UNICODE_STRING
-const PARAMS_ENVIRONMENT: usize = 0x80; // PVOID
-const PARAMS_ENVIRONMENT_SIZE: usize = 0x3F0; // SIZE_T
+/// Field offsets inside the PEB / `RTL_USER_PROCESS_PARAMETERS` of a target,
+/// plus its pointer width. Stable since Windows 8 (EnvironmentSize: Vista).
+#[derive(Clone, Copy)]
+struct Layout {
+    ptr: usize,
+    peb_params: usize,
+    /// `UNICODE_STRING DosPath` of the current directory.
+    cur_dir: usize,
+    command_line: usize,
+    environment: usize,
+    env_size: usize,
+}
+
+const LAYOUT64: Layout = Layout {
+    ptr: 8,
+    peb_params: 0x20,
+    cur_dir: 0x38,
+    command_line: 0x70,
+    environment: 0x80,
+    env_size: 0x3F0,
+};
+
+/// 32-bit (WOW64) target, read through its PEB32.
+const LAYOUT32: Layout = Layout {
+    ptr: 4,
+    peb_params: 0x10,
+    cur_dir: 0x24,
+    command_line: 0x40,
+    environment: 0x48,
+    env_size: 0x290,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcEntry {
@@ -183,16 +209,26 @@ fn read_mem(h: HANDLE, addr: usize, len: usize) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-fn read_usize(h: HANDLE, addr: usize) -> Option<usize> {
-    let b = read_mem(h, addr, 8)?;
-    Some(usize::from_le_bytes(b.try_into().ok()?))
+fn read_ptr(h: HANDLE, addr: usize, l: Layout) -> Option<usize> {
+    let b = read_mem(h, addr, l.ptr)?;
+    if b.len() != l.ptr {
+        return None;
+    }
+    let mut w = [0u8; 8];
+    w[..l.ptr].copy_from_slice(&b);
+    Some(usize::from_le_bytes(w))
 }
 
-fn read_unicode_string(h: HANDLE, addr: usize) -> Option<Vec<u16>> {
-    // UNICODE_STRING { u16 Length; u16 MaximumLength; pad; PWSTR Buffer } (x64)
-    let head = read_mem(h, addr, 16)?;
+fn read_unicode_string(h: HANDLE, addr: usize, l: Layout) -> Option<Vec<u16>> {
+    // UNICODE_STRING { u16 Length; u16 MaximumLength; <pad on x64>; PWSTR Buffer }
+    let head = read_mem(h, addr, 2 * l.ptr)?;
+    if head.len() < 2 * l.ptr {
+        return None;
+    }
     let len = u16::from_le_bytes([head[0], head[1]]) as usize;
-    let buf = usize::from_le_bytes(head[8..16].try_into().ok()?);
+    let mut w = [0u8; 8];
+    w[..l.ptr].copy_from_slice(&head[l.ptr..2 * l.ptr]);
+    let buf = usize::from_le_bytes(w);
     if len == 0 {
         return Some(Vec::new());
     }
@@ -205,8 +241,9 @@ fn read_unicode_string(h: HANDLE, addr: usize) -> Option<Vec<u16>> {
 }
 
 /// Open `pid` and resolve its `RTL_USER_PROCESS_PARAMETERS` address.
-/// `None` for 32-bit targets, other users' processes, or non-x64 hosts.
-fn with_params<T>(pid: u32, f: impl FnOnce(HANDLE, usize) -> Option<T>) -> Option<T> {
+/// 32-bit (WOW64) targets are read through their PEB32. `None` for other
+/// users' processes, non-x64 hosts, or when the PEB cannot be read.
+fn with_params<T>(pid: u32, f: impl FnOnce(HANDLE, usize, Layout) -> Option<T>) -> Option<T> {
     if !cfg!(target_pointer_width = "64") {
         return None;
     }
@@ -221,38 +258,43 @@ fn with_params<T>(pid: u32, f: impl FnOnce(HANDLE, usize) -> Option<T>) -> Optio
             std::mem::size_of::<usize>() as u32,
             std::ptr::null_mut(),
         );
-        if st < 0 || wow != 0 {
+        if st < 0 {
             return None;
         }
-        // PROCESS_BASIC_INFORMATION (class 0): PebBaseAddress is the 2nd pointer.
-        let mut pbi = [0usize; 6];
-        let st = NtQueryInformationProcess(
-            h.0,
-            0,
-            pbi.as_mut_ptr().cast(),
-            std::mem::size_of_val(&pbi) as u32,
-            std::ptr::null_mut(),
-        );
-        if st < 0 || pbi[1] == 0 {
-            return None;
-        }
-        let params = read_usize(h.0, pbi[1] + PEB_PROCESS_PARAMETERS)?;
+        let (peb, l) = if wow != 0 {
+            (wow, LAYOUT32)
+        } else {
+            // PROCESS_BASIC_INFORMATION (class 0): PebBaseAddress is the 2nd pointer.
+            let mut pbi = [0usize; 6];
+            let st = NtQueryInformationProcess(
+                h.0,
+                0,
+                pbi.as_mut_ptr().cast(),
+                std::mem::size_of_val(&pbi) as u32,
+                std::ptr::null_mut(),
+            );
+            if st < 0 || pbi[1] == 0 {
+                return None;
+            }
+            (pbi[1], LAYOUT64)
+        };
+        let params = read_ptr(h.0, peb + l.peb_params, l)?;
         if params == 0 {
             return None;
         }
-        f(h.0, params)
+        f(h.0, params, l)
     }
 }
 
 pub fn cmdline(pid: u32) -> Option<String> {
-    with_params(pid, |h, p| {
-        read_unicode_string(h, p + PARAMS_COMMAND_LINE).map(|w| wide_to_string(&w))
+    with_params(pid, |h, p, l| {
+        read_unicode_string(h, p + l.command_line, l).map(|w| wide_to_string(&w))
     })
 }
 
 pub fn cwd(pid: u32) -> Option<PathBuf> {
-    with_params(pid, |h, p| {
-        let w = read_unicode_string(h, p + PARAMS_CURRENT_DIRECTORY)?;
+    with_params(pid, |h, p, l| {
+        let w = read_unicode_string(h, p + l.cur_dir, l)?;
         if w.is_empty() {
             return None;
         }
@@ -268,9 +310,9 @@ pub fn cwd(pid: u32) -> Option<PathBuf> {
 }
 
 pub fn environ(pid: u32) -> Option<Vec<(String, String)>> {
-    with_params(pid, |h, p| {
-        let env = read_usize(h, p + PARAMS_ENVIRONMENT)?;
-        let size = read_usize(h, p + PARAMS_ENVIRONMENT_SIZE)?.min(MAX_READ);
+    with_params(pid, |h, p, l| {
+        let env = read_ptr(h, p + l.environment, l)?;
+        let size = read_ptr(h, p + l.env_size, l)?.min(MAX_READ);
         let raw = read_mem(h, env, size)?;
         let wide: Vec<u16> = raw
             .chunks_exact(2)
@@ -729,6 +771,41 @@ mod tests {
             found.iter().any(|p| p.ends_with("held.jsonl")),
             "found {found:?}"
         );
+    }
+
+    #[test]
+    fn reads_a_32bit_wow64_target() {
+        let exe = std::path::Path::new(r"C:\Windows\SysWOW64\cmd.exe");
+        if !exe.exists() {
+            return;
+        }
+        let dir = std::env::temp_dir();
+        let mut child = std::process::Command::new(exe)
+            .args(["/c", "ping -n 6 127.0.0.1 >nul"])
+            .env("APLEXER_WOW_PROBE", "yes")
+            .current_dir(&dir)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut cl = None;
+        for _ in 0..40 {
+            cl = cmdline(pid);
+            if cl.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let cwd_seen = cwd(pid);
+        let env_seen = environ_var(pid, "aplexer_wow_probe");
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(cl.unwrap().contains("ping -n 6"));
+        assert_eq!(
+            cwd_seen.map(|p| p.to_string_lossy().to_lowercase()),
+            Some(dir.to_string_lossy().trim_end_matches('\\').to_lowercase())
+        );
+        assert_eq!(env_seen.as_deref(), Some("yes"));
     }
 
     #[test]

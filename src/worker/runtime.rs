@@ -599,7 +599,8 @@ impl WorkerRuntime {
         }
         #[cfg(target_os = "linux")]
         let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).ok();
-        // Windows: best-effort PEB read; `None` degrades to "no cwd tracking".
+        // Windows: PEB read via procinfo; `None` (access denied, exited, or
+        // the shell is elevated) leaves the workspace unchanged.
         #[cfg(windows)]
         let cwd = crate::sys::windows::procinfo::cwd(pid);
         let Some(cwd) = cwd else {

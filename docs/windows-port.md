@@ -22,8 +22,20 @@ Unix behaviour must not change. Unix code stays in place behind `#[cfg(unix)]`
   no dir fsync; no `RENAME_EXCHANGE`.
 - **Shell default**: `pwsh.exe` -> `powershell.exe` -> `%COMSPEC%`, no `-l`.
 - **Gated off on Windows v1** (`#[cfg(target_os = "linux")]`): `cgroup/*`, `placement`, systemd scopes,
-  `startup-test-hooks`, subreaper/SIGCHLD, `/proc` agent detection details (fall back to best effort),
-  foreground-command status, cwd tracking (degrade to `None`).
+  `startup-test-hooks`, subreaper/SIGCHLD.
+- **Process inspection** (`sys/windows/procinfo.rs`) replaces `/proc` for cwd tracking, the
+  foreground command and agent detection: a `CreateToolhelp32Snapshot` tree (pid, ppid, exe name)
+  plus `NtQueryInformationProcess` + `ReadProcessMemory` of the PEB's `RTL_USER_PROCESS_PARAMETERS`
+  (cwd, command line, environment; x64 and WOW64 targets via PEB32) opened with
+  `PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ`. Any failure (exited pid, access denied,
+  elevated or other-user process) yields `None`, never an error. Windows has no foreground process
+  group, so the foreground command is the deepest, newest live process under the workload leader
+  (restricted to the session Job's members when known), ignoring conhost/OpenConsole. Agent
+  detection classifies image name first, then the command line normalised by
+  `normalize_windows_cmdline` (so `node.exe ...\codex.js` and `cmd /c claude.cmd` resolve).
+  Limits: no VM_READ means no cwd/cmdline/env (the image name still comes from
+  `QueryFullProcessImageNameW` or the snapshot); parent links can outlive reused pids, so
+  `ancestors` validates creation times.
 - `libc` is `cfg(unix)` only; `windows-sys` and `chrono` are `cfg(windows)` deps already in Cargo.toml.
   Do not edit Cargo.toml dependencies except to add a feature to `windows-sys` (append only).
 

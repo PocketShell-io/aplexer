@@ -589,8 +589,13 @@ State lives in `%LOCALAPPDATA%\aplexer`, config in
 - Signals are limited to `INT` and `TERM` (delivered as Ctrl-C to the PTY)
   and `KILL` (terminates the whole job). Others report an "unsupported on
   Windows" error.
-- The status bar does not show the foreground command, and working-directory
-  tracking is best effort.
+- Process inspection (working-directory tracking, the status bar's foreground
+  command, agent detection) reads the process tree and each process's PEB
+  instead of `/proc`. It covers same-user processes, including 32-bit ones;
+  elevated or other users' processes are not readable, and then the
+  workspace stays where it was and no foreground command or agent is shown.
+  Windows has no foreground process group, so the foreground command is the
+  deepest, newest live process of the session's Job.
 
 ## Troubleshooting
 

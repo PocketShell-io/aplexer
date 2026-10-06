@@ -186,3 +186,44 @@ fn cd_in_a_cmd_shell_moves_the_workspace() {
         })
     });
 }
+
+#[test]
+fn agent_is_detected_from_image_name_and_from_a_cmd_c_wrapper() {
+    let mut h = Harness::new();
+    let ws = h.scratch.path().join("ws4");
+    std::fs::create_dir_all(&ws).unwrap();
+    // A cmd.exe renamed claude.exe stands in for the agent binary: detection
+    // by image name, with the PEB command line as the second source.
+    let fake = h.scratch.path().join("claude.exe");
+    std::fs::copy(r"C:\Windows\System32\cmd.exe", &fake).unwrap();
+    let out = h.run(&[
+        "--json",
+        "start",
+        "--workspace",
+        ws.to_str().unwrap(),
+        "--tag",
+        "img",
+        "--",
+        fake.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let id = value["id"].as_str().unwrap().to_owned();
+    h.sessions.push(id.clone());
+    h.wait_for("claude detected by image name", || {
+        h.status(&id)["agent"] == "claude"
+    });
+
+    // A plain cmd shell running `cmd /c ... codex.cmd`: found by command line.
+    let id = h.start_cmd_shell(&ws, "wrap");
+    h.wait_for("worker ready", || h.status(&id)["id"] == id.as_str());
+    assert!(h.status(&id)["agent"].is_null());
+    h.type_line(&id, "cmd /c \"ping -n 60 127.0.0.1 >nul & rem codex.cmd\"");
+    h.wait_for("codex detected through cmd /c", || {
+        h.status(&id)["agent"] == "codex"
+    });
+}
