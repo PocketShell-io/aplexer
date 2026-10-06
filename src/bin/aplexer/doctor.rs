@@ -12,6 +12,7 @@ pub(crate) struct CgroupLimitProbe {
 /// expose every controller a limited session needs? `Err` carries the
 /// finished probe verdict for whichever gap it found, so the caller can
 /// report it without touching systemd.
+#[cfg(target_os = "linux")]
 fn controller_gaps() -> Result<Vec<String>, CgroupLimitProbe> {
     if let Err(error) = current_cgroup_identity() {
         return Err(CgroupLimitProbe {
@@ -59,6 +60,7 @@ fn controller_gaps() -> Result<Vec<String>, CgroupLimitProbe> {
 /// three supported controllers. The scope contains only the probe's
 /// `sleep` process and is cleaned immediately; no existing cgroup or
 /// workload is modified.
+#[cfg(target_os = "linux")]
 fn probe_delegated_scope(controllers: Vec<String>) -> CgroupLimitProbe {
     let verdict = |delegated_scope: bool, detail: String| CgroupLimitProbe {
         cgroup_v2: true,
@@ -84,6 +86,7 @@ fn probe_delegated_scope(controllers: Vec<String>) -> CgroupLimitProbe {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn probe_cgroup_limits() -> CgroupLimitProbe {
     match controller_gaps() {
         Err(probe) => probe,
@@ -143,6 +146,7 @@ pub(crate) fn doctor_checks_ok(checks: &[Value]) -> bool {
 /// The active recorded sessions sitting in the per-user manager's exit
 /// failure domain, from the `worker_cgroup` evidence each worker records
 /// at launch.
+#[cfg(target_os = "linux")]
 fn vulnerable_session_entries(paths: &Paths) -> Vec<Value> {
     let mut entries: Vec<Value> = Vec::new();
     if let Ok(records) = list_records(paths) {
@@ -179,6 +183,7 @@ fn vulnerable_session_entries(paths: &Paths) -> Vec<Value> {
 /// at launch. Warning-severity by design: the issue asks aplexer to warn
 /// clearly, and a vulnerable placement has actionable workarounds (launch
 /// context, or the opt-in system scope), so it must not fail the host.
+#[cfg(target_os = "linux")]
 pub(crate) fn launch_placement_check(paths: &Paths) -> Value {
     let own_cgroup = aplexer::placement::read_process_cgroup(std::process::id());
     let own_placement = own_cgroup
@@ -233,6 +238,42 @@ pub(crate) fn launch_placement_check(paths: &Paths) -> Value {
     })
 }
 
+/// Windows containment capability: sessions run in a Job Object with
+/// `KILL_ON_JOB_CLOSE`. There is no systemd/cgroup layer to probe.
+#[cfg(windows)]
+pub(crate) fn job_object_check() -> Value {
+    match aplexer::sys::windows::procinfo::job_object_support() {
+        Ok(()) => json!({
+            "name": "job_objects",
+            "ok": true,
+            "severity": "ok",
+            "required": true,
+            "available": true,
+            "detail": "Job Objects with KILL_ON_JOB_CLOSE are available; sessions are contained and tree-killed through one job per session (no cgroup or systemd limits on Windows)",
+        }),
+        Err(error) => json!({
+            "name": "job_objects",
+            "ok": false,
+            "severity": "error",
+            "required": true,
+            "available": false,
+            "detail": format!("cannot create a kill-on-close Job Object: {error}"),
+        }),
+    }
+}
+
+/// Windows IPC check: the control endpoint is a named pipe, not a socket file.
+#[cfg(windows)]
+fn named_pipe_path_check(paths: &Paths) -> Value {
+    let sample = paths.socket(Uuid::nil());
+    json!({
+        "name": "named_pipe_path",
+        "ok": sample.as_os_str().len() < 256,
+        "detail": sample.display().to_string(),
+    })
+}
+
+#[cfg(target_os = "linux")]
 fn unix_socket_path_check(paths: &Paths) -> Value {
     let sample = paths.socket(Uuid::nil());
     let sample_fits = sample.as_os_str().len() < 108;
@@ -342,6 +383,20 @@ fn engine_resolution_check(paths: &Paths) -> Value {
 /// The host-level checks that do not touch session records: platform,
 /// durable roots, socket path length, cgroup capability, launch placement,
 /// config load, engine PATH resolution.
+#[cfg(windows)]
+fn environment_checks(paths: &Paths) -> Vec<Value> {
+    vec![
+        json!({"name":"windows","ok":true,"detail":std::env::consts::OS}),
+        path_check("runtime_root", &paths.runtime_root),
+        path_check("state_root", &paths.state_root),
+        named_pipe_path_check(paths),
+        job_object_check(),
+        config_check(paths),
+        engine_resolution_check(paths),
+    ]
+}
+
+#[cfg(target_os = "linux")]
 fn environment_checks(paths: &Paths) -> Vec<Value> {
     vec![
         json!({"name":"linux","ok":true,"detail":std::env::consts::OS}),

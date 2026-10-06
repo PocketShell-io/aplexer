@@ -83,7 +83,24 @@ pub fn validate_agent_token(token: &str, config: Option<&crate::config::Config>)
 
 /// The `/proc` root detection reads. Injectable so the unit tests classify a
 /// synthetic tree with zero live processes.
+/// On Windows there is no `/proc`; the root is ignored by the readers, which
+/// use `sys::windows::procinfo` instead.
 pub const DEFAULT_PROC_ROOT: &str = "/proc";
+
+/// The user's home directory for tilde display and agent-config lookups:
+/// `HOME` on Unix (unchanged); `USERPROFILE` (then `HOME`) on Windows.
+///
+/// Local shim: `paths::home_dir()` is `pub(crate)` and bin crates cannot call
+/// it. Swap this for it once fs-paths exports a public equivalent.
+pub fn user_home() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    let var = std::env::var_os("USERPROFILE")
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var_os("HOME"));
+    #[cfg(not(windows))]
+    let var = std::env::var_os("HOME");
+    var.map(std::path::PathBuf::from)
+}
 
 /// An agent aplexer can recognise from a workload's process tree. The serde
 /// representation is the lowercase name that appears on the wire, identical
@@ -161,5 +178,17 @@ impl DetectedAgent {
 impl fmt::Display for AgentKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.name())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_home_tests {
+    #[test]
+    fn user_home_prefers_userprofile() {
+        let home = super::user_home().expect("USERPROFILE is set on Windows");
+        assert_eq!(
+            home,
+            std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap())
+        );
     }
 }

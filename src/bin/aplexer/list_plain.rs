@@ -46,7 +46,7 @@ pub(crate) fn cmd_list_plain(paths: &Paths, args: ListArgs) -> Result<()> {
         .max()
         .unwrap_or(16)
         .max(16);
-    let home = env::var_os("HOME").map(PathBuf::from);
+    let home = aplexer::agent_kind::user_home();
     let color = color_enabled();
     for (workspace_index, (workspace, group)) in by_workspace.iter().enumerate() {
         if workspace_index > 0 {

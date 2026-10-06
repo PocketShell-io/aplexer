@@ -191,7 +191,7 @@ fn print_workspace_header(
         &format!("{ANSI_BOLD}{ANSI_CYAN}"),
         &format!("[{index}]"),
     );
-    let home = env::var_os("HOME").map(PathBuf::from);
+    let home = aplexer::agent_kind::user_home();
     let name = paint(
         color,
         ANSI_BOLD,

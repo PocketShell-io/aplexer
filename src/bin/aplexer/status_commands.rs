@@ -263,7 +263,7 @@ fn print_status_identity(paths: &Paths, status: &StatusData, now: u64, color: bo
     let raw = &status.raw;
     let workspace = display_workspace(
         &current.workspace,
-        env::var_os("HOME").as_deref().map(Path::new),
+        aplexer::agent_kind::user_home().as_deref(),
     );
     println!("  workspace   {workspace}");
     println!("  engine      {}", engine_profile(current));

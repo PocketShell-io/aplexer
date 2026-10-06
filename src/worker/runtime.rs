@@ -9,6 +9,41 @@
 
 use super::*;
 
+/// The PTY master's write handle. A `File` on Unix; on Windows the ConPTY
+/// master owned by the conpty agent (`sys::windows::pty::PtyMaster`, assumed
+/// to be `Write` for `&PtyMaster` and to offer `resize(rows, cols)`).
+#[cfg(unix)]
+pub(super) type PtyWrite = File;
+#[cfg(windows)]
+pub(super) type PtyWrite = crate::sys::windows::pty::PtyMaster;
+
+/// Wire signal numbers (the Linux values; the wire format is `i32` on every
+/// platform, see docs/windows-port.md "Signals").
+#[cfg(windows)]
+pub(super) const WIRE_SIGINT: i32 = 2;
+pub(super) const WIRE_SIGKILL: i32 = 9;
+#[cfg(windows)]
+pub(super) const WIRE_SIGTERM: i32 = 15;
+
+/// What a wire signal means on Windows: TERM/INT become a Ctrl-C byte on the
+/// PTY input (graceful), KILL tears the whole tree down, everything else is
+/// refused with a clear error.
+#[cfg(windows)]
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum WindowsSignal {
+    CtrlC,
+    KillTree,
+}
+
+#[cfg(windows)]
+pub(super) fn windows_signal_action(signal: i32) -> Result<WindowsSignal> {
+    match signal {
+        WIRE_SIGINT | WIRE_SIGTERM => Ok(WindowsSignal::CtrlC),
+        WIRE_SIGKILL => Ok(WindowsSignal::KillTree),
+        other => bail!("signal {other} is not supported on Windows (only INT, TERM and KILL)"),
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct WorkloadState {
     pub(super) running: bool,
@@ -84,9 +119,11 @@ pub(super) struct WorkerRuntime {
     /// behind a stopped foreground job, and holding the lock across it
     /// used to block `Status` (foreground_command needs the fd), every
     /// resize, and the lifecycle's PtyEof handler behind one wedged client.
-    pub(super) pty_write: Mutex<Option<Arc<File>>>,
+    pub(super) pty_write: Mutex<Option<Arc<PtyWrite>>>,
     pub(super) workload: Mutex<WorkloadState>,
     pub(super) terminal: Mutex<TerminalState>,
+    /// Linux only: Windows containment is the session Job Object (job agent).
+    #[cfg(target_os = "linux")]
     pub(super) cgroup: Mutex<Option<Cgroup>>,
     pub(super) kill_gate: Mutex<()>,
     pub(super) output: OutputHub,
@@ -195,7 +232,15 @@ impl WorkerRuntime {
         let file = pty.as_ref().ok_or_else(|| anyhow!("PTY is closed"))?;
         let previous_size = (terminal.rows, terminal.cols);
         resize_screen_and_pty(&self.output, previous_size, (rows, cols), || {
-            set_winsize(file.as_raw_fd(), rows, cols)
+            #[cfg(unix)]
+            {
+                set_winsize(file.as_raw_fd(), rows, cols)
+            }
+            #[cfg(windows)]
+            {
+                file.resize(rows, cols)
+                    .map_err(|error| anyhow!("resize pseudoconsole: {error:#}"))
+            }
         })?;
         terminal.rows = rows;
         terminal.cols = cols;
@@ -335,10 +380,25 @@ impl WorkerRuntime {
         if !workload.running {
             bail!("workload has exited");
         }
-        if unsafe { libc::kill(-workload.pgid, signal) } != 0 {
-            return Err(io::Error::last_os_error()).context("signal process group");
+        #[cfg(unix)]
+        {
+            if unsafe { libc::kill(-workload.pgid, signal) } != 0 {
+                return Err(io::Error::last_os_error()).context("signal process group");
+            }
+            Ok(())
         }
-        Ok(())
+        #[cfg(windows)]
+        {
+            drop(workload);
+            match windows_signal_action(signal)? {
+                WindowsSignal::CtrlC => self.send(&[0x03]),
+                // `kill_descendants`/`signal_descendants` are the job agent's
+                // Windows implementations in worker/procs.rs (job object tree kill).
+                WindowsSignal::KillTree => {
+                    kill_descendants(std::process::id(), DESCENDANT_KILL_TIMEOUT)
+                }
+            }
+        }
     }
     pub(super) fn kill(&self, signal: i32, grace_ms: u64) -> Result<()> {
         let grace = kill_grace_duration(grace_ms)?;
@@ -379,20 +439,32 @@ impl WorkerRuntime {
         let cleanup_deadline = grace_deadline
             .checked_add(DESCENDANT_KILL_TIMEOUT)
             .ok_or_else(|| anyhow!("kill cleanup deadline overflow"))?;
+        #[cfg(target_os = "linux")]
         let cgroup = lock(&self.cgroup)?.clone();
-        if signal == libc::SIGKILL {
+        if signal == WIRE_SIGKILL {
+            #[cfg(target_os = "linux")]
             if let Some(cg) = &cgroup {
                 cg.kill_all_until(cleanup_deadline)?;
-            } else {
-                kill_descendants(std::process::id(), DESCENDANT_KILL_TIMEOUT)?;
+                return Ok(());
             }
+            kill_descendants(std::process::id(), DESCENDANT_KILL_TIMEOUT)?;
             return Ok(());
         }
+        #[cfg(windows)]
+        {
+            // Graceful stop: Ctrl-C on the PTY input; the escalation below
+            // tears the job down if the workload outlives the grace window.
+            windows_signal_action(signal)?;
+            let _ = self.send(&[0x03]);
+        }
+        #[cfg(target_os = "linux")]
         if let Some(cg) = &cgroup {
             cg.signal_all_until(signal, cleanup_deadline)?;
         } else {
             signal_descendants(std::process::id(), signal)?;
         }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        signal_descendants(std::process::id(), signal)?;
         // Poll instead of sleeping the whole grace period: once the workload
         // is gone there is nothing to escalate to SIGKILL, and the response
         // to this request should not be delayed (the worker exits shortly
@@ -404,11 +476,12 @@ impl WorkerRuntime {
             thread::sleep(KILL_POLL_INTERVAL);
         }
         if self.workload_populated()? {
+            #[cfg(target_os = "linux")]
             if let Some(cg) = &cgroup {
                 cg.kill_all_until(cleanup_deadline)?;
-            } else {
-                kill_descendants(std::process::id(), DESCENDANT_KILL_TIMEOUT)?;
+                return Ok(());
             }
+            kill_descendants(std::process::id(), DESCENDANT_KILL_TIMEOUT)?;
         }
         Ok(())
     }
@@ -426,7 +499,13 @@ impl WorkerRuntime {
     pub(super) fn workload_still_populated(&self) -> Result<bool> {
         let signalable = {
             let workload = lock(&self.workload)?;
-            workload.running && unsafe { libc::kill(-workload.pgid, 0) } == 0
+            // No process groups on Windows: always fall through to the job's
+            // own emptiness check in `workload_populated`.
+            #[cfg(unix)]
+            let probe = workload.running && unsafe { libc::kill(-workload.pgid, 0) } == 0;
+            #[cfg(windows)]
+            let probe = false;
+            probe
         };
         if signalable {
             return Ok(true);
@@ -440,6 +519,7 @@ impl WorkerRuntime {
     /// session. Limited sessions use the kernel's cgroup membership; ordinary
     /// sessions use the worker's subreaper descendant tree.
     pub(super) fn workload_populated(&self) -> Result<bool> {
+        #[cfg(target_os = "linux")]
         if let Some(cgroup) = lock(&self.cgroup)?.as_ref() {
             return cgroup.populated();
         }
@@ -496,7 +576,12 @@ impl WorkerRuntime {
         if !lock(&self.workload)?.running {
             return Ok(());
         }
-        let Ok(cwd) = std::fs::read_link(format!("/proc/{pid}/cwd")) else {
+        #[cfg(target_os = "linux")]
+        let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).ok();
+        // Windows: best-effort PEB read; `None` degrades to "no cwd tracking".
+        #[cfg(windows)]
+        let cwd = crate::sys::windows::procinfo::cwd(pid);
+        let Some(cwd) = cwd else {
             return Ok(());
         };
         let Ok(workspace) = canonical_workspace(&cwd) else {
@@ -645,7 +730,32 @@ pub(super) fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
     mutex.lock().map_err(|_| anyhow!("worker lock poisoned"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn wire_signals_map_to_windows_actions() {
+        assert_eq!(
+            windows_signal_action(WIRE_SIGINT).unwrap(),
+            WindowsSignal::CtrlC
+        );
+        assert_eq!(
+            windows_signal_action(WIRE_SIGTERM).unwrap(),
+            WindowsSignal::CtrlC
+        );
+        assert_eq!(
+            windows_signal_action(WIRE_SIGKILL).unwrap(),
+            WindowsSignal::KillTree
+        );
+        for unsupported in [1, 3, 10, 12] {
+            let error = windows_signal_action(unsupported).unwrap_err().to_string();
+            assert!(error.contains("not supported on Windows"), "{error}");
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::worker::hub::tests::test_hub;
