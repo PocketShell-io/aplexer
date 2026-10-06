@@ -22,6 +22,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -398,11 +399,13 @@ pub fn run_task_child(
         // evidence files, not to whatever terminal happens to be attached.
         .stdin(Stdio::null())
         .stdout(process_stdio(stdout_file)?)
-        .stderr(process_stdio(stderr_file)?)
-        // Own process group: the timeout kill below addresses exactly this
-        // group and nothing else (a foreign-process kill can never be a side
-        // effect of a task timeout).
-        .process_group(0);
+        .stderr(process_stdio(stderr_file)?);
+    // Own process group: the timeout kill below addresses exactly this
+    // group and nothing else (a foreign-process kill can never be a side
+    // effect of a task timeout). On Windows the same containment is a Job
+    // Object holding only this child (see `task_job`).
+    #[cfg(unix)]
+    command.process_group(0);
     // Provider-key / configured strip, applied LAST so it wins over env_set,
     // exactly like the worker's workload spawn ordering.
     for name in env_unset {
@@ -412,14 +415,25 @@ pub fn run_task_child(
     let mut child = command
         .spawn()
         .with_context(|| format!("spawn task child {}", program))?;
+    #[cfg(unix)]
     let pid = child.id();
+    // Dropping the job (KILL_ON_JOB_CLOSE) also reaps any stragglers the
+    // child left behind when this function returns.
+    #[cfg(windows)]
+    let job = {
+        use std::os::windows::io::AsRawHandle;
+        let job = task_job::Job::create_kill_on_close().context("create task job object")?;
+        job.assign_process(child.as_raw_handle() as _)
+            .context("assign task child to job object")?;
+        job
+    };
 
     let deadline = timeout.map(|t| std::time::Instant::now() + t);
     let outcome = loop {
         match child.try_wait()? {
             Some(status) => {
-                let exit_signal = status.signal();
-                let exit_code = status.code().unwrap_or_else(|| match status.signal() {
+                let exit_signal = exit_signal_of(&status);
+                let exit_code = status.code().unwrap_or_else(|| match exit_signal {
                     Some(signal) => 128 + signal,
                     None => 1,
                 });
@@ -431,7 +445,12 @@ pub fn run_task_child(
             }
             None => {
                 if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    #[cfg(unix)]
                     kill_child_group(pid);
+                    #[cfg(windows)]
+                    if let Err(error) = job.terminate(1) {
+                        eprintln!("a: task timeout kill of job object failed: {error}");
+                    }
                     let status = child.wait()?;
                     // After SIGKILL there is no exit code; if the child
                     // happened to exit normally in the instant before the
@@ -439,7 +458,7 @@ pub fn run_task_child(
                     // `timed_out` records that the kill was attempted.
                     break ChildOutcome {
                         exit_code: status.code().unwrap_or(124),
-                        exit_signal: status.signal(),
+                        exit_signal: exit_signal_of(&status),
                         timed_out: true,
                     };
                 }
@@ -456,8 +475,80 @@ fn process_stdio(path: &Path) -> Result<Stdio> {
     Ok(Stdio::from(file))
 }
 
+#[cfg(unix)]
+fn exit_signal_of(status: &std::process::ExitStatus) -> Option<i32> {
+    status.signal()
+}
+
+/// Windows has no signals; a killed process just reports an exit code.
+#[cfg(windows)]
+fn exit_signal_of(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
+/// Minimal local Job Object wrapper for task timeouts. Same names as the
+/// shared `sys::windows::job::Job::{create_kill_on_close, assign_process,
+/// terminate}`; switch to that once it lands.
+#[cfg(windows)]
+mod task_job {
+    use std::io;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub struct Job(HANDLE);
+
+    impl Job {
+        pub fn create_kill_on_close() -> io::Result<Job> {
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                let job = Job(handle);
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const _,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(job)
+            }
+        }
+
+        pub fn assign_process(&self, process: HANDLE) -> io::Result<()> {
+            if unsafe { AssignProcessToJobObject(self.0, process) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        pub fn terminate(&self, exit_code: u32) -> io::Result<()> {
+            if unsafe { TerminateJobObject(self.0, exit_code) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
 /// SIGKILL the child's own process group. ESRCH (already gone) is success;
 /// every other error is reported, never swept under a "best effort".
+#[cfg(unix)]
 fn kill_child_group(pid: u32) {
     let pid = libc::pid_t::try_from(pid).unwrap_or(0);
     if pid <= 0 {

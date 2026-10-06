@@ -68,6 +68,12 @@ fn enable_handoff(paths: &Paths, args: TaskHandoffEnableArgs, json_output: bool)
     } else {
         println!("handoff schedule enabled: {}", path.display());
         print_schedule_summary(&schedule, at)?;
+        #[cfg(windows)]
+        println!(
+            "no timer is installed by aplexer; call `a task handoff fire` from your own \
+             scheduler (e.g. Windows Task Scheduler: schtasks /Create)"
+        );
+        #[cfg(not(windows))]
         println!(
             "no timer is installed by aplexer; call `a task handoff fire` from your own \
              scheduler (plugins/handoff/INSTALL.md has cron and systemd examples)"

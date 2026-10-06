@@ -605,10 +605,13 @@ fn absolute_components(base: &Path, scope: &str) -> Vec<String> {
         .filter_map(|component| component.as_os_str().to_str())
         .map(str::to_string)
         .collect();
-    for part in scope
-        .split('/')
-        .filter(|part| !part.is_empty() && *part != ".")
-    {
+    // Scopes are user text and may use either separator on Windows; on Unix
+    // only `/` separates (a backslash is a legal filename character).
+    #[cfg(windows)]
+    let parts = scope.split(['/', '\\']);
+    #[cfg(not(windows))]
+    let parts = scope.split('/');
+    for part in parts.filter(|part| !part.is_empty() && *part != ".") {
         if part
             .chars()
             .any(|ch| matches!(ch, '*' | '?' | '[' | ']' | '{' | '}' | '!'))
@@ -625,6 +628,10 @@ fn absolute_components(base: &Path, scope: &str) -> Vec<String> {
 /// concrete pair proves the regions apart. Everything unprovable has
 /// already been truncated away as wildcarded.
 fn components_overlap(a: &[String], b: &[String]) -> bool {
+    // NTFS paths compare case-insensitively.
+    #[cfg(windows)]
+    return a.iter().zip(b.iter()).all(|(x, y)| x.eq_ignore_ascii_case(y));
+    #[cfg(not(windows))]
     a.iter().zip(b.iter()).all(|(x, y)| x == y)
 }
 

@@ -207,6 +207,23 @@ impl LocalWall {
 }
 
 /// Local wall-clock time for epoch seconds.
+#[cfg(windows)]
+pub fn local_wall(epoch_secs: i64) -> Result<LocalWall> {
+    use chrono::{Datelike, Local, TimeZone, Timelike};
+    let Some(local) = Local.timestamp_opt(epoch_secs, 0).single() else {
+        bail!("local time conversion failed for epoch {epoch_secs}");
+    };
+    Ok(LocalWall {
+        year: i64::from(local.year()),
+        month: local.month(),
+        day: local.day(),
+        hour: local.hour(),
+        minute: local.minute(),
+    })
+}
+
+/// Local wall-clock time for epoch seconds.
+#[cfg(unix)]
 pub fn local_wall(epoch_secs: i64) -> Result<LocalWall> {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let secs: libc::time_t = epoch_secs;
@@ -225,6 +242,31 @@ pub fn local_wall(epoch_secs: i64) -> Result<LocalWall> {
 
 /// Epoch seconds for a local wall-clock time (`tm_isdst = -1`: libc resolves
 /// DST). Round-trips with [`local_wall`].
+#[cfg(windows)]
+pub fn local_epoch(year: i64, month: u32, day: u32, hour: u32, minute: u32) -> Result<i64> {
+    use chrono::{Duration, Local, NaiveDate, TimeZone};
+    let bad = || anyhow!("invalid local time {year:04}-{month:02}-{day:02} {hour:02}:{minute:02}");
+    let naive = i32::try_from(year)
+        .ok()
+        .and_then(|year| NaiveDate::from_ymd_opt(year, month, day))
+        .and_then(|date| date.and_hms_opt(hour, minute, 0))
+        .ok_or_else(bad)?;
+    // Ambiguous (DST fall-back) takes the earlier instant; a nonexistent
+    // (spring-forward) time resolves an hour later, like mktime's
+    // normalisation, by probing one hour ahead and stepping back.
+    if let Some(local) = Local.from_local_datetime(&naive).earliest() {
+        return Ok(local.timestamp());
+    }
+    Local
+        .from_local_datetime(&(naive + Duration::hours(1)))
+        .earliest()
+        .map(|local| local.timestamp())
+        .ok_or_else(bad)
+}
+
+/// Epoch seconds for a local wall-clock time (`tm_isdst = -1`: libc resolves
+/// DST). Round-trips with [`local_wall`].
+#[cfg(unix)]
 pub fn local_epoch(year: i64, month: u32, day: u32, hour: u32, minute: u32) -> Result<i64> {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     tm.tm_year = (year - 1900) as i32;

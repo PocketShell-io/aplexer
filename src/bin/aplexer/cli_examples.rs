@@ -83,6 +83,14 @@ pub(crate) const STATUS_EXAMPLES: &str = r#"Examples:
   a status review --json        machine-readable
 "#;
 
+#[cfg(windows)]
+pub(crate) const KILL_EXAMPLES: &str = r#"Examples:
+  a kill review                       stop it (Ctrl-C to the PTY, 2s grace, then terminate the job)
+  a kill myrepo:review --signal TERM  graceful TERM-first shutdown (Ctrl-C on Windows)
+  a kill review --grace-ms 10000      more time to exit cleanly
+"#;
+
+#[cfg(not(windows))]
 pub(crate) const KILL_EXAMPLES: &str = r#"Examples:
   a kill review                       hang it up (SIGHUP, 2s grace, then SIGKILL)
   a kill myrepo:review --signal TERM  graceful TERM-first shutdown
@@ -205,6 +213,17 @@ pub(crate) const WATCH_EXAMPLES: &str = r#"Examples:
   a watch --jsonl --all                  include plain shell sessions too
 "#;
 
+#[cfg(windows)]
+pub(crate) const TRANSCRIPT_EXAMPLES: &str = r#"Examples:
+  a transcript review --last 50              last 50 conversation events
+  a transcript review --follow               print new events as the agent writes them
+  a transcript zoom --engine zcodex --path %TEMP%\rollout.jsonl
+                                            parse a chosen Codex log from a shell session
+  a transcript review --kind tool_call       only one event kind
+  a transcript review --before 12 --last 20  page backward through history
+"#;
+
+#[cfg(not(windows))]
 pub(crate) const TRANSCRIPT_EXAMPLES: &str = r#"Examples:
   a transcript review --last 50              last 50 conversation events
   a transcript review --follow               print new events as the agent writes them
