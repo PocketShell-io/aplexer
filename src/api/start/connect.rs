@@ -9,7 +9,20 @@ use super::*;
 /// attempts instead of blocking on one socket.
 pub(super) const STARTUP_READY_RPC_SLICE: Duration = Duration::from_millis(100);
 
-pub(crate) fn connect_startup_control(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
+/// Windows: bounded named-pipe connect; a busy instance is retried inside.
+#[cfg(windows)]
+pub(crate) fn connect_startup_control(path: &Path, timeout: Duration) -> io::Result<Stream> {
+    if timeout.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "startup control connection deadline expired",
+        ));
+    }
+    crate::sys::windows::ipc::connect(path, timeout)
+}
+
+#[cfg(unix)]
+pub(crate) fn connect_startup_control(path: &Path, timeout: Duration) -> io::Result<Stream> {
     if timeout.is_zero() {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -111,7 +124,7 @@ pub(crate) fn connect_startup_control(path: &Path, timeout: Duration) -> io::Res
     {
         return Err(io::Error::last_os_error());
     }
-    Ok(unsafe { UnixStream::from_raw_fd(fd.into_raw_fd()) })
+    Ok(unsafe { Stream::from_raw_fd(fd.into_raw_fd()) })
 }
 
 /// A pathname and a persisted phase are not readiness evidence. Complete a

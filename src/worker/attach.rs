@@ -35,13 +35,13 @@ const TEST_STALL_TICKS: u32 = 3;
 /// geometry, a closed PTY) reached the client as "missing attach response".
 pub(super) fn establish_attach(
     runtime: &Arc<WorkerRuntime>,
-    reader: &UnixStream,
+    reader: &Stream,
     history_bytes: Option<usize>,
     want_screen: bool,
     want_record: bool,
     rows: Option<u16>,
     cols: Option<u16>,
-) -> Result<(AttachGuard, Vec<u8>, OutputReceiver, UnixStream)> {
+) -> Result<(AttachGuard, Vec<u8>, OutputReceiver, Stream)> {
     let geometry = match (rows, cols) {
         (Some(rows), Some(cols)) => Some(screen::validate_worker_size(rows, cols)?),
         _ => None,
@@ -75,7 +75,7 @@ pub(super) fn establish_attach(
 
 #[allow(clippy::too_many_arguments)] // one flag per protocol opt-in, mirroring the request
 pub(super) fn handle_attach(
-    mut reader: UnixStream,
+    mut reader: Stream,
     runtime: Arc<WorkerRuntime>,
     request_id: String,
     history_bytes: Option<usize>,
@@ -186,7 +186,7 @@ pub(super) fn handle_attach(
 /// client until a terminal event or a failed write, then release the
 /// subscription and close the socket so the input half sees EOF too.
 fn pump_output(
-    writer: Arc<Mutex<UnixStream>>,
+    writer: Arc<Mutex<Stream>>,
     runtime: Arc<WorkerRuntime>,
     rx: OutputReceiver,
     subscription: u64,
@@ -338,7 +338,7 @@ impl<'a> FrameTransfer<'a> {
     /// `Ok(true)`: the frame is out in full. `Ok(false)`: the socket's send
     /// queue filled (possibly after a partial write); call again after the
     /// guard has seen a tick.
-    fn pump(&mut self, out: &mut UnixStream) -> Result<bool> {
+    fn pump(&mut self, out: &mut Stream) -> Result<bool> {
         while self.sent < self.header.len() + self.payload.len() {
             let (buf, offset) = if self.sent < self.header.len() {
                 (&self.header[..], self.sent)
@@ -391,8 +391,8 @@ impl StallGuard {
     /// `Err`: a real write failure (EPIPE, ECONNRESET, ...).
     fn write(
         &mut self,
-        out: &mut UnixStream,
-        mut body: impl FnMut(&mut UnixStream) -> Result<bool>,
+        out: &mut Stream,
+        mut body: impl FnMut(&mut Stream) -> Result<bool>,
     ) -> Result<bool> {
         loop {
             match body(out) {
@@ -412,7 +412,7 @@ impl StallGuard {
 
     /// Account one timed-out tick. Returns true when the peer has run out of
     /// credit and the attach should be reaped.
-    fn tick(&mut self, out: &UnixStream) -> bool {
+    fn tick(&mut self, out: &Stream) -> bool {
         let outq = send_queue_bytes(out);
         match (self.last_outq, outq) {
             (Some(previous), Some(current)) if current < previous => self.since_progress = 0,
@@ -428,7 +428,13 @@ impl StallGuard {
 /// is what the peer has not yet consumed of what we wrote; `None` when the
 /// kernel will not say (the guard then falls back to counting bare
 /// timed-out ticks).
-fn send_queue_bytes(stream: &UnixStream) -> Option<usize> {
+#[cfg(windows)]
+fn send_queue_bytes(_stream: &Stream) -> Option<usize> {
+    None
+}
+
+#[cfg(unix)]
+fn send_queue_bytes(stream: &Stream) -> Option<usize> {
     const SIOCOUTQ: libc::c_ulong = libc::TIOCOUTQ;
     let mut value: libc::c_int = 0;
     let rc = unsafe { libc::ioctl(stream.as_raw_fd(), SIOCOUTQ, &mut value) };
@@ -439,9 +445,9 @@ fn send_queue_bytes(stream: &UnixStream) -> Option<usize> {
 /// signal controls, and the explicit detach, until EOF, a closed workload,
 /// or a protocol violation (reported to the client, then an error).
 fn pump_input(
-    reader: &mut UnixStream,
+    reader: &mut Stream,
     runtime: &WorkerRuntime,
-    writer: &Arc<Mutex<UnixStream>>,
+    writer: &Arc<Mutex<Stream>>,
     client_id: u64,
 ) -> Result<()> {
     loop {
@@ -524,9 +530,26 @@ impl Drop for AttachGuard {
 mod stall_guard_tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn pair() -> (Stream, Stream) {
+        std::os::unix::net::UnixStream::pair().unwrap()
+    }
+
+    #[cfg(windows)]
+    fn pair() -> (Stream, Stream) {
+        let name = crate::sys::windows::ipc::pipe_name(Uuid::new_v4()).unwrap();
+        let listener = Listener::bind(&name).unwrap();
+        let client = crate::sys::windows::ipc::connect(&name, Duration::from_secs(5)).unwrap();
+        let server = listener
+            .accept_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        (server, client)
+    }
+
     /// A socket whose peer never reads: fill it until one write blocks for a
     /// whole tick, so the guard's next attempts all time out.
-    fn fill_until_blocked(out: &UnixStream) {
+    fn fill_until_blocked(out: &Stream) {
         out.set_write_timeout(Some(TEST_STALL_TICK)).unwrap();
         let chunk = [0u8; 4096];
         let mut out = out;
@@ -541,7 +564,7 @@ mod stall_guard_tests {
 
     #[test]
     fn a_peer_that_never_drains_is_reaped() {
-        let (mut writer, _peer) = UnixStream::pair().unwrap();
+        let (mut writer, _peer) = pair().unwrap();
         fill_until_blocked(&writer);
         let mut guard = StallGuard::new(TEST_STALL_TICKS);
         let payload = vec![7u8; 64];
@@ -555,7 +578,7 @@ mod stall_guard_tests {
 
     #[test]
     fn a_slowly_draining_peer_is_never_reaped() {
-        let (mut writer, peer) = UnixStream::pair().unwrap();
+        let (mut writer, peer) = pair().unwrap();
         fill_until_blocked(&writer);
         // Drain everything available every few ms -- `TIOCOUTQ` only drops
         // when whole skbs are consumed, so this is the "slow but real" peer
@@ -594,7 +617,7 @@ mod stall_guard_tests {
         // carry those bytes twice and every later frame would parse as
         // garbage. The transfer must resume exactly where the socket left
         // off, and the peer must read header+payload exactly once.
-        let (mut writer, peer) = UnixStream::pair().unwrap();
+        let (mut writer, peer) = pair().unwrap();
         writer.set_write_timeout(Some(TEST_STALL_TICK)).unwrap();
         let payload: Vec<u8> = (0..=255u8).cycle().take(300_000).collect();
         let mut transfer = FrameTransfer::new(FrameKind::Data, &payload).unwrap();

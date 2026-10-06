@@ -1,5 +1,7 @@
 use super::*;
+#[cfg(unix)]
 use std::os::fd::RawFd;
+use aplexer::sys::ipc::Stream;
 
 #[cfg(not(test))]
 pub(crate) const CONTROL_RPC_TIMEOUT: Duration = Duration::from_secs(3);
@@ -21,7 +23,7 @@ pub(crate) const ATTACH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(test)]
 pub(crate) const ATTACH_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(200);
 
-pub(crate) fn set_control_deadlines(stream: &UnixStream) -> Result<()> {
+pub(crate) fn set_control_deadlines(stream: &Stream) -> Result<()> {
     stream
         .set_read_timeout(Some(CONTROL_RPC_TIMEOUT))
         .context("set worker response deadline")?;
@@ -31,7 +33,7 @@ pub(crate) fn set_control_deadlines(stream: &UnixStream) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn clear_streaming_deadlines(stream: &UnixStream) -> Result<()> {
+pub(crate) fn clear_streaming_deadlines(stream: &Stream) -> Result<()> {
     stream
         .set_read_timeout(None)
         .context("clear attach streaming read deadline")?;
@@ -41,6 +43,7 @@ pub(crate) fn clear_streaming_deadlines(stream: &UnixStream) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn connect_timed_out(path: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::TimedOut,
@@ -50,6 +53,7 @@ fn connect_timed_out(path: &Path) -> io::Error {
 
 /// Build the AF_UNIX address for `path`, rejecting interior NUL bytes and
 /// `sun_path` overflow before any descriptor exists.
+#[cfg(unix)]
 fn sockaddr_un_for_path(path: &Path) -> io::Result<(libc::sockaddr_un, libc::socklen_t)> {
     let path_bytes = path.as_os_str().as_bytes();
     let _ = CString::new(path_bytes)
@@ -76,6 +80,7 @@ fn sockaddr_un_for_path(path: &Path) -> io::Result<(libc::sockaddr_un, libc::soc
 
 /// What the connect loop should do after one poll round on an in-flight
 /// (EINPROGRESS/EALREADY) connection attempt.
+#[cfg(unix)]
 enum ConnectPoll {
     Connected,
     Retry,
@@ -85,6 +90,7 @@ enum ConnectPoll {
 
 /// Wait until the in-flight connect makes the fd writable, then classify
 /// the outcome via SO_ERROR.
+#[cfg(unix)]
 fn poll_in_flight_connect(fd: RawFd, deadline: Instant) -> ConnectPoll {
     let now = Instant::now();
     if now >= deadline {
@@ -113,6 +119,7 @@ fn poll_in_flight_connect(fd: RawFd, deadline: Instant) -> ConnectPoll {
 
 /// Writable does not yet mean connected: read SO_ERROR, and confirm real
 /// peer attachment with getpeername before trusting the result.
+#[cfg(unix)]
 fn settle_polled_connect(fd: RawFd) -> ConnectPoll {
     let mut socket_error: libc::c_int = 0;
     let mut socket_error_len = std::mem::size_of_val(&socket_error) as libc::socklen_t;
@@ -152,6 +159,7 @@ fn settle_polled_connect(fd: RawFd) -> ConnectPoll {
     ConnectPoll::Failed(io::Error::from_raw_os_error(socket_error))
 }
 
+#[cfg(unix)]
 fn open_nonblocking_socket() -> io::Result<OwnedFd> {
     let raw_fd = unsafe {
         libc::socket(
@@ -168,6 +176,7 @@ fn open_nonblocking_socket() -> io::Result<OwnedFd> {
 
 /// Retry the (non-blocking) connect until it succeeds or the deadline runs
 /// out, dispatching the in-flight states to [`poll_in_flight_connect`].
+#[cfg(unix)]
 fn drive_connect(
     fd: &OwnedFd,
     address: &libc::sockaddr_un,
@@ -215,6 +224,7 @@ fn drive_connect(
 }
 
 /// The control socket is only ever used synchronously after connect.
+#[cfg(unix)]
 fn set_blocking(fd: RawFd) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
@@ -223,23 +233,30 @@ fn set_blocking(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn connect_with_timeout(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
+#[cfg(unix)]
+pub(crate) fn connect_with_timeout(path: &Path, timeout: Duration) -> io::Result<Stream> {
     let (address, address_len) = sockaddr_un_for_path(path)?;
     let fd = open_nonblocking_socket()?;
     let deadline = Instant::now() + timeout;
     drive_connect(&fd, &address, address_len, path, deadline)?;
     set_blocking(fd.as_raw_fd())?;
-    Ok(unsafe { UnixStream::from_raw_fd(fd.into_raw_fd()) })
+    Ok(unsafe { Stream::from_raw_fd(fd.into_raw_fd()) })
 }
 
-pub(crate) fn connect(record: &SessionRecord) -> Result<UnixStream> {
+/// Windows: named-pipe connect with ERROR_PIPE_BUSY retry.
+#[cfg(windows)]
+pub(crate) fn connect_with_timeout(path: &Path, timeout: Duration) -> io::Result<Stream> {
+    aplexer::sys::windows::ipc::connect(path, timeout)
+}
+
+pub(crate) fn connect(record: &SessionRecord) -> Result<Stream> {
     let stream = connect_with_timeout(&record.socket_path, CONTROL_RPC_TIMEOUT)
         .with_context(|| format!("connect {}", record.socket_path.display()))?;
     set_control_deadlines(&stream)?;
     Ok(stream)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

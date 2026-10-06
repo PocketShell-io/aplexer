@@ -6,12 +6,51 @@
 use super::*;
 
 pub(super) type FileIdentity = (u64, u64);
+#[cfg(unix)]
 pub(super) type RecoveredControlSocket =
-    (UnixListener, FileIdentity, Option<FileLock>, FileIdentity);
+    (Listener, FileIdentity, Option<FileLock>, FileIdentity);
+
+#[cfg(unix)]
+type PeerAddr = std::os::unix::net::SocketAddr;
+#[cfg(windows)]
+type PeerAddr = ();
+
+/// Windows: a named pipe has no inode to go stale and nothing for cleanup
+/// software to remove, so the identity checks collapse to constants and the
+/// recovery path below does not exist.
+#[cfg(windows)]
 pub(super) fn poll_control_connection(
-    listener: &UnixListener,
+    listener: &Listener,
     timeout: Duration,
-) -> io::Result<Option<(UnixStream, std::os::unix::net::SocketAddr)>> {
+) -> io::Result<Option<(Stream, PeerAddr)>> {
+    listener
+        .accept_timeout(timeout)
+        .map(|accepted| accepted.map(|stream| (stream, ())))
+}
+
+#[cfg(windows)]
+pub(super) fn trusted_lock_identity(_path: &std::path::Path) -> Result<FileIdentity> {
+    Ok((0, 0))
+}
+
+#[cfg(windows)]
+pub(super) fn trusted_socket_identity(_path: &std::path::Path) -> Result<FileIdentity> {
+    Ok((0, 0))
+}
+
+#[cfg(windows)]
+pub(super) fn control_socket_matches_identity(
+    _path: &std::path::Path,
+    _identity: FileIdentity,
+) -> bool {
+    true
+}
+
+#[cfg(unix)]
+pub(super) fn poll_control_connection(
+    listener: &Listener,
+    timeout: Duration,
+) -> io::Result<Option<(Stream, PeerAddr)>> {
     let mut poll_fd = libc::pollfd {
         fd: listener.as_raw_fd(),
         events: libc::POLLIN,
@@ -43,6 +82,7 @@ pub(super) fn poll_control_connection(
     listener.accept().map(Some)
 }
 
+#[cfg(unix)]
 pub(super) fn control_socket_matches_identity(
     path: &std::path::Path,
     identity: (u64, u64),
@@ -82,6 +122,7 @@ pub(super) fn durable_record_vanished_at(record_path: &std::path::Path) -> bool 
 /// and compare later pathname metadata against that stable identity instead
 /// of comparing `lstat(path)` with `fstat(listener)` (which always differs and
 /// caused an unnecessary rebind every idle health-check interval).
+#[cfg(unix)]
 pub(super) fn trusted_socket_identity(path: &std::path::Path) -> Result<(u64, u64)> {
     let Ok(path_metadata) = fs::symlink_metadata(path) else {
         bail!("control socket path is missing");
@@ -99,6 +140,7 @@ pub(super) fn trusted_socket_identity(path: &std::path::Path) -> Result<(u64, u6
 /// worker's private runtime session directory. Durable PID identity is the
 /// trust anchor: never recreate runtime artifacts if it has disappeared or
 /// no longer proves that this process is the recorded worker.
+#[cfg(unix)]
 pub(super) fn trusted_lock_identity(path: &std::path::Path) -> Result<(u64, u64)> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("inspect worker lock {}", path.display()))?;
@@ -114,6 +156,7 @@ pub(super) fn trusted_lock_identity(path: &std::path::Path) -> Result<(u64, u64)
     Ok((metadata.dev(), metadata.ino()))
 }
 
+#[cfg(unix)]
 pub(super) fn recover_control_socket(
     runtime: &WorkerRuntime,
     held_lock_identity: (u64, u64),
@@ -152,7 +195,7 @@ pub(super) fn recover_control_socket(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error).context("inspect control socket path for recovery"),
     }
-    let listener = UnixListener::bind(&runtime.socket_path)
+    let listener = Listener::bind(&runtime.socket_path)
         .with_context(|| format!("rebind {}", runtime.socket_path.display()))?;
     if let Err(error) = fs::set_permissions(&runtime.socket_path, fs::Permissions::from_mode(0o600))
     {
@@ -170,8 +213,12 @@ pub(super) fn recover_control_socket(
 /// cleanup software removed the runtime directory (`recover_control_socket`),
 /// and that the durable record still exists -- a worker whose record is gone
 /// is unreachable by every client and self-reaps instead (issue #21).
+#[cfg_attr(
+    windows,
+    allow(unused_mut, unused_variables, unused_assignments)
+)]
 pub(super) fn serve_control_socket(
-    mut listener: UnixListener,
+    mut listener: Listener,
     mut control_socket_identity: FileIdentity,
     mut _worker_lock: FileLock,
     mut worker_lock_identity: FileIdentity,
@@ -209,6 +256,9 @@ pub(super) fn serve_control_socket(
                     log_best_effort(&format!("aplexer worker: spawn client thread: {error}"));
                 }
             }
+            #[cfg(windows)]
+            Ok(None) => {}
+            #[cfg(unix)]
             Ok(None) => {
                 if !self_reap_requested
                     && !control_socket_matches_identity(

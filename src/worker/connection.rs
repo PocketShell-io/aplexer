@@ -6,12 +6,23 @@ use serde_json::Value;
 
 /// The peer is the request's first credential: control connections get IO
 /// deadlines, and a uid that is not ours never reaches an operation.
-fn authorize_peer(stream: &UnixStream) -> Result<()> {
+fn authorize_peer(stream: &Stream) -> Result<()> {
     stream.set_read_timeout(Some(CLIENT_IO_TIMEOUT))?;
     stream.set_write_timeout(Some(CLIENT_IO_TIMEOUT))?;
-    let uid = peer_uid(stream.as_raw_fd())?;
-    if uid != unsafe { libc::geteuid() } {
-        bail!("peer uid {uid} is not authorized");
+    // Windows: the pipe DACL already admits only our user; this re-checks the
+    // connected client's process token SID (the SO_PEERCRED analogue).
+    #[cfg(windows)]
+    {
+        if !stream.peer_is_current_user()? {
+            bail!("peer is not the current user; not authorized");
+        }
+    }
+    #[cfg(unix)]
+    {
+        let uid = peer_uid(stream.as_raw_fd())?;
+        if uid != unsafe { libc::geteuid() } {
+            bail!("peer uid {uid} is not authorized");
+        }
     }
     Ok(())
 }
@@ -32,7 +43,7 @@ fn handshake_rejection(request: &Request, worker_session_id: Uuid) -> Option<Str
     }
 }
 
-pub(super) fn handle_connection(mut stream: UnixStream, runtime: Arc<WorkerRuntime>) -> Result<()> {
+pub(super) fn handle_connection(mut stream: Stream, runtime: Arc<WorkerRuntime>) -> Result<()> {
     authorize_peer(&stream)?;
     let frame = read_frame(&mut stream)?.ok_or_else(|| anyhow!("empty request"))?;
     let request: Request = frame_json(frame)?;
@@ -45,7 +56,7 @@ pub(super) fn handle_connection(mut stream: UnixStream, runtime: Arc<WorkerRunti
 
 /// One JSON response folding an operation's `Result`: ok carries the
 /// payload, error carries the formatted anyhow chain.
-fn write_result(stream: &mut UnixStream, id: &str, result: Result<Value>) -> Result<()> {
+fn write_result(stream: &mut Stream, id: &str, result: Result<Value>) -> Result<()> {
     match result {
         Ok(value) => write_json(stream, &Response::ok(id.to_owned(), value)),
         Err(e) => write_json(stream, &Response::error(id.to_owned(), format!("{e:#}"))),
@@ -54,7 +65,7 @@ fn write_result(stream: &mut UnixStream, id: &str, result: Result<Value>) -> Res
 
 /// Capture and CaptureScreen share the response shape exactly (design doc
 /// section 8): a count frame, then one Data frame of the payload.
-fn respond_with_data(stream: &mut UnixStream, id: &str, data: Vec<u8>) -> Result<()> {
+fn respond_with_data(stream: &mut Stream, id: &str, data: Vec<u8>) -> Result<()> {
     write_json(
         stream,
         &Response::ok(id.to_owned(), json!({"bytes": data.len()})),
@@ -64,7 +75,7 @@ fn respond_with_data(stream: &mut UnixStream, id: &str, data: Vec<u8>) -> Result
 
 /// Read the data frame a Send request promised and hand it to the workload.
 fn handle_send(
-    stream: &mut UnixStream,
+    stream: &mut Stream,
     runtime: &Arc<WorkerRuntime>,
     id: &str,
     bytes: usize,
@@ -88,7 +99,7 @@ fn handle_send(
 /// The dispatch of every non-streaming operation; Attach takes the stream
 /// because it upgrades the connection into the streaming paths.
 fn dispatch_operation(
-    stream: UnixStream,
+    stream: Stream,
     runtime: &Arc<WorkerRuntime>,
     request: Request,
     id: String,

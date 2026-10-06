@@ -50,6 +50,14 @@ pub(in crate::worker) fn try_acquire_connection(
 /// PTY master and can SIGHUP an otherwise healthy workload. Existing client
 /// threads may release descriptors while the listener backs off, after which
 /// accepting can resume normally.
+#[cfg(windows)]
+pub(in crate::worker) fn transient_accept_error(error: &io::Error) -> bool {
+    // ERROR_TOO_MANY_OPEN_FILES, ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY,
+    // ERROR_NO_SYSTEM_RESOURCES, ERROR_NONPAGED_SYSTEM_RESOURCES.
+    matches!(error.raw_os_error(), Some(4 | 8 | 14 | 1450 | 1451))
+}
+
+#[cfg(unix)]
 pub(in crate::worker) fn transient_accept_error(error: &io::Error) -> bool {
     matches!(
         error.raw_os_error(),
