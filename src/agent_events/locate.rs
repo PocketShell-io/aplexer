@@ -316,12 +316,15 @@ fn ambiguity(
 /// mid-scan, an unreadable `/proc` entry) skip quietly -- the walk degrades
 /// to fewer candidates, never an error.
 pub fn open_jsonl_fds(proc_root: &Path, pid: u32) -> Vec<PathBuf> {
-    // Windows has no per-process fd directory; enumerating another process's
-    // handles is not worth it in v1. Degrade to no identity-backed candidates.
+    // Windows has no per-process fd directory: the system handle table stands
+    // in (same-user processes only; anything else degrades to no candidates).
     #[cfg(windows)]
     {
-        let _ = (proc_root, pid);
-        Vec::new()
+        let _ = proc_root;
+        crate::sys::windows::procinfo::open_files_with_ext(pid, "jsonl")
+            .into_iter()
+            .filter(|path| path.is_file())
+            .collect()
     }
     #[cfg(not(windows))]
     open_jsonl_fds_proc(proc_root, pid)
@@ -366,8 +369,16 @@ fn candidate_matches_session(family: &str, path: &Path, cwd: &Path, since_ms: u6
         "claude" => path
             .parent()
             .and_then(|dir| dir.file_name())
-            .is_some_and(|dir| dir == std::ffi::OsStr::new(&encode_claude_cwd(&cwd_str))),
-        "codex" => rollout_cwd(path).is_none_or(|rollout_cwd| rollout_cwd == cwd_str),
+            .is_some_and(|dir| {
+                let want = encode_claude_cwd(&cwd_str);
+                // NTFS paths are case-insensitive (`c:\x` vs `C:\x`).
+                if cfg!(windows) {
+                    dir.to_string_lossy().eq_ignore_ascii_case(&want)
+                } else {
+                    dir == std::ffi::OsStr::new(&want)
+                }
+            }),
+        "codex" => rollout_cwd(path).is_none_or(|rollout_cwd| same_cwd(&rollout_cwd, &cwd_str)),
         "grok" => {
             path.file_name().is_some_and(|name| name == "updates.jsonl")
                 && path
@@ -525,8 +536,24 @@ pub fn codex_transcript_candidates(
     let ours = rollouts
         .into_iter()
         .filter(|path| file_mtime_ms(path).is_some_and(|mtime| mtime >= since))
-        .filter(|path| rollout_cwd(path).is_none_or(|rollout_cwd| rollout_cwd == cwd_str));
+        .filter(|path| {
+            rollout_cwd(path).is_none_or(|rollout_cwd| same_cwd(&rollout_cwd, &cwd_str))
+        });
     candidates_newest_first(ours, since)
+}
+
+/// Whether two recorded cwds name the same directory. Exact on Unix; on
+/// Windows case-insensitive and blind to a `\\?\` verbatim prefix.
+fn same_cwd(a: &str, b: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let norm = |s: &str| s.strip_prefix(r"\\?\").unwrap_or(s).to_lowercase();
+        norm(a) == norm(b)
+    }
+    #[cfg(not(windows))]
+    {
+        a == b
+    }
 }
 
 /// The `cwd` recorded in a codex rollout's first (`session_meta`) row.
@@ -599,10 +626,17 @@ pub(crate) fn encode_claude_cwd(cwd: &str) -> String {
     if trimmed.is_empty() {
         "-".into()
     } else {
-        // On Windows the drive colon and backslashes join the replaced set:
-        // `C:\Users\me\x` -> `C--Users-me-x` (matches ~/.claude/projects).
+        // On Windows Claude Code replaces every non-alphanumeric UTF-16 unit:
+        // `C:\Users\me\x` -> `C--Users-me-x`, `C:\my proj_1` -> `C--my-proj-1`
+        // (verified against ~/.claude/projects names).
         #[cfg(windows)]
-        let encoded = trimmed.replace(['/', '\\', '.', ':'], "-");
+        let encoded: String = trimmed
+            .encode_utf16()
+            .map(|unit| match u8::try_from(unit) {
+                Ok(b) if b.is_ascii_alphanumeric() => b as char,
+                _ => '-',
+            })
+            .collect();
         #[cfg(not(windows))]
         let encoded = trimmed.replace(['/', '.'], "-");
         encoded
@@ -684,7 +718,40 @@ mod windows_tests {
     }
 
     #[test]
-    fn open_jsonl_fds_degrades_to_empty() {
-        assert!(open_jsonl_fds(Path::new("/proc"), std::process::id()).is_empty());
+    fn encode_claude_cwd_replaces_every_non_alphanumeric() {
+        assert_eq!(encode_claude_cwd(r"C:\my proj_1\é"), "C--my-proj-1--");
+        assert_eq!(
+            encode_claude_cwd(r"C:\Users\User\.ssh"),
+            "C--Users-User--ssh"
+        );
+    }
+
+    #[test]
+    fn same_cwd_ignores_case_and_verbatim_prefix_on_windows() {
+        assert!(same_cwd(r"c:\Users\Me", r"C:\users\me"));
+        assert!(same_cwd(r"\\?\C:\x", r"C:\x"));
+        assert!(!same_cwd(r"C:\x", r"C:\y"));
+    }
+
+    #[test]
+    fn open_jsonl_fds_sees_a_child_process_holding_a_log() {
+        let dir = std::env::temp_dir().join(format!("aplexer-fds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("rollout.jsonl");
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "8", "127.0.0.1"])
+            .stdout(File::create(&log).unwrap())
+            .spawn()
+            .unwrap();
+        let found = open_jsonl_fds(Path::new("/proc"), child.id());
+        let none = open_jsonl_fds(Path::new("/proc"), 0xFFFF_FFF0);
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            found.iter().any(|p| p.ends_with("rollout.jsonl")),
+            "{found:?}"
+        );
+        assert!(none.is_empty());
     }
 }

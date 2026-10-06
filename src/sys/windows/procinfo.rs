@@ -307,9 +307,429 @@ pub fn parse_env_block(wide: &[u16]) -> Vec<(String, String)> {
     out
 }
 
+/// Process creation time (FILETIME, 100 ns ticks since 1601).
+pub fn creation_time(pid: u32) -> Option<u64> {
+    crate::sys::windows::job::process_identity(pid)
+        .ok()
+        .map(|identity| identity.creation_time)
+}
+
+/// Parent of `pid` from the ToolHelp entries, or `None` when there is no
+/// parent record or the recorded parent pid has been *reused*: a ToolHelp
+/// parent link outlives the parent, so a parent that was created after its
+/// child cannot be the real one.
+fn validated_parent(
+    by_pid: &std::collections::HashMap<u32, u32>,
+    pid: u32,
+    created: &mut impl FnMut(u32) -> Option<u64>,
+) -> Option<u32> {
+    let ppid = *by_pid.get(&pid)?;
+    if ppid == 0 || ppid == pid || !by_pid.contains_key(&ppid) {
+        return None;
+    }
+    match (created(ppid), created(pid)) {
+        (Some(parent), Some(child)) if parent > child => None,
+        (None, _) => None,
+        _ => Some(ppid),
+    }
+}
+
+/// Ancestor chain of `pid`, nearest first, at most `limit` entries, stopping
+/// at the first missing/reused/cyclic link. Does not include `pid`.
+pub fn ancestors(pid: u32, limit: usize) -> Vec<u32> {
+    let by_pid: std::collections::HashMap<u32, u32> =
+        snapshot().into_iter().map(|e| (e.pid, e.ppid)).collect();
+    ancestors_in(&by_pid, pid, limit, &mut creation_time)
+}
+
+fn ancestors_in(
+    by_pid: &std::collections::HashMap<u32, u32>,
+    pid: u32,
+    limit: usize,
+    created: &mut impl FnMut(u32) -> Option<u64>,
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut cur = pid;
+    while out.len() < limit {
+        let Some(parent) = validated_parent(by_pid, cur, created) else {
+            break;
+        };
+        if parent == pid || out.contains(&parent) {
+            break;
+        }
+        out.push(parent);
+        cur = parent;
+    }
+    out
+}
+
+/// Image names that are console plumbing, never a foreground command.
+const CONSOLE_HELPERS: &[&str] = &["conhost", "openconsole"];
+
+/// One live process as the foreground picker sees it.
+#[derive(Debug, Clone)]
+pub struct FgNode {
+    pub pid: u32,
+    pub ppid: u32,
+    pub name: String,
+}
+
+/// Pick the foreground command of a session: the deepest live descendant of
+/// `leader` (parent links within `nodes`), console helpers ignored; among
+/// equally deep ones the newest by `created`, then the highest pid. Nodes not
+/// linked to the leader (their parent exited) are detached background work
+/// and only considered when the leader itself is gone.
+fn pick_foreground(
+    leader: u32,
+    nodes: &[FgNode],
+    created: &mut impl FnMut(u32) -> Option<u64>,
+) -> Option<String> {
+    let parent: std::collections::HashMap<u32, u32> =
+        nodes.iter().map(|n| (n.pid, n.ppid)).collect();
+    let depth_of = |pid: u32| -> Option<usize> {
+        let mut cur = pid;
+        for depth in 0..=nodes.len() {
+            if cur == leader {
+                return Some(depth);
+            }
+            cur = *parent.get(&cur)?;
+        }
+        None
+    };
+    let mut best: Vec<(&FgNode, usize)> = Vec::new();
+    let mut best_depth = 0usize;
+    let leader_alive = parent.contains_key(&leader);
+    for node in nodes {
+        if CONSOLE_HELPERS.contains(&node.name.as_str()) {
+            continue;
+        }
+        let depth = if leader_alive {
+            match depth_of(node.pid) {
+                Some(d) => d,
+                None => continue,
+            }
+        } else {
+            0
+        };
+        if best.is_empty() || depth > best_depth {
+            best_depth = depth;
+            best.clear();
+        }
+        if depth == best_depth {
+            best.push((node, depth));
+        }
+    }
+    best.into_iter()
+        .max_by_key(|(n, _)| (created(n.pid).unwrap_or(0), n.pid))
+        .map(|(n, _)| n.name.clone())
+        .filter(|name| !name.is_empty())
+}
+
+/// The foreground command of the session whose workload leader is `leader`.
+/// `members` is the session Job's process list when known; with `None` the
+/// leader's descendants are taken from the ToolHelp parent links. Returns the
+/// normalized image name (`ping`, `node`, `pwsh`). Best-effort, `None` when
+/// nothing is alive.
+pub fn foreground_command(leader: u32, members: Option<&[u32]>) -> Option<String> {
+    let all = snapshot();
+    let nodes: Vec<FgNode> = match members {
+        Some(pids) => {
+            let set: std::collections::HashSet<u32> = pids.iter().copied().collect();
+            all.into_iter()
+                .filter(|e| set.contains(&e.pid))
+                .map(|e| FgNode {
+                    pid: e.pid,
+                    ppid: e.ppid,
+                    name: e.name,
+                })
+                .collect()
+        }
+        None => {
+            let mut keep = std::collections::HashSet::from([leader]);
+            // Entries are not ordered by ancestry: iterate to a fixed point.
+            loop {
+                let before = keep.len();
+                for e in &all {
+                    if keep.contains(&e.ppid) {
+                        keep.insert(e.pid);
+                    }
+                }
+                if keep.len() == before {
+                    break;
+                }
+            }
+            all.into_iter()
+                .filter(|e| keep.contains(&e.pid))
+                .map(|e| FgNode {
+                    pid: e.pid,
+                    ppid: e.ppid,
+                    name: e.name,
+                })
+                .collect()
+        }
+    };
+    pick_foreground(leader, &nodes, &mut creation_time)
+}
+
+#[link(name = "ntdll")]
+extern "system" {
+    #[link_name = "NtQuerySystemInformation"]
+    fn nt_query_system_information(class: u32, info: *mut u8, len: u32, ret: *mut u32) -> i32;
+}
+
+/// `SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX` (x64 layout, 40 bytes).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HandleEntryEx {
+    object: usize,
+    pid: usize,
+    handle: usize,
+    access: u32,
+    backtrace: u16,
+    type_index: u16,
+    attributes: u32,
+    reserved: u32,
+}
+
+fn system_handles() -> Option<Vec<HandleEntryEx>> {
+    const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
+    const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC000_0004u32 as i32;
+    let mut size = 4usize << 20;
+    for _ in 0..8 {
+        let mut buf = vec![0u64; size.div_ceil(8)];
+        let mut ret = 0u32;
+        let st = unsafe {
+            nt_query_system_information(
+                SYSTEM_EXTENDED_HANDLE_INFORMATION,
+                buf.as_mut_ptr().cast::<u8>(),
+                size as u32,
+                &mut ret,
+            )
+        };
+        if st == STATUS_INFO_LENGTH_MISMATCH {
+            size = (ret as usize).max(size) * 2;
+            continue;
+        }
+        if st < 0 {
+            return None;
+        }
+        let words = buf.as_ptr().cast::<usize>();
+        let count = unsafe { *words };
+        let header = 2 * std::mem::size_of::<usize>();
+        let max = (size - header) / std::mem::size_of::<HandleEntryEx>();
+        let count = count.min(max);
+        let entries = unsafe {
+            std::slice::from_raw_parts(
+                buf.as_ptr()
+                    .cast::<u8>()
+                    .add(header)
+                    .cast::<HandleEntryEx>(),
+                count,
+            )
+        };
+        return Some(entries.to_vec());
+    }
+    None
+}
+
+/// Regular files `pid` currently holds open whose extension is `ext`
+/// (without the dot, case-insensitive): the Windows counterpart of scanning
+/// `/proc/<pid>/fd`. Uses the system handle table plus `DuplicateHandle`, so
+/// it works for same-user processes only (others yield an empty list), and
+/// only sees handles open at this instant (Node's append-and-close writers
+/// leave nothing to see). Never blocks: only `FILE_TYPE_DISK` handles are
+/// resolved to a path.
+pub fn open_files_with_ext(pid: u32, ext: &str) -> Vec<PathBuf> {
+    use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileType, GetFinalPathNameByHandleW, FILE_TYPE_DISK,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, PROCESS_DUP_HANDLE};
+
+    let mut out = Vec::new();
+    // The object-type index of "File" differs between Windows builds: learn it
+    // from a file handle this very process owns (opened before the table is
+    // captured, or it would not be in it).
+    let Ok(probe) = std::fs::File::open(std::env::current_exe().unwrap_or_default()) else {
+        return out;
+    };
+    let Some(entries) = system_handles() else {
+        return out;
+    };
+    let probe_handle = std::os::windows::io::AsRawHandle::as_raw_handle(&probe) as usize;
+    let me = std::process::id() as usize;
+    let Some(file_type) = entries
+        .iter()
+        .find(|e| e.pid == me && e.handle == probe_handle)
+        .map(|e| e.type_index)
+    else {
+        return out;
+    };
+    let Some(target) = open(pid, PROCESS_DUP_HANDLE) else {
+        return out;
+    };
+    let mut inspected = 0usize;
+    for e in entries
+        .iter()
+        .filter(|e| e.pid == pid as usize && e.type_index == file_type)
+    {
+        inspected += 1;
+        if inspected > 4096 {
+            break;
+        }
+        let mut dup: HANDLE = std::ptr::null_mut();
+        let ok = unsafe {
+            DuplicateHandle(
+                target.0,
+                e.handle as HANDLE,
+                GetCurrentProcess(),
+                &mut dup,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if ok == 0 || dup.is_null() {
+            continue;
+        }
+        let dup = Handle(dup);
+        if unsafe { GetFileType(dup.0) } != FILE_TYPE_DISK {
+            continue;
+        }
+        let mut buf = vec![0u16; 4096];
+        let n = unsafe { GetFinalPathNameByHandleW(dup.0, buf.as_mut_ptr(), buf.len() as u32, 0) };
+        if n == 0 || n as usize > buf.len() {
+            continue;
+        }
+        let text = wide_to_string(&buf[..n as usize]);
+        let text = text
+            .strip_prefix(r"\\?\UNC\")
+            .map(|rest| format!(r"\\{rest}"))
+            .or_else(|| text.strip_prefix(r"\\?\").map(str::to_owned))
+            .unwrap_or(text);
+        let path = PathBuf::from(text);
+        if path
+            .extension()
+            .and_then(|x| x.to_str())
+            .is_some_and(|x| x.eq_ignore_ascii_case(ext))
+        {
+            out.push(path);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn node(pid: u32, ppid: u32, name: &str) -> FgNode {
+        FgNode {
+            pid,
+            ppid,
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn foreground_prefers_deepest_then_newest_and_skips_helpers() {
+        let nodes = [
+            node(10, 1, "pwsh"),
+            node(11, 10, "conhost"),
+            node(12, 10, "cmd"),
+            node(13, 12, "node"),
+            node(14, 12, "ping"),
+            node(99, 77, "orphan"),
+        ];
+        let mut created = |pid: u32| Some(u64::from(pid));
+        // 14 is newer than 13 at the same depth; the orphan never wins.
+        assert_eq!(
+            pick_foreground(10, &nodes, &mut created).as_deref(),
+            Some("ping")
+        );
+        assert_eq!(
+            pick_foreground(10, &nodes[..2], &mut created).as_deref(),
+            Some("pwsh")
+        );
+        // Leader gone: fall back to whatever lives.
+        assert!(pick_foreground(5, &nodes[3..4], &mut created).is_some());
+        assert_eq!(pick_foreground(10, &[], &mut created), None);
+    }
+
+    #[test]
+    fn ancestors_stop_at_reused_parent_pids() {
+        let by_pid: std::collections::HashMap<u32, u32> =
+            [(5, 4), (4, 3), (3, 2), (2, 0)].into_iter().collect();
+        // Lower pid == created earlier: parents predate their children.
+        let mut ok = |pid: u32| Some(u64::from(pid));
+        assert_eq!(ancestors_in(&by_pid, 5, 10, &mut ok), vec![4, 3, 2]);
+        // pid 3 "was created after" its child 4: a recycled pid.
+        let mut reused = |pid: u32| Some(if pid == 3 { 500 } else { u64::from(pid) });
+        assert_eq!(ancestors_in(&by_pid, 5, 10, &mut reused), vec![4]);
+        assert_eq!(ancestors_in(&by_pid, 5, 2, &mut ok), vec![4, 3]);
+    }
+
+    #[test]
+    fn ancestors_of_a_real_child_include_us() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 4 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        let chain = ancestors(child.id(), 8);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(chain.first(), Some(&std::process::id()));
+    }
+
+    #[test]
+    fn foreground_of_a_live_tree_is_the_leaf() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 6 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        let mut seen = None;
+        for _ in 0..40 {
+            seen = foreground_command(child.id(), None);
+            if seen.as_deref() == Some("ping") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(seen.as_deref(), Some("ping"));
+    }
+
+    #[test]
+    fn inaccessible_and_missing_processes_degrade_to_none() {
+        // pid 4 is the System process (protected); 0xFFFF_FFF0 does not exist.
+        for pid in [0, 4, 0xFFFF_FFF0] {
+            assert!(environ(pid).is_none(), "environ {pid}");
+            assert!(cmdline(pid).is_none(), "cmdline {pid}");
+            assert!(cwd(pid).is_none(), "cwd {pid}");
+            assert!(open_files_with_ext(pid, "jsonl").is_empty());
+            assert!(ancestors(pid, 8).len() <= 8);
+        }
+        assert_eq!(foreground_command(0xFFFF_FFF0, None), None);
+    }
+
+    #[test]
+    fn open_files_sees_a_held_file_of_another_process() {
+        // This process holds the file; query ourselves by pid.
+        let dir = std::env::temp_dir().join(format!("aplexer-openfiles-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("held.jsonl");
+        let held = std::fs::File::create(&path).unwrap();
+        let found = open_files_with_ext(std::process::id(), "JSONL");
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            found.iter().any(|p| p.ends_with("held.jsonl")),
+            "found {found:?}"
+        );
+    }
 
     #[test]
     fn normalizes_image_names() {

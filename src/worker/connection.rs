@@ -237,11 +237,23 @@ pub(super) fn status_value(runtime: &WorkerRuntime) -> Result<Value> {
     // rather than added to the persisted record, so this never
     // costs a disk write and an old client's `serde_json` simply
     // ignores the unrecognized field.
-    // Windows has no foreground process group on a ConPTY: the field is
-    // simply absent there.
     #[cfg(unix)]
     if let Some(fd) = lock(&runtime.pty_write)?.as_ref().map(|f| f.as_raw_fd()) {
         if let Some(cmd) = foreground_command(fd) {
+            value["foreground_command"] = json!(cmd);
+        }
+    }
+    // Windows has no foreground process group on a ConPTY: the deepest/newest
+    // live process of the session's Job under the workload leader stands in.
+    #[cfg(windows)]
+    let leader = lock(&runtime.record)?.workload_pid;
+    #[cfg(windows)]
+    if let Some(leader) = leader {
+        let members =
+            crate::sys::windows::job::session_job().and_then(|job| job.process_ids().ok());
+        if let Some(cmd) =
+            crate::sys::windows::procinfo::foreground_command(leader, members.as_deref())
+        {
             value["foreground_command"] = json!(cmd);
         }
     }
