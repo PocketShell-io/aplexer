@@ -102,9 +102,16 @@ pub(super) fn spawn_workload(
     // Put the `a` next to this worker first on PATH.
     if let Ok(exe) = env::current_exe() {
         if let Some(dir) = exe.parent() {
+            // Prepend to the effective PATH: the launch/profile env's PATH
+            // when it set one, else this process's own.
+            let effective = env
+                .iter()
+                .find(|(k, _)| k.to_string_lossy().eq_ignore_ascii_case("PATH"))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| env::var_os("PATH"));
             let mut path = dir.as_os_str().to_os_string();
-            path.push(";");
-            if let Some(existing) = env::var_os("PATH") {
+            if let Some(existing) = effective.filter(|p| !p.is_empty()) {
+                path.push(";");
                 path.push(existing);
             }
             set(&mut env, "PATH", Some(path));

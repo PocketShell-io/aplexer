@@ -42,6 +42,7 @@ use std::ptr::{null, null_mut};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
+use super::launch;
 use windows_sys::Win32::Foundation::{
     CloseHandle, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
     WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -403,51 +404,43 @@ fn wide_z(s: &OsStr) -> Vec<u16> {
     v
 }
 
-fn pathext() -> Vec<String> {
-    let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-    raw.split(';')
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect()
+fn env_value(vars: &[(OsString, OsString)], name: &str) -> Option<OsString> {
+    vars.iter()
+        .find(|(k, _)| upper(k) == name)
+        .map(|(_, v)| v.clone())
 }
 
-fn with_ext_candidates(base: &Path, exts: &[String]) -> Vec<PathBuf> {
-    let mut v = vec![base.to_path_buf()];
-    for e in exts {
-        let mut s = base.as_os_str().to_os_string();
-        s.push(e);
-        v.push(PathBuf::from(s));
-    }
-    v
-}
-
-fn find_executable_with_path(program: &OsStr, path_var: Option<&OsStr>) -> Option<PathBuf> {
-    let exts = pathext();
-    let p = Path::new(program);
-    let has_sep = program
-        .to_string_lossy()
-        .chars()
-        .any(|c| c == '\\' || c == '/' || c == ':');
-    if has_sep {
-        return with_ext_candidates(p, &exts)
-            .into_iter()
-            .find(|c| c.is_file());
-    }
-    let path_var = path_var?;
-    for dir in std::env::split_paths(path_var) {
-        for cand in with_ext_candidates(&dir.join(p), &exts) {
-            if cand.is_file() {
-                return Some(cand);
-            }
-        }
-    }
-    None
+/// Resolve `program` against the effective workload env (its `PATH`/`PATHEXT`)
+/// and `cwd`, then build the launch plan. See [`super::launch`].
+fn resolve_and_plan<S: AsRef<OsStr>>(
+    argv: &[S],
+    vars: &[(OsString, OsString)],
+    cwd: Option<&Path>,
+) -> io::Result<launch::LaunchPlan> {
+    let first = argv
+        .first()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty argv"))?
+        .as_ref();
+    let path_var = env_value(vars, "PATH");
+    let pathext = env_value(vars, "PATHEXT");
+    let resolved = launch::resolve(first, path_var.as_deref(), pathext.as_deref(), cwd)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "program not found: {} (looked for .exe/.com/.cmd/.bat/.ps1 per PATHEXT)",
+                    first.to_string_lossy()
+                ),
+            )
+        })?;
+    launch::plan(argv, &resolved, vars)
 }
 
 /// Resolve `program` like a shell would: explicit paths as-is, bare names
 /// through `PATH` with `PATHEXT` (the current directory is not searched).
+/// Only launchable files count; see [`launch::resolve`].
 pub fn find_executable(program: &str) -> Option<PathBuf> {
-    find_executable_with_path(OsStr::new(program), std::env::var_os("PATH").as_deref())
+    launch::resolve_in_process_env(program).map(|r| r.path)
 }
 
 // ---------------------------------------------------------------------------
@@ -495,22 +488,16 @@ pub fn spawn_workload<S: AsRef<OsStr>>(
     pty: Option<&PtyMaster>,
     job: Option<HANDLE>,
 ) -> io::Result<Workload> {
-    let first = argv
-        .first()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty argv"))?;
+    if argv.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty argv"));
+    }
+    let cwd = launch::normalize_cwd(cwd)?;
     let vars = effective_env(env);
-    let path_var = vars
-        .iter()
-        .find(|(k, _)| upper(k) == "PATH")
-        .map(|(_, v)| v.clone());
-    let app = find_executable_with_path(first.as_ref(), path_var.as_deref()).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("program not found: {}", first.as_ref().to_string_lossy()),
-        )
-    })?;
+    launch::validate_env(&vars)?;
+    let plan = resolve_and_plan(argv, &vars, Some(&cwd))?;
+    let app = plan.application;
     let app_w = wide_z(app.as_os_str());
-    let mut cmdline = build_command_line(argv);
+    let mut cmdline = plan.cmdline;
     let envblock = env_block(&vars);
     let cwd_w = wide_z(cwd.as_os_str());
 
@@ -674,19 +661,16 @@ pub fn spawn_detached_worker(command: &Command, stderr: &File) -> io::Result<Wor
         env.insert(k.to_os_string(), v.map(OsStr::to_os_string));
     }
     let vars = effective_env(&env);
-    let path_var = vars
-        .iter()
-        .find(|(k, _)| upper(k) == "PATH")
-        .map(|(_, v)| v.clone());
-    let app = find_executable_with_path(program, path_var.as_deref()).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("program not found: {}", program.to_string_lossy()),
-        )
-    })?;
+    launch::validate_env(&vars)?;
+    let cwd = command
+        .get_current_dir()
+        .map(launch::normalize_cwd)
+        .transpose()?;
+    let plan = resolve_and_plan(&argv, &vars, cwd.as_deref())?;
+    let app = plan.application;
     let app_w = wide_z(app.as_os_str());
     let envblock = env_block(&vars);
-    let cwd_w = command.get_current_dir().map(|d| wide_z(d.as_os_str()));
+    let cwd_w = cwd.as_ref().map(|d| wide_z(d.as_os_str()));
     let nul = File::options().read(true).write(true).open("NUL")?;
     let nul_h = nul.as_raw_handle() as HANDLE;
     let err_h = stderr.as_raw_handle() as HANDLE;
@@ -730,7 +714,7 @@ pub fn spawn_detached_worker(command: &Command, stderr: &File) -> io::Result<Wor
             si.StartupInfo.hStdOutput = nul_h;
             si.StartupInfo.hStdError = err_h;
             si.lpAttributeList = attrs.list;
-            let mut cmdline = build_command_line(&argv);
+            let mut cmdline = plan.cmdline.clone();
             let mut pi: PROCESS_INFORMATION = zeroed();
             let ok = CreateProcessW(
                 app_w.as_ptr(),
@@ -950,6 +934,165 @@ mod tests {
         )
         .unwrap();
         assert_eq!(wl.wait().unwrap(), 3);
+    }
+
+    /// Compile (once) a tiny exe that writes its argv, one per line, to the
+    /// file named by APLEXER_ECHO_OUT.
+    fn echo_exe() -> PathBuf {
+        static EXE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        EXE.get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("aplexer-echo-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let src = dir.join("echo.rs");
+            std::fs::write(
+                &src,
+                r#"fn main(){let mut o=String::new();for a in std::env::args_os().skip(1){o.push_str(&a.to_string_lossy());o.push('\n');}
+std::fs::write(std::env::var("APLEXER_ECHO_OUT").unwrap(),o).unwrap();}"#,
+            )
+            .unwrap();
+            let exe = dir.join("echo.exe");
+            let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+            let st = Command::new(rustc)
+                .args(["-O", "-o"])
+                .arg(&exe)
+                .arg(&src)
+                .status()
+                .expect("rustc available for the test helper");
+            assert!(st.success());
+            exe
+        })
+        .clone()
+    }
+
+    fn run_plain(argv: &[OsString], dir: &Path, out: &Path) -> u32 {
+        let mut env = EnvOverrides::new();
+        env.insert("APLEXER_ECHO_OUT".into(), Some(out.as_os_str().into()));
+        spawn_workload(argv, dir, &env, None, None)
+            .unwrap()
+            .wait()
+            .unwrap()
+    }
+
+    #[test]
+    fn cmd_shim_round_trips_hostile_arguments_without_injection() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let out = dir.path().join("out.txt");
+        let shim = dir.path().join("tool.cmd");
+        std::fs::write(
+            &shim,
+            format!("@echo off\r\n\"{}\" %*\r\n", echo_exe().display()),
+        )
+        .unwrap();
+        let args = [
+            "a&b",
+            "x|y",
+            "100%",
+            "%PATH%",
+            "%%cd%%",
+            "^c^",
+            "q\"uote",
+            "<>",
+            "trail\\",
+            "sp ace\\",
+            "(paren)",
+            "!bang!",
+            "two  words",
+            r#"a\"b"#,
+            r#"x"&echo pwned>pwned.txt&""#,
+            "x & echo pwned2>pwned2.txt",
+            "a;b,c=d",
+        ];
+        let mut argv: Vec<OsString> = vec![shim.clone().into()];
+        argv.extend(args.iter().map(OsString::from));
+        assert_eq!(run_plain(&argv, dir.path(), &out), 0);
+        let got = std::fs::read_to_string(&out).unwrap();
+        let want: String = args.iter().map(|a| format!("{a}\n")).collect();
+        assert_eq!(got, want);
+        assert!(!dir.path().join("pwned.txt").exists());
+        assert!(!dir.path().join("pwned2.txt").exists());
+        // Bare name through PATH, preferring the .cmd over a sh shim.
+        std::fs::write(dir.path().join("tool"), "#!/bin/sh\n").unwrap();
+        let mut env = EnvOverrides::new();
+        env.insert("PATH".into(), Some(dir.path().as_os_str().into()));
+        env.insert("APLEXER_ECHO_OUT".into(), Some(out.as_os_str().into()));
+        let wl = spawn_workload(&["tool", "hello"], dir.path(), &env, None, None).unwrap();
+        assert_eq!(wl.wait().unwrap(), 0);
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn cmd_shim_rejects_line_breaks_and_nul() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let shim = dir.path().join("t.cmd");
+        std::fs::write(&shim, "@echo off\r\n").unwrap();
+        for bad in ["a\nb", "a\rb", "a\0b"] {
+            let e = spawn_workload(
+                &[shim.as_os_str(), OsStr::new(bad)],
+                dir.path(),
+                &EnvOverrides::new(),
+                None,
+                None,
+            )
+            .err()
+            .unwrap();
+            assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn ps1_shim_runs_under_powershell_and_ignores_restricted_policy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let out = dir.path().join("out.txt");
+        let shim = dir.path().join("p.ps1");
+        std::fs::write(
+            &shim,
+            "[IO.File]::WriteAllLines($env:APLEXER_ECHO_OUT, [string[]]$args)\r\n",
+        )
+        .unwrap();
+        let argv: Vec<OsString> = vec![shim.into(), "a b".into(), "c\"d".into(), "e&f".into()];
+        assert_eq!(run_plain(&argv, dir.path(), &out), 0);
+        let got = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(got.lines().collect::<Vec<_>>(), ["a b", "c\"d", "e&f"]);
+    }
+
+    #[test]
+    fn bad_cwd_and_relative_program_and_verbatim_cwd() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let e = spawn_workload(
+            &["cmd.exe", "/c", "exit", "0"],
+            &dir.path().join("nope"),
+            &EnvOverrides::new(),
+            None,
+            None,
+        )
+        .err()
+        .unwrap();
+        assert!(e.to_string().contains("not a directory"), "{e}");
+        let verbatim = PathBuf::from(format!(r"\\?\{}", dir.path().display()));
+        let wl = spawn_workload(
+            &["cmd.exe", "/c", "exit", "4"],
+            &verbatim,
+            &EnvOverrides::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(wl.wait().unwrap(), 4);
+        // A relative program path resolves against the workload cwd.
+        std::fs::copy(
+            std::env::var_os("ComSpec").unwrap(),
+            dir.path().join("mycmd.exe"),
+        )
+        .unwrap();
+        let wl = spawn_workload(
+            &[r".\mycmd", "/c", "exit", "6"],
+            dir.path(),
+            &EnvOverrides::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(wl.wait().unwrap(), 6);
     }
 
     #[test]

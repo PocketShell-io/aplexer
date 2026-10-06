@@ -356,11 +356,21 @@ fn engine_resolution_check(paths: &Paths) -> Value {
         .filter(|row| row.verdict == ResolutionVerdict::NotInstalled)
         .map(|row| format!("{} {}", row.kind, row.name))
         .collect();
+    let session_noun = if cfg!(windows) {
+        "a fresh logon session's PATH (machine + user registry PATH)"
+    } else {
+        "a non-interactive session's PATH"
+    };
     let mut detail = if flagged.is_empty() {
         format!(
-            "{} engine(s), {} profile(s): every command resolves under a non-interactive session's PATH (or is pinned to an existing path)",
+            "{} engine(s), {} profile(s): every command resolves under {session_noun} (or is pinned to an existing path)",
             config.engines.len(),
             config.profiles.len()
+        )
+    } else if cfg!(windows) {
+        format!(
+            "{} resolve only via this shell's PATH (not in the registry PATH a new logon session gets) or not to a launchable file — run `a doctor --fix` to pin absolute paths into the config file",
+            flagged.join(", ")
         )
     } else {
         format!(
@@ -368,18 +378,75 @@ fn engine_resolution_check(paths: &Paths) -> Value {
             flagged.join(", ")
         )
     };
+    #[cfg(windows)]
+    let (policy_json, policy_warning) = powershell_policy_report(&rows);
+    #[cfg(windows)]
+    if let Some(warning) = &policy_warning {
+        detail.push_str("; ");
+        detail.push_str(warning);
+    }
+    #[cfg(windows)]
+    let policy_ok = policy_warning.is_none();
+    #[cfg(not(windows))]
+    let policy_ok = true;
     if !not_installed.is_empty() {
         detail.push_str(&format!("; not installed: {}", not_installed.join(", ")));
     }
-    json!({
+    let mut check = json!({
         "name": "engine_resolution",
-        "ok": flagged.is_empty(),
-        "severity": if flagged.is_empty() { "ok" } else { "warning" },
+        "ok": flagged.is_empty() && policy_ok,
+        "severity": if flagged.is_empty() && policy_ok { "ok" } else { "warning" },
         "required": false,
         "detail": detail,
         "minimal_path": minimal,
         "executables": rows.iter().map(engine_resolution_row_json).collect::<Vec<_>>(),
-    })
+    });
+    #[cfg(windows)]
+    {
+        check["powershell_execution_policy"] = policy_json;
+    }
+    check
+}
+
+/// The effective Windows PowerShell execution policy (from the registry; the
+/// policy is never changed here) and, when it is Restricted/AllSigned while an
+/// engine resolves only to a `.ps1` shim, a warning with the way out.
+/// aplexer's own launches run `.ps1` shims with `-ExecutionPolicy Bypass` and
+/// prefer `.cmd`, so this matters for the user's interactive shell.
+#[cfg(windows)]
+fn powershell_policy_report(rows: &[ResolutionRow]) -> (Value, Option<String>) {
+    let (effective, scopes) = aplexer::sys::windows::registry::effective_execution_policy();
+    let blocking = matches!(
+        effective.to_ascii_lowercase().as_str(),
+        "restricted" | "allsigned"
+    );
+    let ps1_only: Vec<String> = rows
+        .iter()
+        .filter_map(|row| {
+            let found = row.current.as_ref()?;
+            let is_ps1 = found
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ps1"));
+            is_ps1.then(|| format!("{} {}", row.kind, row.name))
+        })
+        .collect();
+    let warning = (blocking && !ps1_only.is_empty()).then(|| {
+        format!(
+            "PowerShell execution policy is {effective}, and {} resolve only to a .ps1 shim that a PowerShell prompt cannot run (aplexer itself launches it with -ExecutionPolicy Bypass); install/use the .cmd shim or run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` (not changed by doctor)",
+            ps1_only.join(", ")
+        )
+    });
+    (
+        json!({
+            "effective": effective,
+            "scopes": scopes
+                .iter()
+                .map(|(scope, policy)| json!({"scope": scope, "policy": policy}))
+                .collect::<Vec<_>>(),
+            "ps1_only": ps1_only,
+        }),
+        warning,
+    )
 }
 
 /// The host-level checks that do not touch session records: platform,

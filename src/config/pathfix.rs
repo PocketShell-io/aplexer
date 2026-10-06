@@ -56,21 +56,32 @@ pub fn minimal_path() -> String {
     dirs.join(":")
 }
 
-/// Windows: the system directories every session has, plus `~\.local\bin`.
-/// Entries are joined with `;` (via `env::join_paths`).
+/// Windows: what a fresh logon session has: the machine PATH followed by the
+/// user PATH from the registry (`HKLM`/`HKCU` `Environment`; npm's global bin
+/// dir `%APPDATA%\npm` lives there), plus `~\.local\bin`. When the registry
+/// cannot be read: the system directories and `%APPDATA%\npm`.
 #[cfg(windows)]
 pub fn minimal_path() -> String {
-    let root = std::env::var_os("SystemRoot")
-        .or_else(|| std::env::var_os("windir"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-    let system32 = root.join("System32");
-    let mut dirs = vec![
-        system32.clone(),
-        root.clone(),
-        system32.join("Wbem"),
-        system32.join("WindowsPowerShell").join("v1.0"),
-    ];
+    let mut dirs: Vec<PathBuf> = match crate::sys::windows::registry::registry_path() {
+        Some(joined) => std::env::split_paths(&joined).collect(),
+        None => {
+            let root = std::env::var_os("SystemRoot")
+                .or_else(|| std::env::var_os("windir"))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+            let system32 = root.join("System32");
+            let mut dirs = vec![
+                system32.clone(),
+                root.clone(),
+                system32.join("Wbem"),
+                system32.join("WindowsPowerShell").join("v1.0"),
+            ];
+            if let Some(appdata) = std::env::var_os("APPDATA") {
+                dirs.push(PathBuf::from(appdata).join("npm"));
+            }
+            dirs
+        }
+    };
     if let Ok(home) = home_dir() {
         dirs.push(home.join(".local").join("bin"));
     }
@@ -103,49 +114,26 @@ fn is_executable_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// The executable extensions, from `PATHEXT` (default `.COM;.EXE;.BAT;.CMD`),
-/// lowercase with the leading dot.
-#[cfg(windows)]
-pub(crate) fn path_exts() -> Vec<String> {
-    let raw = std::env::var("PATHEXT")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
-    raw.split(';')
-        .map(|ext| ext.trim().to_ascii_lowercase())
-        .filter(|ext| ext.len() > 1 && ext.starts_with('.'))
-        .collect()
-}
-
-#[cfg(windows)]
-fn has_path_ext(path: &Path, exts: &[String]) -> bool {
-    path.extension()
-        .map(|ext| format!(".{}", ext.to_string_lossy().to_ascii_lowercase()))
-        .is_some_and(|ext| exts.contains(&ext))
-}
-
+/// Launchability on Windows is decided by the launcher's own resolver
+/// (`sys::windows::launch`), so doctor, `--fix` pinning, the `a start`
+/// pre-flight and the real spawn can never disagree.
 #[cfg(windows)]
 fn is_executable_file(path: &Path) -> bool {
-    fs::metadata(path)
-        .map(|metadata| metadata.is_file() && has_path_ext(path, &path_exts()))
-        .unwrap_or(false)
+    resolve_for_launch(path.as_os_str(), None).is_some()
 }
 
-/// Windows lookup of `base` (a directory joined with the command word): the
-/// name itself when it already carries a `PATHEXT` extension, then the name
-/// with each `PATHEXT` extension appended.
 #[cfg(windows)]
-fn resolve_with_pathext(base: &Path) -> Option<PathBuf> {
-    let exts = path_exts();
-    if has_path_ext(base, &exts) && is_executable_file(base) {
-        return Some(base.to_path_buf());
-    }
-    exts.iter().find_map(|ext| {
-        let mut name = base.as_os_str().to_os_string();
-        name.push(ext);
-        let candidate = PathBuf::from(name);
-        is_executable_file(&candidate).then_some(candidate)
-    })
+fn resolve_for_launch(
+    program: &std::ffi::OsStr,
+    path_var: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    crate::sys::windows::launch::resolve(
+        program,
+        path_var,
+        std::env::var_os("PATHEXT").as_deref(),
+        None,
+    )
+    .map(|r| r.path)
 }
 
 /// which(1) over an explicit PATH string, so the check can probe two
@@ -167,17 +155,16 @@ pub fn which_in(name: &str, path_var: &str) -> Option<PathBuf> {
         })
 }
 
-/// Windows `which`: PATH is `;`-separated (parsed with `env::split_paths`,
-/// which honours quoting) and each directory is probed with the `PATHEXT`
-/// rules of [`resolve_with_pathext`].
+/// Windows `which`: the launcher's resolver over `path_var` (`;`-separated,
+/// quoting honoured) and the process `PATHEXT`. Only launchable files count
+/// (`.exe .com .cmd .bat`, `.ps1` as a last resort), never the extensionless
+/// `sh` shims npm installs next to `.cmd`.
 #[cfg(windows)]
 pub fn which_in(name: &str, path_var: &str) -> Option<PathBuf> {
-    if !is_bare_executable(name) {
-        return resolve_with_pathext(Path::new(name));
-    }
-    std::env::split_paths(path_var)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .find_map(|dir| resolve_with_pathext(&dir.join(name)))
+    resolve_for_launch(
+        std::ffi::OsStr::new(name),
+        Some(std::ffi::OsStr::new(path_var)),
+    )
 }
 
 /// What the two-PATH comparison says about one configured executable.
@@ -545,6 +532,25 @@ mod windows_tests {
     }
 
     #[test]
+    fn which_in_skips_the_extensionless_npm_sh_shim() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(dir.path().join("claude"), "#!/bin/sh\n").unwrap();
+        let dir_path = dir.path().to_string_lossy().into_owned();
+        assert_eq!(which_in("claude", &dir_path), None);
+        fs::write(dir.path().join("claude.cmd"), "@echo off\r\n").unwrap();
+        fs::write(dir.path().join("claude.ps1"), "exit 0\r\n").unwrap();
+        assert_eq!(
+            which_in("claude", &dir_path),
+            Some(dir.path().join("claude.cmd"))
+        );
+        // A pin on the sh shim resolves because the launcher would run the
+        // sibling .cmd: doctor and launch agree.
+        let abs = dir.path().join("claude").to_string_lossy().into_owned();
+        let row = ResolutionRow::row("engine", "x", &abs, &dir_path, "");
+        assert_eq!(row.verdict, ResolutionVerdict::Resolved);
+    }
+
+    #[test]
     fn which_in_uses_semicolon_path_and_first_dir_wins() {
         let (first, first_path) = bin_dir_with("dup.cmd");
         let (_second, second_path) = bin_dir_with("dup.exe");
@@ -573,7 +579,10 @@ mod windows_tests {
     fn minimal_path_has_system32_and_parses() {
         let minimal = minimal_path();
         let dirs: Vec<_> = std::env::split_paths(&minimal).collect();
-        assert!(dirs.iter().any(|dir| dir.ends_with("System32")));
+        assert!(dirs.iter().any(|dir| dir
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .ends_with("system32")));
         assert!(which_in("cmd", &minimal).is_some());
     }
 
