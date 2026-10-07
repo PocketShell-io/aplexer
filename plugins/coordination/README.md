@@ -33,3 +33,10 @@ scripts/package-coordination.py --engine all --dest /tmp/aplexer-coordination-bu
 
 See `docs/coordination-packages.md` for the full install/verification story
 and the truthful limitations per engine.
+
+## Waiting for a reply
+
+If you are blocked on a message, register a wake-up instead of polling:
+`a wake set --every 2m --until-message` (stops when mail arrives; `--once --in 5m`
+for a single nudge). When woken, check `a message inbox`; once you no longer wait,
+run `a wake off`. It only types while you are idle, never mid-turn.

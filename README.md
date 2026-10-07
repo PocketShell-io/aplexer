@@ -431,6 +431,31 @@ includes the message id and reply command. A successful send proves storage
 or PTY injection, not that the recipient acted. Request a reply when receipt
 matters.
 
+### Self-wakeup for agents that are waiting
+
+An agent that expects a message (or any event) can ask its own session to nudge
+it, and turn that off itself:
+
+```bash
+a wake set --every 2m                    # constant: keep pinging until `a wake off`
+a wake set --every 2m --until-message    # opt in: stop once a message arrives or is acked
+a wake set --once --in 5m                # one-time: a single wake-up, then the job removes itself
+a wake set --every 5m --text "check CI"  # custom one-line prompt
+a wake list [--all]                      # also shown in `a status`, `a list` and `--json` (`wake`)
+a wake off                               # turn it off (idempotent; `--all` for every session)
+```
+
+The job is stored in the session record, so it is per-session and survives
+anything the worker survives. The worker types the prompt (default: a short
+nudge to check `a message inbox` and run `a wake off` when done) only when the
+harness reports the agent idle or waiting, the same evidence `message
+--pane` requires; it never types mid-turn and never catches up with a burst
+after a busy stretch. Sessions whose engine reports no state hooks (`a init`)
+never get typed into. Minimum interval is 10s. Every job has a visible safety
+cap (`expires in ...`, default 6h, override with `--max-lifetime 12h`).
+A constant job is not stopped by an arriving message unless you pass
+`--until-message`. `--session SEL` targets another session.
+
 ### Coordination packages for every engine
 
 To give each agent the same coordination surface — the protocol skill plus an
