@@ -277,6 +277,7 @@ fn forget_fences_pre_pid_startup_and_refuses_held_worker_lock() {
         last_accessed_ms: None,
         reported_state: None,
         reported_state_at_ms: None,
+        wake: None,
         phase: Phase::Starting,
         worker_pid: None,
         agent_override: None,

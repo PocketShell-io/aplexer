@@ -572,6 +572,68 @@ impl WorkerRuntime {
     /// itself uses (`agent_kind::profile_variants`), so a pin spelled the
     /// way detection would spell it (`zcodex` -> codex/zcodex) resolves on
     /// every surface identically.
+    /// `Operation::WakeSet`: validate and persist the job.
+    pub(super) fn wake_set(&self, job: crate::wake::WakeJob) -> Result<SessionRecord> {
+        let now = now_ms();
+        // Re-run the constructor's checks so a hand-built RPC cannot bypass them.
+        crate::wake::validate_text(&job.text)?;
+        if job.interval_ms < crate::wake::WAKE_MIN_INTERVAL_MS || job.expires_at_ms <= now {
+            bail!("wake job interval too short or already expired");
+        }
+        self.update_record(move |r| r.wake = Some(job))
+    }
+    /// `Operation::WakeOff` (`only_if_until_message = false`) and
+    /// `Operation::WakeMessage` (`true`: removes opt-in jobs only).
+    pub(super) fn wake_off(&self, only_if_until_message: bool) -> Result<SessionRecord> {
+        let current = self.record()?;
+        let remove = match &current.wake {
+            None => false,
+            Some(job) => !only_if_until_message || job.until_message,
+        };
+        if !remove {
+            return Ok(current);
+        }
+        self.update_record(|r| r.wake = None)
+    }
+    /// One tick of the wake scheduler (called from the periodic flush loop).
+    /// The schedule advance is persisted BEFORE the PTY write so a crash can
+    /// never double-type; a failed write is logged and simply waits for the
+    /// next slot.
+    pub(super) fn wake_tick(&self) {
+        let now = now_ms();
+        let Ok(record) = self.record() else { return };
+        match crate::wake::decide(&record, now) {
+            crate::wake::WakeAction::None => {}
+            crate::wake::WakeAction::Expire => {
+                let _ = self.update_record(|r| r.wake = None);
+            }
+            crate::wake::WakeAction::Fire => {
+                let Some(job) = record.wake.clone() else {
+                    return;
+                };
+                if self
+                    .update_record(|r| crate::wake::after_fire(&mut r.wake, now))
+                    .is_err()
+                {
+                    return;
+                }
+                let codex = crate::engine_family(&record.engine) == "codex";
+                let mut ok = true;
+                if codex {
+                    ok &= self.send(b"\x1b[200~").is_ok();
+                }
+                ok &= self.send(job.text.as_bytes()).is_ok();
+                if codex {
+                    ok &= self.send(b"\x1b[201~").is_ok();
+                }
+                thread::sleep(Duration::from_millis(300));
+                ok &= self.send(b"\r").is_ok();
+                if !ok {
+                    log_best_effort("aplexer worker: wake prompt could not be written");
+                }
+            }
+        }
+    }
     pub(super) fn set_agent(&self, agent: Option<String>) -> Result<SessionRecord> {
         if let Some(token) = &agent {
             let config = crate::config::Config::load(&self.paths).ok();

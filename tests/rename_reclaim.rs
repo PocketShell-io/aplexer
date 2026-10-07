@@ -267,6 +267,7 @@ fn seed_starting_stub(harness: &Harness, workspace: &TempDir, tag: &str) -> Sess
         last_accessed_ms: None,
         reported_state: None,
         reported_state_at_ms: None,
+        wake: None,
         phase: Phase::Starting,
         worker_pid: None,
         agent_override: None,

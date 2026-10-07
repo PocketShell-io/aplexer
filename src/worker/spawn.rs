@@ -371,6 +371,7 @@ pub(super) fn run_periodic_flush(runtime: Arc<WorkerRuntime>) {
         // way, the loop outlives the tick.
         let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             flush_tick(&runtime, &mut persisted_activity_ms);
+            runtime.wake_tick();
         }));
         if tick.is_err() {
             log_best_effort("aplexer worker: history flush tick panicked; continuing");

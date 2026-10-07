@@ -34,6 +34,7 @@ fn record(paths: &Paths, workspace: &Path, id: Uuid, tag: &str) -> SessionRecord
         last_accessed_ms: None,
         reported_state: None,
         reported_state_at_ms: None,
+        wake: None,
         phase: Phase::Running,
         worker_pid: None,
         agent_override: None,

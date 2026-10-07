@@ -288,6 +288,9 @@ pub struct SessionRecord {
     /// ms since epoch. Always `Some` when `reported_state` is `Some`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_state_at_ms: Option<u64>,
+    /// The session's self-wakeup job (`a wake set`), if any. See `crate::wake`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<crate::wake::WakeJob>,
     /// The agent token the user pinned for this session (`a agent <token>`),
     /// e.g. `claude` or a configured variation (`zcodex`). Detection reads
     /// the workload process tree at query time and reports whichever agent
@@ -379,6 +382,7 @@ impl SessionRecord {
             last_accessed_ms: None,
             reported_state: None,
             reported_state_at_ms: None,
+            wake: None,
             agent_override: None,
             phase: Phase::Running,
             worker_pid: None,

@@ -165,6 +165,9 @@ fn dispatch_operation(
             )?,
             Err(e) => write_json(&mut stream, &Response::error(id, format!("{e:#}")))?,
         },
+        Operation::WakeSet { job } => respond_record(&mut stream, id, runtime.wake_set(job))?,
+        Operation::WakeOff => respond_record(&mut stream, id, runtime.wake_off(false))?,
+        Operation::WakeMessage => respond_record(&mut stream, id, runtime.wake_off(true))?,
         Operation::SetAgent { agent } => match runtime.set_agent(agent) {
             Ok(record) => write_json(
                 &mut stream,
@@ -174,6 +177,17 @@ fn dispatch_operation(
         },
     }
     Ok(())
+}
+
+fn respond_record(
+    stream: &mut UnixStream,
+    id: String,
+    result: Result<SessionRecord>,
+) -> Result<()> {
+    match result {
+        Ok(record) => write_json(stream, &Response::ok(id, serde_json::to_value(record)?)),
+        Err(e) => write_json(stream, &Response::error(id, format!("{e:#}"))),
+    }
 }
 
 /// The Status payload: the public record plus the live-only facts a

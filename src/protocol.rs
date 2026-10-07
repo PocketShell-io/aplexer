@@ -187,6 +187,17 @@ pub enum Operation {
     SetAgent {
         agent: Option<String>,
     },
+    /// `a wake set`: install (replace) this session's self-wakeup job. The
+    /// worker re-validates it (`WakeJob::new` ran client-side, but a direct
+    /// RPC must not be able to persist an unbounded or multi-line job).
+    WakeSet {
+        job: crate::wake::WakeJob,
+    },
+    /// `a wake off`: remove the job. Idempotent.
+    WakeOff,
+    /// A message addressed to / acked by this session arrived: removes the
+    /// job only when it opted into `until_message`. Idempotent.
+    WakeMessage,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
