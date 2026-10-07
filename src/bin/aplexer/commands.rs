@@ -63,6 +63,7 @@ pub(crate) fn run() -> Result<()> {
         Commands::Warnings(_) => cmd_warnings(&paths, cli.json),
         Commands::Rename(args) => cmd_rename(&paths, args, cli.json),
         Commands::Agent(args) => cmd_agent(&paths, args, cli.json),
+        Commands::Wake(args) => cmd_wake(&paths, args, cli.json),
         Commands::Engines => cmd_engines(&paths, cli.json),
         Commands::Profiles => cmd_profiles(&paths, cli.json),
         Commands::LaunchSpec(args) => cmd_launch_spec(&paths, args, cli.json),

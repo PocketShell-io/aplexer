@@ -127,6 +127,8 @@ mod task_commands;
 mod terminal;
 #[path = "terminal_status.rs"]
 mod terminal_status;
+#[path = "wake_commands.rs"]
+mod wake_commands;
 
 pub(crate) use attach::*;
 pub(crate) use attach_input::*;
@@ -175,6 +177,7 @@ pub(crate) use switching::*;
 pub(crate) use system::*;
 pub(crate) use terminal::*;
 pub(crate) use terminal_status::*;
+pub(crate) use wake_commands::*;
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]

@@ -117,6 +117,7 @@ pub(crate) fn finish_send(
         bail!("--pane requires a single --to TAG target: no pane broadcast");
     }
     write_message_in(mp, &envelope)?;
+    notify_wake(records, &envelope);
     if pane.pane {
         finish_pane(mp, records, workspace, &mut envelope, pane)?;
     }
@@ -176,4 +177,18 @@ fn report_pane_failure(outcome: &SubmissionOutcome, or_inbox: bool) -> Result<()
         return Ok(());
     }
     bail!("{message}")
+}
+
+/// A message addressed to one session ends that session's `--until-message`
+/// wake job. Best effort: a dead or old worker must never fail the send.
+fn notify_wake(records: &[SessionRecord], envelope: &MessageEnvelope) {
+    if let Recipient::Tag {
+        session_id: Some(id),
+        ..
+    } = envelope.to
+    {
+        if let Some(record) = records.iter().find(|r| r.id == id && r.wake.is_some()) {
+            let _ = rpc_simple(record, Operation::WakeMessage, None);
+        }
+    }
 }

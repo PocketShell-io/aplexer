@@ -233,6 +233,13 @@ pub(crate) fn cmd_message_ack(
         &workspace,
         args.from.as_deref(),
     )?)?;
+    if let Some(own) = records
+        .iter()
+        .find(|r| r.id == consumer.id && r.wake.is_some())
+    {
+        // Acking is the recipient saying it saw its mail: ends `--until-message` wakes.
+        let _ = rpc_simple(own, Operation::WakeMessage, None);
+    }
     if args.from.is_none() && records.iter().any(|r| r.id == consumer.id) {
         return ack_participating_mailboxes(paths, &consumer, args, json_output);
     }

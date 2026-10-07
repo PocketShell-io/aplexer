@@ -170,6 +170,9 @@ impl StatusData {
         if let Some(stats) = &self.cgroup_stats {
             println!("cgroup: {stats}");
         }
+        if let Some(job) = &current.wake {
+            println!("wake: {}", describe(job, now_ms()));
+        }
         if let Some(error) = &current.error {
             println!("error: {error}");
         }
@@ -299,6 +302,9 @@ fn print_status_identity(paths: &Paths, status: &StatusData, now: u64, color: bo
         _ => "unknown".to_string(),
     };
     println!("  activity    {activity_text}");
+    if let Some(job) = &current.wake {
+        println!("  wake        {}", describe(job, now));
+    }
     println!("  processes   {}", status.proc_usage.detail());
     println!(
         "  command     {}",

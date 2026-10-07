@@ -92,7 +92,12 @@ pub(crate) fn cmd_list_plain(paths: &Paths, args: ListArgs) -> Result<()> {
             let state = derived_liveness(&r.phase, alive_of(r), r.created_at_ms);
             let (sdot, scolor) = state_glyph(state);
             let state = paint(color, scolor, &format!("{sdot} {state}"));
-            println!("{connector} {idx}  {tag} {ep} {state}");
+            let wake = if r.wake.is_some() {
+                paint(color, ANSI_DIM, "  wake")
+            } else {
+                String::new()
+            };
+            println!("{connector} {idx}  {tag} {ep} {state}{wake}");
         }
     }
     if !by_workspace.is_empty() {

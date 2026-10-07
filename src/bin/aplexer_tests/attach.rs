@@ -265,6 +265,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Prune => "prune",
         Commands::Rename(_) => "rename",
         Commands::Agent(_) => "agent",
+        Commands::Wake(_) => "wake",
         Commands::Engines => "engines",
         Commands::Profiles => "profiles",
         Commands::LaunchSpec(_) => "launch-spec",
@@ -668,4 +669,25 @@ fn attach_handshake_treats_deadline_expiries_as_transient_and_nothing_else() {
     // The handshake budget strictly exceeds the control budget: a plain
     // RPC stays snappy while Attach waits out a busy disk.
     assert!(ATTACH_HANDSHAKE_TIMEOUT > CONTROL_RPC_TIMEOUT);
+}
+
+#[test]
+fn wake_set_parses_constant_and_one_time_modes() {
+    for ok in [
+        &["wake", "set", "--every", "2m"][..],
+        &["wake", "set", "--every", "2m", "--until-message", "--text", "hi"],
+        &["wake", "set", "--once", "--in", "5m"],
+        &["wake", "off"],
+        &["wake", "list", "--all"],
+    ] {
+        let parsed = Cli::try_parse_from(args_of(ok));
+        assert!(parsed.is_ok(), "{ok:?} should parse");
+    }
+    for bad in [
+        &["wake", "set"][..],
+        &["wake", "set", "--once"],
+        &["wake", "set", "--every", "2m", "--once", "--in", "5m"],
+    ] {
+        assert!(Cli::try_parse_from(args_of(bad)).is_err(), "{bad:?} must be rejected");
+    }
 }

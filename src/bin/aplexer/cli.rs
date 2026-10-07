@@ -89,6 +89,9 @@ pub(crate) enum Commands {
     /// Pin which agent a session reports, or show the current one.
     #[command(after_help = AGENT_EXAMPLES)]
     Agent(AgentArgs),
+    /// Self-wakeup: periodically nudge this session while it is idle (`a wake set|list|off`).
+    #[command(after_help = super::wake_commands::WAKE_EXAMPLES)]
+    Wake(super::wake_commands::WakeArgs),
     /// List configured/discovered engines.
     #[command(after_help = ENGINES_EXAMPLES)]
     Engines,
