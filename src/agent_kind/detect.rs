@@ -102,6 +102,31 @@ pub(super) fn normalize_windows_cmdline(raw: &str) -> String {
     out.trim().to_owned()
 }
 
+/// Pids of the session's Job Object, found through the `APLEXER_SESSION_ID`
+/// the workload leader carries. Windows never reparents, so an intermediate
+/// that exited (MSYS `exec`, `sh` launcher scripts) leaves its child with a
+/// dead parent pid and the ppid walk from the leader cannot reach it; the job
+/// still holds every live descendant.
+#[cfg(windows)]
+fn job_members(workload_pid: u32) -> Vec<u32> {
+    let Some(id) = crate::sys::windows::procinfo::environ_var(workload_pid, "APLEXER_SESSION_ID")
+    else {
+        return Vec::new();
+    };
+    let job = match crate::sys::windows::job::Job::open(id.trim()) {
+        Ok(Some(job)) => job,
+        _ => return Vec::new(),
+    };
+    let mut pids = job.process_ids().unwrap_or_default();
+    pids.sort_unstable();
+    pids
+}
+
+#[cfg(not(windows))]
+fn job_members(_workload_pid: u32) -> Vec<u32> {
+    Vec::new()
+}
+
 #[cfg(not(windows))]
 fn children_of(proc_root: &Path, pid: u32) -> Vec<u32> {
     crate::worker::direct_child_pids_in(proc_root, pid).unwrap_or_default()
@@ -226,7 +251,22 @@ pub fn detect_agent_process(
     let mut pending = VecDeque::from([workload_pid]);
     let mut seen = HashSet::from([workload_pid]);
     let mut scanned = 0usize;
-    while let Some(pid) = pending.pop_front() {
+    let mut job_consulted = false;
+    loop {
+        let Some(pid) = pending.pop_front() else {
+            // The ppid walk is exhausted: pull in descendants it could not
+            // reach because an intermediate process already exited.
+            if job_consulted {
+                break;
+            }
+            job_consulted = true;
+            for member in job_members(workload_pid) {
+                if seen.insert(member) {
+                    pending.push_back(member);
+                }
+            }
+            continue;
+        };
         scanned += 1;
         if scanned > MAX_SCANNED_PIDS {
             return None;
