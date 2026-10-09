@@ -31,7 +31,7 @@ fn deferred_submission_preserves_envelope_and_does_not_ack() {
                 serde_json::to_value(seen).unwrap(),
                 serde_json::to_value(&message).unwrap()
             );
-            Ok(())
+            Ok(SubmissionStatus::Submitted)
         },
     )
     .unwrap();
@@ -171,7 +171,7 @@ fn concurrent_submit(
             |_| Ok(()),
             |_| {
                 writes.fetch_add(1, Ordering::SeqCst);
-                Ok(())
+                Ok(SubmissionStatus::Submitted)
             },
         )
         .unwrap()

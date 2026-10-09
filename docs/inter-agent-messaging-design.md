@@ -572,22 +572,54 @@ identity; `log` and `send` degrade gracefully per §2.1).
 `aplexer message deliver MESSAGE_ID --workspace /destination --json` submits the
 original envelope. It keeps its ID, sender, body, timestamp and reply linkage;
 it does not append a second message or acknowledge the recipient's inbox.
-Only the recorded sender or recipient session may invoke it. The recorded
-recipient UUID is mandatory, including for same-workspace messages; a later
-session reusing the tag never receives this delivery.
+The recorded sender or recipient session may invoke it. A caller with no
+session identity (an external coordinator) has the authority it had to send:
+it may deliver external mail (`from: {"external": true}`) in the mailbox of
+the directory it runs in, without `--workspace`; session mail and
+cross-workspace delivery still require the caller's own session identity, and
+the frame still says `from=external`. The recorded recipient UUID is
+mandatory, including for same-workspace messages; a later session reusing the
+tag never receives this delivery.
 
-Before invoking it, inspect the recipient's fresh state and rendered composer.
-The command requires a live, freshly reported idle/waiting state. That state
-cannot prove the composer is empty: do not invoke it over a human draft.
-This command does not schedule delivery or change idle hooks.
+Readiness: a live recipient with a fresh idle/waiting harness report, or --
+for Claude and Codex, whose composer aplexer observes -- one that is neither
+reported nor seen (PTY activity) working and shows an empty input prompt. A
+waiting report goes stale within seconds while the agent sits at its prompt,
+so the observed prompt is the evidence that matters there. A composer holding
+a draft, or a dialog in place of the prompt, is `not-ready` and nothing is
+written: a human draft is never extended or submitted.
+
+### Observed submission (Claude, Codex)
+
+`a send --enter` and pane delivery to a Claude or Codex session capture the
+rendered screen first. Both agents park the terminal cursor at their
+composer's caret and draw an empty composer as a lone prompt glyph (`❯`, `›`)
+with the cursor right after it. aplexer then:
+
+1. refuses, writing nothing, unless the composer is empty;
+2. writes the text -- as one bracketed paste for Codex, framed mail, and text
+   over 1 KiB; typed otherwise, because Claude hands bracketed pastes to the
+   model as pasted content rather than the operator's words;
+3. waits until the composer shows it, then writes exactly one Enter;
+4. reports `submitted` only once the draft is seen leaving the composer
+   (emptied, or replaced by e.g. a permission dialog). A draft that stays is
+   an error -- `delivery-uncertain` for mail -- never a second Enter.
+
+The waits poll the screen and end as soon as the condition holds (bounded by
+`APLEXER_SUBMIT_TIMEOUT_MS`, default 15 s). The previous fixed 300 ms pause
+lost the Enter whenever a loaded agent drained text and Enter in one read:
+Claude folds an Enter that arrives with a typed burst into the draft. Raw
+`--hex` keys, a bare Enter, and engines without an observable composer keep
+the blind write and report `injected`.
 
 | Outcome | Meaning |
 |---|---|
-| `submitted` | The framed input and separate Enter RPC completed. This is transport evidence, not proof the agent processed the message. |
+| `submitted` | Claude/Codex: the draft was observed leaving the composer -- the agent took it as a turn, or into its own queue while busy. Not proof the model acted on it; that is the recipient's ack or reply. |
+| `injected` | Text and Enter were written to a recipient whose input aplexer cannot observe (shell, other TUIs). |
 | `already-submitted` | The durable envelope already records pane delivery; no input was written. A prior `--no-enter` send can also have this record. |
 | `recipient-acked` | The original recipient already acknowledged the message; no input was written. |
 | `not-ready` | Preflight failed before input submission; the message remains queued. |
-| `delivery-uncertain` | An attempt may have written input. Inspect the recipient and obtain an acknowledgement; the command will not retry it. |
+| `delivery-uncertain` | An attempt may have written input (including a draft left unsent in the composer). Inspect the recipient and obtain an acknowledgement; the command will not retry it. |
 
 `not-ready` and `delivery-uncertain` return nonzero after printing their outcome.
 Authorization and malformed/missing-message errors also return nonzero without

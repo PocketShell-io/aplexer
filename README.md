@@ -265,7 +265,14 @@ a status review
 ```
 
 `--enter` appends a carriage return to submit agent prompts. Without it,
-`a send` writes only the bytes supplied (including `--stdin` and `--hex`).
+`a send` writes only the bytes supplied (including `--stdin` and `--hex`) and
+`--json` reports `pty_written`. For Claude and Codex sessions, `--enter` text
+is submitted against the observed composer: it is refused (nothing written) if
+the prompt already holds a draft or a dialog, Enter is pressed once after the
+text is on screen, and `--json` reports `submitted` only after the draft has
+left the prompt -- a draft left unsent is an error, never a second Enter.
+Other sessions, raw `--hex` keys and a bare Enter report `injected`. See
+`docs/inter-agent-messaging-design.md` ("Observed submission").
 
 ## Session lifecycle
 

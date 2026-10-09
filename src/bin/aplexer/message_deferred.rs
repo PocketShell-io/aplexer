@@ -10,9 +10,24 @@ fn delivery_recipient(message: &MessageEnvelope) -> Result<Uuid> {
     }
 }
 
-fn authorize_delivery(records: &[SessionRecord], message: &MessageEnvelope) -> Result<()> {
-    let id =
-        discover_session_id().ok_or_else(|| anyhow!("delivery requires a session identity"))?;
+/// The original sender or recipient session may deliver. A caller with no
+/// session identity has exactly the authority it had to send: it may deliver
+/// external mail (no sender session) in the mailbox of the directory it runs
+/// in, never session mail and never across workspaces via `--workspace`.
+fn authorize_delivery(
+    records: &[SessionRecord],
+    message: &MessageEnvelope,
+    explicit_workspace: bool,
+) -> Result<()> {
+    let Some(id) = discover_session_id() else {
+        if message.from.external && message.from.session_id.is_none() && !explicit_workspace {
+            return Ok(());
+        }
+        bail!(
+            "delivery requires a session identity: without one, only external mail in the \
+             current directory's own workspace may be delivered (no --workspace)"
+        );
+    };
     let caller = records
         .iter()
         .find(|record| record.id == id)
@@ -53,16 +68,39 @@ fn require_ready_prompt(record: &SessionRecord) -> Result<()> {
     let live: SessionRecord = serde_json::from_value(raw).context("read live recipient status")?;
     let now = now_ms();
     let (state, source) = session_ui_state(&live, now);
-    if source != "reported" || !matches!(state, "waiting" | "idle") {
+    let reported_rest = source == "reported" && matches!(state, "waiting" | "idle");
+    if !observable_composer(&live) {
+        if reported_rest {
+            return Ok(());
+        }
         bail!("{}", readiness_detail(&live, state, source, now));
     }
-    Ok(())
+    // A waiting report goes stale in seconds while the agent keeps sitting
+    // at its prompt, so for an observable composer the empty prompt is the
+    // readiness evidence -- but never for an agent reported or seen working,
+    // which would take the message mid-turn, and never over a draft.
+    if source == "lifecycle" || state == "running" {
+        bail!("{}", readiness_detail(&live, state, source, now));
+    }
+    let composer = capture_composer(record)?;
+    if composer.empty {
+        return Ok(());
+    }
+    let prompt = format!(
+        "recipient {} is not at an empty input prompt (an unsent draft or a dialog is \
+         showing); nothing was written. Composer: {:?}",
+        record.id, composer.region
+    );
+    if reported_rest {
+        bail!("{prompt}");
+    }
+    bail!("{prompt}. {}", readiness_detail(&live, state, source, now))
 }
 
 fn readiness_detail(record: &SessionRecord, state: &str, source: &str, now: u64) -> String {
     let reason = readiness_reason(record, state, source, now);
     format!(
-        "recipient {} readiness unavailable: {reason}; derived={state} source={source}; reported={:?} reported_at_ms={:?} last_activity_ms={:?}. Prompt capture does not refresh harness state. The original recipient must obtain a genuine harness state event; re-inspect its prompt before explicitly delivering this same message. If no current harness event is available, leave the message queued.",
+        "recipient {} readiness unavailable: {reason}; derived={state} source={source}; reported={:?} reported_at_ms={:?} last_activity_ms={:?}. Delivery needs a fresh waiting/idle harness report, or (Claude/Codex) an observed empty input prompt while the agent is not working. Retry this same message once the recipient is at rest; otherwise leave it queued.",
         record.id, record.reported_state, record.reported_state_at_ms, record.last_activity_ms,
     )
 }
@@ -83,7 +121,7 @@ fn deliver_existing(paths: &Paths, args: MessageDeliverArgs) -> Result<Submissio
     let mp = ensure_workspace(paths, &workspace)?;
     let message = read_message_in(&mp, &workspace, args.message_id)?;
     let records = list_records(paths)?;
-    authorize_delivery(&records, &message)?;
+    authorize_delivery(&records, &message, args.workspace.is_some())?;
     delivery_recipient(&message)?;
     submit_message_in(
         &mp,
@@ -100,6 +138,7 @@ fn deliver_existing(paths: &Paths, args: MessageDeliverArgs) -> Result<Submissio
                 &pane_input_bytes(current, false, false),
                 SubmissionKind::FramedMessage,
             )
+            .map(Submission::status)
         },
     )
 }

@@ -84,7 +84,13 @@ fn verify_delivery(cross: bool, engine: &str) {
     let server = worker::Worker::start(&case.recipient, false);
     let output = case.deliver(&case.sender);
     assert!(output.status.success(), "{output:?}");
-    status(&output, "submitted");
+    // Only an observable composer can confirm submission.
+    let expected_status = if engine == "shell" {
+        "injected"
+    } else {
+        "submitted"
+    };
+    status(&output, expected_status);
     status(&case.deliver(&case.recipient), "already-submitted");
     let mut expected = case.envelope.clone();
     expected["delivery"] = "pane".into();
@@ -219,6 +225,81 @@ fn oversized_stored_body_is_rejected_before_any_transport() {
     status(&result, "not-ready");
     assert!(String::from_utf8_lossy(&result.stdout).contains("message body exceeds"));
     assert!(!mp.msgs_dir.join(format!("{}.attempt", case.id())).exists());
+    assert_eq!(case.stored(), case.envelope);
+}
+
+/// An external caller (no session identity) running in `cwd`; `None` when
+/// this test process itself runs inside an aplexer session, whose identity
+/// every child would inherit through the ancestor-environ walk.
+fn external_command(harness: &Harness, cwd: &std::path::Path) -> Option<std::process::Command> {
+    if aplexer::discover_session_id().is_some() {
+        eprintln!("running inside an aplexer session: external-caller case not exercised");
+        return None;
+    }
+    let mut command = harness.command();
+    command.env_remove("APLEXER_SESSION_ID").current_dir(cwd);
+    Some(command)
+}
+
+#[cfg(unix)]
+#[test]
+fn external_caller_delivers_external_mail_only_in_its_own_workspace() {
+    let case = Case::new(false, "claude");
+    let workspace = case.recipient.workspace.clone();
+    let Some(mut send) = external_command(&case.harness, &workspace) else {
+        return;
+    };
+    let sent = send
+        .args([
+            "--json",
+            "message",
+            "send",
+            "--to",
+            &case.recipient.tag,
+            "line one\nline two",
+        ])
+        .output()
+        .unwrap();
+    assert!(sent.status.success(), "{sent:?}");
+    let envelope: Value = serde_json::from_slice(&sent.stdout).unwrap();
+    assert_eq!(envelope["from"], serde_json::json!({"external": true}));
+    assert_eq!(envelope["delivery"], "inbox");
+    let id = envelope["id"].as_str().unwrap().to_owned();
+    let server = worker::Worker::start(&case.recipient, false);
+    let deliver = |extra: &[&str]| {
+        external_command(&case.harness, &workspace)
+            .unwrap()
+            .args(["--json", "message", "deliver", &id])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let cross = deliver(&["--workspace", workspace.to_str().unwrap()]);
+    assert!(!cross.status.success());
+    assert!(String::from_utf8_lossy(&cross.stderr).contains("requires a session identity"));
+    let delivered = deliver(&[]);
+    assert!(delivered.status.success(), "{delivered:?}");
+    status(&delivered, "submitted");
+    let writes = server.finish();
+    assert!(String::from_utf8_lossy(&writes[1]).contains("from=external session=external"));
+    assert_eq!(writes.iter().filter(|w| w.as_slice() == b"\r").count(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn external_caller_cannot_deliver_session_mail() {
+    let case = Case::new(false, "claude");
+    let Some(mut deliver) = external_command(&case.harness, &case.recipient.workspace) else {
+        return;
+    };
+    let server = worker::Worker::start(&case.recipient, false);
+    let denied = deliver
+        .args(["--json", "message", "deliver", &case.id().to_string()])
+        .output()
+        .unwrap();
+    assert!(!denied.status.success());
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("requires a session identity"));
+    assert!(server.finish().is_empty());
     assert_eq!(case.stored(), case.envelope);
 }
 

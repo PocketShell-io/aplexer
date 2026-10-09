@@ -46,13 +46,13 @@ pub(crate) fn deliver_pane(
     envelope: &MessageEnvelope,
     raw: bool,
     no_enter: bool,
-) -> Result<()> {
+) -> Result<Submission> {
     let record = pane_target(records, workspace, envelope)?;
     let tag = &record.tag;
     let input = pane_input_bytes(envelope, raw, no_enter);
     if no_enter {
-        return rpc_send(record, &input)
-            .with_context(|| format!("inject into session {tag:?}'s PTY"));
+        rpc_send(record, &input).with_context(|| format!("inject into session {tag:?}'s PTY"))?;
+        return Ok(Submission::Injected);
     }
     let kind = if raw {
         SubmissionKind::Raw
@@ -136,10 +136,15 @@ fn finish_pane(
         workspace,
         envelope.id,
         |current| pane_target(records, workspace, current).map(|_| ()),
-        |current| deliver_pane(records, workspace, current, pane.raw, pane.no_enter),
+        |current| {
+            deliver_pane(records, workspace, current, pane.raw, pane.no_enter)
+                .map(Submission::status)
+        },
     )?;
     match outcome.status {
-        SubmissionStatus::Submitted | SubmissionStatus::AlreadySubmitted => {
+        SubmissionStatus::Submitted
+        | SubmissionStatus::Injected
+        | SubmissionStatus::AlreadySubmitted => {
             acknowledge_initial_pane(mp, envelope);
             Ok(())
         }

@@ -8,8 +8,9 @@ fn rejected_case(state: Option<&str>, reported_at: Option<u64>, activity: Option
     case
 }
 
+/// Rejections without composer evidence: the fake recipient shows no prompt.
 fn rejected_detail(case: &Case) -> String {
-    let server = worker::Worker::start(&case.recipient, false);
+    let server = worker::Worker::start_without_prompt(&case.recipient);
     let output = case.deliver(&case.sender);
     assert!(!output.status.success(), "{output:?}");
     status(&output, "not-ready");
@@ -33,12 +34,9 @@ fn contradicted_idle_explains_live_evidence_and_recipient_owned_recovery() {
     assert!(detail.contains("derived=idle source=activity"), "{detail}");
     assert!(detail.contains("reported_at_ms=Some(1000)"), "{detail}");
     assert!(detail.contains("last_activity_ms=Some(3001)"), "{detail}");
-    assert!(
-        detail.contains("Prompt capture does not refresh harness state"),
-        "{detail}"
-    );
-    assert!(detail.contains("genuine harness state event"), "{detail}");
-    assert!(detail.contains("re-inspect its prompt"), "{detail}");
+    assert!(detail.contains("not at an empty input prompt"), "{detail}");
+    assert!(detail.contains("observed empty input prompt"), "{detail}");
+    assert!(detail.contains("leave it queued"), "{detail}");
 }
 
 #[test]
@@ -93,4 +91,92 @@ fn old_quiet_idle_stays_eligible_and_same_envelope_is_submitted_once() {
     expected["delivery"] = "pane".into();
     assert_eq!(case.stored(), expected);
     assert_eq!(server.finish().len(), 4);
+}
+
+/// A Claude/Codex waiting report goes stale in seconds while the agent sits
+/// at its prompt; the observed empty composer is the readiness evidence.
+#[cfg(unix)]
+#[test]
+fn expired_waiting_at_an_empty_prompt_is_submitted_once() {
+    for engine in ["claude", "codex"] {
+        let mut case = rejected_case(Some("waiting"), Some(1000), Some(900));
+        case.recipient.engine = engine.into();
+        atomic_write_json(
+            &case.harness.paths().record(case.recipient.id),
+            &case.recipient,
+        )
+        .unwrap();
+        let server = worker::Worker::start(&case.recipient, false);
+        let output = case.deliver(&case.sender);
+        assert!(output.status.success(), "{engine}: {output:?}");
+        status(&output, "submitted");
+        let writes = server.finish();
+        assert_eq!(writes.iter().filter(|w| w.as_slice() == b"\r").count(), 1);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn working_at_an_empty_prompt_stays_blocked() {
+    let case = rejected_case(Some("working"), Some(aplexer::now_ms()), None);
+    let server = worker::Worker::start(&case.recipient, false);
+    let output = case.deliver(&case.sender);
+    status(&output, "not-ready");
+    assert!(server.finish().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn unsent_draft_in_the_recipient_prompt_is_not_ready_and_untouched() {
+    let case = rejected_case(Some("waiting"), Some(aplexer::now_ms()), None);
+    let server = worker::Worker::start(&case.recipient, false);
+    // Someone else's draft: a plain write, no Enter.
+    case.harness
+        .command()
+        .args(["send", &case.recipient.id.to_string(), "half typed"])
+        .output()
+        .unwrap();
+    let output = case.deliver(&case.sender);
+    status(&output, "not-ready");
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["detail"].as_str().unwrap().contains("half typed"),
+        "{value}"
+    );
+    assert_eq!(server.finish(), vec![b"half typed".to_vec()]);
+    assert_eq!(case.stored(), case.envelope);
+}
+
+/// The reported bug: the agent folds Enter into the draft. That is never
+/// `submitted`, and never answered with a second Enter.
+#[cfg(unix)]
+#[test]
+fn enter_swallowed_into_the_draft_is_uncertain_with_exactly_one_enter() {
+    let case = rejected_case(Some("waiting"), Some(aplexer::now_ms()), None);
+    let server = worker::Worker::start_swallowing_enter(&case.recipient);
+    let output = case
+        .harness
+        .command()
+        .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+        .env("APLEXER_SUBMIT_TIMEOUT_MS", "300")
+        .args([
+            "--json",
+            "message",
+            "deliver",
+            &case.id().to_string(),
+            "--workspace",
+            case.recipient.workspace.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    status(&output, "delivery-uncertain");
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["detail"].as_str().unwrap().contains("unsent draft"),
+        "{value}"
+    );
+    let writes = server.finish();
+    assert_eq!(writes.iter().filter(|w| w.as_slice() == b"\r").count(), 1);
+    status(&case.deliver(&case.sender), "delivery-uncertain");
 }
