@@ -487,7 +487,12 @@ pub(crate) enum ReportedState {
     /// Not a wire state: Claude's gated Stop mode (`gated-idle`). The CLI
     /// reads the engine's hook payload on stdin and reports `idle` or
     /// `working` from its `background_tasks` registry -- see
-    /// `cmd_state_report` and `hooks::CLAUDE_EVENTS`.
+    /// `cmd_state_report` and `hooks::CLAUDE_EVENTS`. The alias accepts the
+    /// kebab spelling the wiring tables and `as_str` emit (and that
+    /// already-deployed hook configs carry) next to the derive's snake_case
+    /// canonical name; without it the real Stop hook exited 2 in clap
+    /// before the gated decision ever ran -- see `wiring_parse_tests`.
+    #[value(alias = "gated-idle")]
     GatedIdle,
 }
 

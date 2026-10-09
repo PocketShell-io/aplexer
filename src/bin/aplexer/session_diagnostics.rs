@@ -501,3 +501,69 @@ fn print_prompt_wiring(prompt: &[aplexer::shell_prompt::PromptStatus]) {
     println!("  bash: PS1='...$(__aplexer_indicator)...'");
     println!("  zsh:  setopt prompt_subst; PROMPT='...$(__aplexer_indicator)...'");
 }
+
+/// The hook wiring's state words must parse as `state-report` arguments.
+/// The first isolated real-messaging qualification of the f6 candidate
+/// (nonce c2cecf19) caught the break this pins shut: CLAUDE_EVENTS wired
+/// `("Stop", "gated-idle")`, but the ValueEnum derive's `snake_case` rename
+/// only accepted `gated_idle`, so every real Claude Stop hook exited 2 in
+/// clap before `gated_stop_decision` ever ran -- and `|| true` degraded the
+/// failure to a no-op, leaving a finished turn stuck on its last `working`
+/// report. The alias on `GatedIdle` restores the generated spelling; these
+/// tests keep every engine's table and the parser on one vocabulary.
+#[cfg(test)]
+mod wiring_parse_tests {
+    use super::*;
+    use clap::ValueEnum;
+
+    /// Every plain (non-`awareness:`) state in every engine's wiring table
+    /// must parse, in the exact spelling the table emits -- that string is
+    /// what `wiring_command` passes to `state-report` in the generated hook
+    /// command -- and `as_str` must round-trip it unchanged.
+    #[test]
+    fn every_wired_state_parses_as_a_state_report_argument() {
+        let tables: [(&str, &[(&str, &str)]); 4] = [
+            ("claude", &aplexer::hooks::CLAUDE_EVENTS),
+            ("codex", &aplexer::hooks::CODEX_EVENTS),
+            ("grok", &aplexer::hooks::GROK_EVENTS),
+            ("gemini", &aplexer::hooks::GEMINI_EVENTS),
+        ];
+        for (engine, table) in tables {
+            for (event, state) in table.iter().copied() {
+                if state.starts_with("awareness:") {
+                    continue; // installs a context hook, never `state-report`
+                }
+                let parsed = ReportedState::from_str(state, false)
+                    .unwrap_or_else(|e| panic!("{engine} {event} wiring {state:?}: {e}"));
+                assert_eq!(
+                    parsed.as_str(),
+                    state,
+                    "{engine} {event}: {state:?} parses but as_str drifted"
+                );
+            }
+        }
+    }
+
+    /// The generated Claude Stop command's exact argv must parse through
+    /// the real CLI, in both spellings: the kebab form the wiring
+    /// generates (and already-deployed sessions carry) and the snake_case
+    /// form the derive canonically names. A misspelled state must still
+    /// refuse, so this guard cannot pass vacuously.
+    #[test]
+    fn state_report_parses_the_generated_stop_spelling() {
+        for spelling in ["gated-idle", "gated_idle"] {
+            let cli = super::super::cli::Cli::try_parse_from(["a", "state-report", spelling])
+                .unwrap_or_else(|e| panic!("state-report {spelling}: {e}"));
+            match cli.command {
+                Some(super::super::cli::Commands::StateReport(args)) => {
+                    assert!(matches!(args.state, ReportedState::GatedIdle));
+                }
+                _ => panic!("state-report {spelling}: wrong subcommand"),
+            }
+        }
+        assert!(
+            super::super::cli::Cli::try_parse_from(["a", "state-report", "gatedidle"]).is_err(),
+            "an unknown state word must still refuse"
+        );
+    }
+}
