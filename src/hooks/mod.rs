@@ -127,10 +127,23 @@ pub const HOOK_ENGINES: [&str; 6] = [
 /// it: a subagent finishing does not leave *the agent* idle -- the main
 /// turn keeps producing output after it -- so mapping it to `idle` pushed
 /// a fresh lie mid-turn, and `idle` is the one push with no follow-up hook
-/// to correct it (see `watch::fresh_reported_state`). The main turn's
-/// `Stop` alone marks the rest.
+/// to correct it (see `watch::fresh_reported_state`). `TaskCompleted`
+/// stays unwired for the same reason: its payload carries only the
+/// finished task's identity, never the session's remaining-work registry,
+/// so it cannot prove a ready boundary.
+///
+/// Claude's `Stop` is instead GATED (`gated-idle`): since CLI 2.1.x the
+/// Stop payload carries `background_tasks` -- "In-flight background work
+/// (running/pending + backgrounded) registered in this session. Lets
+/// hooks distinguish \"session is done\" from \"session is paused waiting
+/// for background work to wake it\". Empty array when nothing is in
+/// flight." -- plus `stop_hook_active`. The hook reports `working` while
+/// that registry is live (the turn ended only in the foreground sense;
+/// quiet children included -- PTY silence proves nothing) and `idle` only
+/// on the engine's own done-evidence; see `gated_stop_decision` in
+/// `session_diagnostics.rs`. Other engines keep the plain `Stop` wiring.
 pub const CLAUDE_EVENTS: [(&str, &str); 7] = [
-    ("Stop", "idle"),
+    ("Stop", "gated-idle"),
     ("Notification", "waiting"),
     ("UserPromptSubmit", "working"),
     ("SessionStart", "working"),

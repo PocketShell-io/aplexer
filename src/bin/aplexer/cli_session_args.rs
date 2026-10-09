@@ -472,6 +472,9 @@ pub(crate) struct StateReportArgs {
     /// user. working: actively producing/thinking. Matches PocketShell's
     /// SessionAgentState vocabulary (Idle/WaitingForInput/Working) one for
     /// one -- see SessionAgentState.kt in the pocketshell repo.
+    /// gated-idle: Claude Stop hook mode -- the engine's own payload
+    /// decides idle vs working (see `cmd_state_report`); never sent as a
+    /// wire state itself.
     pub(crate) state: ReportedState,
 }
 
@@ -481,6 +484,11 @@ pub(crate) enum ReportedState {
     Idle,
     Waiting,
     Working,
+    /// Not a wire state: Claude's gated Stop mode (`gated-idle`). The CLI
+    /// reads the engine's hook payload on stdin and reports `idle` or
+    /// `working` from its `background_tasks` registry -- see
+    /// `cmd_state_report` and `hooks::CLAUDE_EVENTS`.
+    GatedIdle,
 }
 
 impl ReportedState {
@@ -489,6 +497,7 @@ impl ReportedState {
             ReportedState::Idle => "idle",
             ReportedState::Waiting => "waiting",
             ReportedState::Working => "working",
+            ReportedState::GatedIdle => "gated-idle",
         }
     }
 }
