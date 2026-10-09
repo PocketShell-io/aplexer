@@ -384,6 +384,7 @@ mod tests {
             reported_state: None,
             reported_state_at_ms: None,
             reported_state_event_ms: None,
+            reported_state_engine_session_id: None,
             agent_override: None,
             phase: Phase::Exited,
             worker_pid: None,

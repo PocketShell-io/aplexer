@@ -312,6 +312,17 @@ pub struct SessionRecord {
     /// fence -- exactly the pre-fence behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_state_event_ms: Option<u64>,
+    /// The engine `session_id` of the newest applied state report, when the
+    /// reporting hook read one from the engine's payload (Claude passes one
+    /// on stdin to every hook). `WorkerRuntime::report_state` refuses a
+    /// gated idle naming a different engine session than the one bound
+    /// here, and rebinds on every applied report that carries one -- so a
+    /// resumed or newly-started conversation takes over cleanly, while a
+    /// nested or delayed foreign one can never idle the record. `None`
+    /// (legacy client, or no report carried a session id yet) bypasses the
+    /// fence -- exactly the pre-fence behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_state_engine_session_id: Option<String>,
     /// The agent token the user pinned for this session (`a agent <token>`),
     /// e.g. `claude` or a configured variation (`zcodex`). Detection reads
     /// the workload process tree at query time and reports whichever agent
@@ -404,6 +415,7 @@ impl SessionRecord {
             reported_state: None,
             reported_state_at_ms: None,
             reported_state_event_ms: None,
+            reported_state_engine_session_id: None,
             agent_override: None,
             phase: Phase::Running,
             worker_pid: None,

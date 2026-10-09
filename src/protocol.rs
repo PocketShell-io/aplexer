@@ -188,6 +188,15 @@ pub enum Operation {
         /// overwrite a newer UserPromptSubmit/Notification truth.
         #[serde(default)]
         event_ms: Option<u64>,
+        /// The `session_id` the engine's own hook payload carries, when the
+        /// reporting hook read one (Claude passes it on stdin to every
+        /// hook). Additive like `event_ms`. The worker fences gated-idle on
+        /// it (`WorkerRuntime::report_state`): an idle naming an engine
+        /// session that differs from the newest applied report's session is
+        /// refused, so a nested/resumed engine conversation can never idle
+        /// a record it does not own.
+        #[serde(default)]
+        engine_session_id: Option<String>,
     },
     /// `a agent <token>` / `a agent --clear`: pin which agent this session
     /// reports (`SessionRecord::agent_override`), or unpin to return to

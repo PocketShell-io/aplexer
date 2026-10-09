@@ -191,6 +191,7 @@ fn start_warning_fires_only_for_the_user_manager_subtree() {
             reported_state: None,
             reported_state_at_ms: None,
             reported_state_event_ms: None,
+            reported_state_engine_session_id: None,
             agent_override: None,
             phase: crate::Phase::Running,
             worker_pid: None,

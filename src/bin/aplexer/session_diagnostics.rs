@@ -87,31 +87,49 @@ pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()
     let record = read_record(&paths.record(id)).with_context(|| {
         format!("session {id} (from APLEXER_SESSION_ID) has no persisted record")
     })?;
+    // Claude pipes its hook payload (session_id, hook_event_name,
+    // background_tasks, ...) to every hook on stdin. The gated Stop
+    // decision consumes the whole payload; the plain working/waiting hooks
+    // read it only to pick up the engine session -- and only when stdin is
+    // actually a hook's pipe, never a terminal, so a manual
+    // `a state-report working` behaves exactly as before. Other engines'
+    // payload shapes are not verified here; they never send gated-idle and
+    // report without a session name, which bypasses the worker's session
+    // fence (the pre-fence behavior).
+    let hook_payload: Option<serde_json::Value> = if matches!(state, ReportedState::GatedIdle)
+        || (record.engine == "claude" && !io::stdin().is_terminal())
+    {
+        let mut payload = String::new();
+        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload);
+        serde_json::from_str(&payload).ok()
+    } else {
+        None
+    };
+    let engine_session_id = hook_payload.as_ref().and_then(engine_session_id_of);
     // Claude's gated Stop mode: the decision comes from the engine's own
-    // hook payload on stdin -- the parent-scoped `background_tasks`
-    // registry and `stop_hook_active` -- never from PTY silence or a
-    // sender's claim. The wiring only exists for claude (see
-    // `hooks::CLAUDE_EVENTS`); any other record engine is a miswiring and
-    // refuses (the hook's `|| true` degrades it to a no-op). Every
-    // evidence failure is FAIL-CLOSED: a missing or malformed registry,
-    // or an unparseable payload, reports NOTHING -- no idle without
-    // positive engine evidence (review round 2 on 9cd07b0).
+    // hook payload on stdin -- the event name, the engine session, the
+    // parent-scoped `background_tasks` registry and `stop_hook_active` --
+    // never from PTY silence or a sender's claim. The wiring only exists
+    // for claude (see `hooks::CLAUDE_EVENTS`); any other record engine is
+    // a miswiring and refuses (the hook's `|| true` degrades it to a
+    // no-op). Every evidence failure is FAIL-CLOSED: a payload that is not
+    // a genuine Stop event of this engine session, a missing or malformed
+    // registry, or an unparseable payload reports NOTHING -- no idle
+    // without positive engine evidence (review rounds 2 and 3 on 9cd07b0).
     let state = if matches!(state, ReportedState::GatedIdle) {
         if record.engine != "claude" {
             eprintln!("a state-report: gated-idle is wired for engine claude only");
             std::process::exit(1);
         }
-        let mut payload = String::new();
-        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null);
+        let parsed = hook_payload.unwrap_or(serde_json::Value::Null);
         match gated_stop_decision(&parsed) {
             GatedStop::Working => ReportedState::Working,
             GatedStop::Idle => ReportedState::Idle,
             GatedStop::NoEvidence => {
                 eprintln!(
-                    "a state-report: gated Stop has no usable background_tasks evidence; \
-                     reporting nothing (fail closed)"
+                    "a state-report: gated Stop has no usable engine evidence \
+                     (event, session, or background_tasks); reporting nothing \
+                     (fail closed)"
                 );
                 return Ok(());
             }
@@ -128,6 +146,7 @@ pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()
         Operation::ReportState {
             state: state.as_str().to_string(),
             event_ms: Some(now_ms()),
+            engine_session_id,
         },
         None,
     )?;
@@ -152,6 +171,11 @@ pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()
 ///   work drained and woke the session.
 /// - `session_crons` never block the boundary: a scheduled wake is future
 ///   work whose own lifecycle reports will push `working` when it fires.
+/// - the payload must name the Stop event (`hook_event_name`) and the
+///   engine session it belongs to (`session_id`, a non-empty string):
+///   anything else -- a miswired or foreign invocation such as the
+///   deliberately unwired `SubagentStop` -- reports NOTHING, even when a
+///   registry looks empty (review round 3 on 9cd07b0).
 /// - field absent (older CLI), not an array, an array with a non-object
 ///   entry, or an unparseable payload -> `NoEvidence`: FAIL CLOSED. The
 ///   caller reports nothing rather than permitting an idle the engine did
@@ -163,7 +187,23 @@ pub(crate) enum GatedStop {
     NoEvidence,
 }
 
+/// The engine session a hook payload names, if it validly names one: a
+/// non-empty string `session_id` (Claude's envelope carries one on every
+/// hook). Absent, mistyped, or empty means no evidence.
+fn engine_session_id_of(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
 fn gated_stop_decision(payload: &serde_json::Value) -> GatedStop {
+    if payload.get("hook_event_name").and_then(|v| v.as_str()) != Some("Stop")
+        || engine_session_id_of(payload).is_none()
+    {
+        return GatedStop::NoEvidence;
+    }
     if payload.get("stop_hook_active").and_then(|v| v.as_bool()) == Some(true) {
         return GatedStop::Working;
     }
@@ -188,42 +228,53 @@ mod gated_stop_tests {
 
     #[test]
     fn empty_registry_is_the_engine_done_evidence() {
-        let payload: serde_json::Value =
-            serde_json::from_str(r#"{"hook_event_name":"Stop","background_tasks":[]}"#).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(
+            r#"{"hook_event_name":"Stop","session_id":"s1","background_tasks":[]}"#,
+        )
+        .unwrap();
         assert_eq!(gated_stop_decision(&payload), GatedStop::Idle);
     }
 
     #[test]
     fn any_live_background_task_says_working_even_a_quiet_one() {
-        let one: serde_json::Value =
-            serde_json::from_str(r#"{"background_tasks":[{"task_id":"t1","state":"running"}]}"#)
-                .unwrap();
+        let one: serde_json::Value = serde_json::from_str(
+            r#"{"hook_event_name":"Stop","session_id":"s1",
+                "background_tasks":[{"task_id":"t1","state":"running"}]}"#,
+        )
+        .unwrap();
         assert_eq!(gated_stop_decision(&one), GatedStop::Working);
-        let several: serde_json::Value =
-            serde_json::from_str(r#"{"background_tasks":[{"task_id":"a"},{"task_id":"b"}]}"#)
-                .unwrap();
+        let several: serde_json::Value = serde_json::from_str(
+            r#"{"hook_event_name":"Stop","session_id":"s1",
+                "background_tasks":[{"task_id":"a"},{"task_id":"b"}]}"#,
+        )
+        .unwrap();
         assert_eq!(gated_stop_decision(&several), GatedStop::Working);
     }
 
     #[test]
     fn a_stop_hook_continuation_is_not_done() {
-        let payload: serde_json::Value =
-            serde_json::from_str(r#"{"background_tasks":[],"stop_hook_active":true}"#).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(
+            r#"{"hook_event_name":"Stop","session_id":"s1",
+                "background_tasks":[],"stop_hook_active":true}"#,
+        )
+        .unwrap();
         assert_eq!(gated_stop_decision(&payload), GatedStop::Working);
     }
 
     #[test]
     fn session_crons_do_not_block_the_done_boundary() {
-        let payload: serde_json::Value =
-            serde_json::from_str(r#"{"background_tasks":[],"session_crons":[{"id":"c1"}]}"#)
-                .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(
+            r#"{"hook_event_name":"Stop","session_id":"s1",
+                "background_tasks":[],"session_crons":[{"id":"c1"}]}"#,
+        )
+        .unwrap();
         assert_eq!(gated_stop_decision(&payload), GatedStop::Idle);
     }
 
     #[test]
     fn missing_evidence_fails_closed_instead_of_permitting_idle() {
         // Field absent entirely (older CLI schema).
-        let absent = serde_json::json!({"hook_event_name":"Stop"});
+        let absent = serde_json::json!({"hook_event_name":"Stop","session_id":"s1"});
         assert_eq!(gated_stop_decision(&absent), GatedStop::NoEvidence);
         // An unparseable payload parses as Null upstream.
         assert_eq!(
@@ -236,6 +287,29 @@ mod gated_stop_tests {
         // Array with a schema-violating (non-object) entry: malformed.
         let malformed = serde_json::json!({"background_tasks":[null]});
         assert_eq!(gated_stop_decision(&malformed), GatedStop::NoEvidence);
+    }
+
+    #[test]
+    fn a_non_stop_event_or_an_unnamed_session_reports_nothing() {
+        // SubagentStop stays deliberately unwired (hooks/mod.rs): its
+        // shape must not idle even with an empty registry.
+        let subagent = serde_json::json!(
+            {"hook_event_name":"SubagentStop","session_id":"s1","background_tasks":[]}
+        );
+        assert_eq!(gated_stop_decision(&subagent), GatedStop::NoEvidence);
+        // No event name at all.
+        let unnamed_event = serde_json::json!({"session_id":"s1","background_tasks":[]});
+        assert_eq!(gated_stop_decision(&unnamed_event), GatedStop::NoEvidence);
+        // No engine session named (older envelope).
+        let no_session = serde_json::json!({"hook_event_name":"Stop","background_tasks":[]});
+        assert_eq!(gated_stop_decision(&no_session), GatedStop::NoEvidence);
+        // Empty or mistyped session name.
+        let empty_session =
+            serde_json::json!({"hook_event_name":"Stop","session_id":"","background_tasks":[]});
+        assert_eq!(gated_stop_decision(&empty_session), GatedStop::NoEvidence);
+        let numeric_session =
+            serde_json::json!({"hook_event_name":"Stop","session_id":7,"background_tasks":[]});
+        assert_eq!(gated_stop_decision(&numeric_session), GatedStop::NoEvidence);
     }
 }
 

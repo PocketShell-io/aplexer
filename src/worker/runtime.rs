@@ -667,16 +667,40 @@ impl WorkerRuntime {
     /// UserPromptSubmit/Notification report. Unstamped (legacy) reports
     /// bypass the fence -- exactly the pre-fence behavior -- and a
     /// backward clock jump produces refusals, which fail closed.
+    ///
+    /// Engine-session fencing: a report may name the engine session it
+    /// belongs to (Claude's hook payload carries `session_id`). An idle
+    /// naming a session other than the record's newest applied report is
+    /// refused -- a nested or delayed conversation must never idle a
+    /// record it does not own -- while working/waiting reports always
+    /// apply and (re)bind, so a resumed or newly-started conversation
+    /// takes over at its first hook. Reports without a name (legacy
+    /// clients, other engines) bypass this fence too.
     pub(super) fn report_state(
         &self,
         state: String,
         event_ms: Option<u64>,
+        engine_session_id: Option<String>,
     ) -> Result<SessionRecord> {
         validate_reported_state(&state)?;
         let mut stale = false;
-        let record = self.update_record(move |r| {
+        let mut foreign_session = false;
+        // No `move`: the flags must be captured by reference so the
+        // closure's refusal verdicts reach the bails below (a `move`
+        // closure mutates its own copies -- the round-2 `stale` bail never
+        // fired, silently).
+        let record = self.update_record(|r| {
             if report_event_is_stale(event_ms, r.reported_state_event_ms) {
                 stale = true;
+                return;
+            }
+            if state == "idle"
+                && !idle_session_matches(
+                    engine_session_id.as_deref(),
+                    r.reported_state_engine_session_id.as_deref(),
+                )
+            {
+                foreign_session = true;
                 return;
             }
             r.reported_state = Some(state);
@@ -684,12 +708,22 @@ impl WorkerRuntime {
             if event_ms.is_some() {
                 r.reported_state_event_ms = event_ms;
             }
+            if let Some(id) = engine_session_id {
+                r.reported_state_engine_session_id = Some(id);
+            }
         })?;
         if stale {
             bail!(
                 "state report refused: its engine event predates the newest \
                  already-applied report event; a stale hook report never \
                  overwrites a newer turn's truth"
+            );
+        }
+        if foreign_session {
+            bail!(
+                "state report refused: an idle naming a different engine \
+                 session than the record's newest applied report never \
+                 idles the record"
             );
         }
         Ok(record)
@@ -732,6 +766,18 @@ fn report_event_is_stale(incoming: Option<u64>, stored: Option<u64>) -> bool {
     matches!((incoming, stored), (Some(incoming), Some(stored)) if incoming < stored)
 }
 
+/// The recipient-owned engine-session fence: an idle that names an engine
+/// session applies only when the record has no binding yet (first evidence
+/// binds) or the name matches the newest applied report's engine session.
+/// Only idle is compared -- working/waiting merely claim busier, and it is
+/// exactly their applied reports that rebind the binding.
+fn idle_session_matches(incoming: Option<&str>, stored: Option<&str>) -> bool {
+    match (incoming, stored) {
+        (Some(incoming), Some(stored)) => incoming == stored,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod report_fencing_tests {
     use super::*;
@@ -744,6 +790,17 @@ mod report_fencing_tests {
         // Unstamped (legacy) reports bypass the fence both ways.
         assert!(!report_event_is_stale(None, Some(200)));
         assert!(!report_event_is_stale(Some(100), None));
+    }
+
+    #[test]
+    fn an_idle_from_a_foreign_engine_session_is_refused() {
+        assert!(!idle_session_matches(Some("conv-b"), Some("conv-a")));
+        // The same session, a first binding, and legacy unnamed reports
+        // all pass the fence.
+        assert!(idle_session_matches(Some("conv-a"), Some("conv-a")));
+        assert!(idle_session_matches(Some("conv-a"), None));
+        assert!(idle_session_matches(None, Some("conv-a")));
+        assert!(idle_session_matches(None, None));
     }
 }
 
