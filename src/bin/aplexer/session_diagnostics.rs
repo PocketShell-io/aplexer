@@ -80,6 +80,16 @@ pub(crate) fn cmd_whoami(paths: &Paths, json_output: bool) -> Result<()> {
 /// on. `a init --check --json` is the machine-readable way to verify the
 /// wiring is present.
 pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()> {
+    // Stamp BEFORE any I/O (review round 4 on 2ab0860): the engine invoked
+    // this process at the event, so process start is the closest
+    // client-side proxy for the engine event time. Stamping after the
+    // stdin read/parse let a slow or queued invocation acquire a later
+    // stamp than a newer prompt's report and slip past the worker's
+    // ordering fence. Residual race: engine-side delay before the hook
+    // process starts is unobservable from here -- the payload schema
+    // (verified against the installed engine binary) carries no engine
+    // timestamp.
+    let event_ms = now_ms();
     let Some(id) = discover_session_id() else {
         eprintln!("a state-report: not inside an aplexer session (APLEXER_SESSION_ID not set)");
         std::process::exit(1);
@@ -145,7 +155,7 @@ pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()
         &record,
         Operation::ReportState {
             state: state.as_str().to_string(),
-            event_ms: Some(now_ms()),
+            event_ms: Some(event_ms),
             engine_session_id,
         },
         None,

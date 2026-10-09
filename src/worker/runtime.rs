@@ -664,9 +664,13 @@ impl WorkerRuntime {
     /// so event-time order IS engine order and only RPC arrival can skew;
     /// refusing the older arrival keeps the newest engine truth. A delayed
     /// Stop from an earlier turn can therefore never overwrite a newer
-    /// UserPromptSubmit/Notification report. Unstamped (legacy) reports
-    /// bypass the fence -- exactly the pre-fence behavior -- and a
-    /// backward clock jump produces refusals, which fail closed.
+    /// UserPromptSubmit/Notification report. Equal stamps are refused too
+    /// (unordered at millisecond resolution). An unstamped (legacy-client)
+    /// report is refused once the record's newest applied report is
+    /// stamped -- it cannot be ordered against stamped truth -- and only
+    /// passes while no stamped report has ever been applied (both sides
+    /// legacy). A backward clock jump produces refusals, which fail
+    /// closed.
     ///
     /// Engine-session fencing: a report may name the engine session it
     /// belongs to (Claude's hook payload carries `session_id`). An idle
@@ -685,11 +689,19 @@ impl WorkerRuntime {
         validate_reported_state(&state)?;
         let mut stale = false;
         let mut foreign_session = false;
+        let mut unstamped_after_bound = false;
         // No `move`: the flags must be captured by reference so the
         // closure's refusal verdicts reach the bails below (a `move`
         // closure mutates its own copies -- the round-2 `stale` bail never
         // fired, silently).
         let record = self.update_record(|r| {
+            if event_ms.is_none() && r.reported_state_event_ms.is_some() {
+                // Mixed-version control: the record's newest truth is
+                // stamped, so an unstamped legacy report cannot be ordered
+                // against it -- refuse rather than silently bypass.
+                unstamped_after_bound = true;
+                return;
+            }
             if report_event_is_stale(event_ms, r.reported_state_event_ms) {
                 stale = true;
                 return;
@@ -714,8 +726,9 @@ impl WorkerRuntime {
         })?;
         if stale {
             bail!(
-                "state report refused: its engine event predates the newest \
-                 already-applied report event; a stale hook report never \
+                "state report refused: its engine event is not newer than \
+                 the newest already-applied report event (older or equal \
+                 stamps are stale or unordered); a stale hook report never \
                  overwrites a newer turn's truth"
             );
         }
@@ -724,6 +737,13 @@ impl WorkerRuntime {
                 "state report refused: an idle naming a different engine \
                  session than the record's newest applied report never \
                  idles the record"
+            );
+        }
+        if unstamped_after_bound {
+            bail!(
+                "state report refused: it carries no engine event stamp \
+                 while the record's newest applied report is stamped; an \
+                 unstamped report cannot be ordered against stamped truth"
             );
         }
         Ok(record)
@@ -762,8 +782,12 @@ impl WorkerRuntime {
 /// reports (legacy clients) bypass the fence -- exactly the pre-fence
 /// behavior -- and a backward clock jump yields refusals, which fail
 /// closed.
+/// Equal stamps are refused too: at client millisecond-stamp resolution
+/// two same-ms reports are unordered, so a delayed hook must not win
+/// last-write-wins against the newest applied report (review round 4 on
+/// 2ab0860).
 fn report_event_is_stale(incoming: Option<u64>, stored: Option<u64>) -> bool {
-    matches!((incoming, stored), (Some(incoming), Some(stored)) if incoming < stored)
+    matches!((incoming, stored), (Some(incoming), Some(stored)) if incoming <= stored)
 }
 
 /// The recipient-owned engine-session fence: an idle that names an engine
@@ -786,8 +810,10 @@ mod report_fencing_tests {
     fn a_stale_engine_event_cannot_overwrite_a_newer_truth() {
         assert!(report_event_is_stale(Some(100), Some(200)));
         assert!(!report_event_is_stale(Some(200), Some(100)));
-        assert!(!report_event_is_stale(Some(100), Some(100)));
-        // Unstamped (legacy) reports bypass the fence both ways.
+        // Equal stamps are unordered at millisecond resolution: refused.
+        assert!(report_event_is_stale(Some(100), Some(100)));
+        // Unstamped (legacy) reports bypass this predicate both ways; the
+        // production mixed-version control lives in `report_state`.
         assert!(!report_event_is_stale(None, Some(200)));
         assert!(!report_event_is_stale(Some(100), None));
     }
@@ -1326,6 +1352,79 @@ mod tests {
             active_connections: Arc::new(AtomicUsize::new(0)),
             last_activity_ms: AtomicU64::new(0),
         }
+    }
+
+    #[test]
+    fn the_production_worker_refuses_delayed_equal_or_unstamped_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime(&dir, dir.path().join("session.json"));
+
+        // A newer prompt's working report is the record's truth.
+        runtime
+            .report_state("working".into(), Some(1000), Some("conv-a".into()))
+            .unwrap();
+        // A delayed Stop from the earlier turn (older stamp) refuses...
+        assert!(runtime
+            .report_state("idle".into(), Some(500), Some("conv-a".into()))
+            .unwrap_err()
+            .to_string()
+            .contains("not newer"));
+        // ...an equal-stamp report (unordered at ms resolution) refuses...
+        assert!(runtime
+            .report_state("idle".into(), Some(1000), Some("conv-a".into()))
+            .unwrap_err()
+            .to_string()
+            .contains("not newer"));
+        // ...and an unstamped legacy report over stamped truth refuses,
+        // none of them touching the record.
+        assert!(runtime
+            .report_state("idle".into(), None, Some("conv-a".into()))
+            .unwrap_err()
+            .to_string()
+            .contains("no engine event stamp"));
+        let record = runtime.record().unwrap();
+        assert_eq!(record.reported_state.as_deref(), Some("working"));
+        assert_eq!(record.reported_state_event_ms, Some(1000));
+    }
+
+    #[test]
+    fn the_production_worker_fences_idle_by_engine_session_and_rebinds_on_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = test_runtime(&dir, dir.path().join("session.json"));
+
+        // First evidence binds; the conversation's own final Stop idles.
+        runtime
+            .report_state("idle".into(), Some(100), Some("conv-a".into()))
+            .unwrap();
+        assert_eq!(
+            runtime.record().unwrap().reported_state.as_deref(),
+            Some("idle")
+        );
+        // A nested/foreign conversation's Stop never idles the record...
+        assert!(runtime
+            .report_state("idle".into(), Some(200), Some("conv-b".into()))
+            .unwrap_err()
+            .to_string()
+            .contains("different engine session"));
+        assert_eq!(
+            runtime.record().unwrap().reported_state.as_deref(),
+            Some("idle")
+        );
+        // ...but a resumed or new conversation takes over: its working
+        // hook applies and rebinds, and its own later Stop is then the
+        // genuine final boundary.
+        runtime
+            .report_state("working".into(), Some(300), Some("conv-b".into()))
+            .unwrap();
+        runtime
+            .report_state("idle".into(), Some(400), Some("conv-b".into()))
+            .unwrap();
+        let record = runtime.record().unwrap();
+        assert_eq!(record.reported_state.as_deref(), Some("idle"));
+        assert_eq!(
+            record.reported_state_engine_session_id.as_deref(),
+            Some("conv-b")
+        );
     }
 
     #[test]
