@@ -96,7 +96,18 @@ fn bash_alias_argv_with_home(command: &[String], home: Option<&Path>) -> Option<
     }
     let kind = probe.output().ok()?;
     let kind = String::from_utf8_lossy(&kind.stdout);
-    if !matches!(kind.trim(), "alias" | "function") {
+    // rc files may print banners to stdout before the answer (Ubuntu's
+    // /etc/bash.bashrc sudo hint fires whenever HOME lacks its
+    // .sudo_as_admin_successful marker, which is always true for the
+    // fixture homes here and first-run homes in the wild), and the probe
+    // runs after them: the classification is the last non-empty line.
+    let kind = kind
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    if !matches!(kind, "alias" | "function") {
         return None;
     }
     let mut argv = vec![
