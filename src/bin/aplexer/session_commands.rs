@@ -415,13 +415,18 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
         bail!("no bytes to send");
     }
     let mut sent = 0usize;
+    // `pty_written`: bytes only, no Enter. With `--enter`, `submitted` means
+    // the draft was seen leaving an agent composer; `injected` means a target
+    // whose input cannot be observed got text and Enter. A draft that stays
+    // unsent is an error exit, not a status.
+    let mut status = "pty_written";
     if args.enter {
-        let kind = if args.hex || args.stdin {
+        let kind = if args.hex {
             SubmissionKind::Raw
         } else {
             SubmissionKind::Text
         };
-        rpc_send_submitted(&record, &data, kind)?;
+        status = rpc_send_submitted(&record, &data, kind)?.as_str();
         sent = data.len();
     } else {
         for chunk in data.chunks(MAX_FRAME_BYTES) {
@@ -430,10 +435,7 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
         }
     }
     if json_output {
-        println!(
-            "{}",
-            json!({"id":record.id,"bytes":sent,"status":"pty_written"})
-        );
+        println!("{}", json!({"id":record.id,"bytes":sent,"status":status}));
     }
     Ok(())
 }

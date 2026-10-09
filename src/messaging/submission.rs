@@ -5,7 +5,10 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubmissionStatus {
+    /// Observed leaving the recipient's composer.
     Submitted,
+    /// Written with Enter to a recipient whose input cannot be observed.
+    Injected,
     AlreadySubmitted,
     RecipientAcked,
     NotReady,
@@ -72,7 +75,7 @@ pub fn submit_message_in(
     workspace: &Path,
     id: Uuid,
     ready: impl FnOnce(&MessageEnvelope) -> Result<()>,
-    submit: impl FnOnce(&MessageEnvelope) -> Result<()>,
+    submit: impl FnOnce(&MessageEnvelope) -> Result<SubmissionStatus>,
 ) -> Result<SubmissionOutcome> {
     let _mailbox = FileLock::exclusive(&mailbox_lock_path(mp), false)?;
     let message = read_message_in(mp, workspace, id)?;
@@ -92,13 +95,14 @@ pub fn submit_message_in(
 fn perform_submission(
     mp: &MessagePaths,
     message: &MessageEnvelope,
-    submit: impl FnOnce(&MessageEnvelope) -> Result<()>,
+    submit: impl FnOnce(&MessageEnvelope) -> Result<SubmissionStatus>,
 ) -> Result<SubmissionOutcome> {
     let id = message.id;
     atomic_write_json(&mp.msgs_dir.join(format!("{id}.attempt")), &now_ms())?;
-    let result = submit(message).and_then(|()| mark_pane_delivered_locked(mp, message));
+    let result =
+        submit(message).and_then(|status| mark_pane_delivered_locked(mp, message).map(|()| status));
     match result {
-        Ok(()) => Ok(SubmissionOutcome::new(id, SubmissionStatus::Submitted)),
+        Ok(status) => Ok(SubmissionOutcome::new(id, status)),
         Err(error) => Ok(SubmissionOutcome::failed(
             id,
             SubmissionStatus::DeliveryUncertain,

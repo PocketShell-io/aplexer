@@ -1430,7 +1430,8 @@ os.write(1, b"INPUT:" + data.hex().encode() + b"\n")
         Duration::from_secs(5),
     );
     let status: Value = serde_json::from_str(&sent).unwrap();
-    assert_eq!(status["status"], "pty_written");
+    // A bare command has no observable composer: written, not confirmed.
+    assert_eq!(status["status"], "injected");
     assert_eq!(status["bytes"], 4);
     client.wait_for(b"INPUT:6162630d", 0, "send --enter to submit with CR");
     let output = String::from_utf8_lossy(&client.output()).into_owned();
@@ -1457,14 +1458,24 @@ fn codex_text_submission_uses_explicit_paste_but_hex_stays_raw() {
     let root = TempDir::new().expect("workspace root");
     let workspace = root.path().join("codex-submit-raw");
     std::fs::create_dir_all(&workspace).unwrap();
+    // Paints a Codex composer (`›`, cursor at the caret) so text submission
+    // can observe the draft arrive and leave.
     let script = r#"
 import os, tty
 tty.setraw(0)
-os.write(1, b"READY\n")
-data = b""
+def paint(draft):
+    os.write(1, b"\x1b[2J\x1b[1;1HREADY\x1b[3;1H\xe2\x80\xba " + draft + b"\x1b[3;%dH" % (3 + len(draft)))
+data, draft = b"", b""
+paint(draft)
 while len(data) < 20:
-    data += os.read(0, 20 - len(data))
-os.write(1, b"INPUT:" + data.hex().encode() + b"\n")
+    chunk = os.read(0, 20 - len(data))
+    data += chunk
+    if chunk.endswith(b"\r"):
+        draft = b""
+    else:
+        draft += chunk.replace(b"\x1b[200~", b"").replace(b"\x1b[201~", b"")
+    paint(draft)
+os.write(1, b"\r\nINPUT:" + data.hex().encode() + b"\n")
 "#;
     let id = harness.run_ok(
         &[

@@ -78,6 +78,8 @@ mod cli_task_args;
 mod commands;
 #[path = "completions.rs"]
 mod completions;
+#[path = "composer.rs"]
+mod composer;
 #[path = "coordination_commands.rs"]
 mod coordination_commands;
 #[path = "diagnostics.rs"]
@@ -163,6 +165,7 @@ pub(crate) use cli_session_args::*;
 pub(crate) use cli_task_args::*;
 pub(crate) use commands::*;
 pub(crate) use completions::*;
+pub(crate) use composer::*;
 pub(crate) use coordination_commands::*;
 pub(crate) use diagnostics::*;
 pub(crate) use doctor::*;
