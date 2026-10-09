@@ -55,6 +55,45 @@ fn process_alive_reports_an_unreaped_zombie_as_dead() {
     );
 }
 
+/// `NSpid` in `/proc/self/status` lists this process's pid once per
+/// enclosing pid namespace, so exactly one value is the initial namespace
+/// and more than one is confinement. That is the whole basis of
+/// `kill_esrch_proves_absence`: 2026-10-08, one sweep from a
+/// namespace-confined helper got `ESRCH` for every host worker inside
+/// 750 ms and wrote a crash warning for each, and every probe looked
+/// locally correct.
+#[test]
+fn esrch_proves_absence_only_from_the_initial_pid_namespace() {
+    let host = "Name:\tbash\nUid:\t1000\t1000\t1000\t1000\nPid:\t1234\nPPid:\t1\nNSpid:\t1234\n";
+    assert!(initial_pid_namespace_from_status(host));
+
+    // Confinement: one value per namespace, the reader's own innermost.
+    let confined = "Name:\tbash\nPid:\t7\nNSpid:\t7\t1234\nNSpgid:\t7\t900\n";
+    assert!(!initial_pid_namespace_from_status(confined));
+
+    // No line (a kernel without pid namespaces, a hardened procfs):
+    // unknown, so not proof.
+    assert!(!initial_pid_namespace_from_status(
+        "Name:\tbash\nPid:\t1234\nPPid:\t1\n"
+    ));
+
+    // A line with nothing parseable after it is likewise unknown.
+    assert!(!initial_pid_namespace_from_status("NSpid:\n"));
+}
+
+/// The suite's other process tests build on `/proc` reads and `kill(2)`
+/// semantics of the host they run on, i.e. they already assume the
+/// initial pid namespace; this pins that assumption on the one predicate
+/// the record layer now consults before believing an `ESRCH`.
+#[test]
+fn the_test_host_reads_as_the_initial_pid_namespace() {
+    assert!(
+        kill_esrch_proves_absence(),
+        "this suite's /proc- and kill-based expectations require \
+         the test host to run in the initial pid namespace"
+    );
+}
+
 /// A `Z` in `/proc/<pid>/stat` is not by itself proof that a process is
 /// finished: a thread group leader that exited while its siblings kept
 /// running reads exactly the same (verified against a real process --

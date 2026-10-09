@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::kill_esrch_proves_absence;
 use crate::now_ms;
 #[cfg(unix)]
 use crate::process_alive;
@@ -457,12 +458,23 @@ impl SessionRecord {
     /// absent or unreadable identity sidecar deliberately falls back to the
     /// legacy pid check: uncertainty must not let prune/tag replacement
     /// delete a live worker.
+    ///
+    /// A failed `kill(pid, 0)` is evidence of death only from the initial
+    /// PID namespace. A query process confined to a nested one -- a
+    /// sandboxed helper or container sharing the state directory -- gets
+    /// `ESRCH` for every host pid at once; believing it reported 41 live
+    /// sessions crashed within 750 ms (2026-10-08). Both process-probe
+    /// answers below therefore require `kill_esrch_proves_absence` before
+    /// they may say "dead".
     pub fn worker_alive(&self) -> bool {
         let Some(pid) = self.worker_pid else {
             return false;
         };
         if !process_alive(pid) {
-            return false;
+            if kill_esrch_proves_absence() {
+                return false;
+            }
+            return true;
         }
         let identity = match read_worker_identity(self) {
             Ok(Some(identity)) if identity.pid == pid => identity,
@@ -470,8 +482,14 @@ impl SessionRecord {
         };
         match verify_worker_identity(&identity) {
             Ok(WorkerIdentity::Verified) => true,
-            // Gone, a different boot (Linux), or a recycled pid.
-            Ok(_) => false,
+            // A different boot (Linux) or a recycled pid is decided from
+            // readable evidence about the machine, not from this caller's
+            // pid visibility.
+            Ok(WorkerIdentity::DifferentBoot) | Ok(WorkerIdentity::PidReused { .. }) => false,
+            // "No process holds that pid" needs the same proof as the
+            // early path above: a confined caller's /proc lacks every
+            // host pid.
+            Ok(WorkerIdentity::Gone) => kill_esrch_proves_absence(),
             // Uncertainty fails closed: never let prune/tag replacement
             // delete a live worker over an unreadable probe.
             Err(_) => true,
@@ -497,8 +515,14 @@ impl SessionRecord {
     /// zombie leader is not: see `process_alive`). A record
     /// with no leader pid never had one recorded; that is not a liveness
     /// claim either way, only the absence of this particular handle.
+    ///
+    /// The PID-namespace caution of `worker_alive` applies doubly here:
+    /// this answer reaches `reap_verdict`, so a false death is a deletion.
     pub fn workload_leader_alive(&self) -> bool {
-        self.workload_pid.map(process_alive).unwrap_or(false)
+        match self.workload_pid {
+            Some(pid) => process_alive(pid) || !kill_esrch_proves_absence(),
+            None => false,
+        }
     }
 
     /// Whether the record itself says the session is on its way out, so a

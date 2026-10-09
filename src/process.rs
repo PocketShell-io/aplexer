@@ -183,6 +183,44 @@ pub fn process_alive(pid: u32) -> bool {
     signalable && !process_is_zombie(pid)
 }
 
+/// Whether an `ESRCH` from `kill(pid, 0)` in this process proves the pid is
+/// gone from the machine. It does only from the initial PID namespace: a
+/// process confined to a nested one -- a sandboxed helper or a container
+/// sharing the state directory -- gets `ESRCH` for *every* host pid at
+/// once, and believing that reported 41 live sessions crashed within
+/// 750 ms (2026-10-08). Detected from `NSpid` in `/proc/self/status`,
+/// which lists the process's id once per enclosing pid namespace: exactly
+/// one value at the root, more under confinement. An unreadable status, or
+/// one without the line, cannot answer and fails closed: the absence is
+/// not proven, so record-level callers (`worker_alive`,
+/// `workload_leader_alive`) must stay on the alive side.
+#[cfg(unix)]
+pub fn kill_esrch_proves_absence() -> bool {
+    match fs::read_to_string("/proc/self/status") {
+        Ok(status) => initial_pid_namespace_from_status(&status),
+        Err(_) => false,
+    }
+}
+
+/// The `NSpid` line of a `/proc/<pid>/status` text, without the `/proc`
+/// read: exactly one listed id means the initial pid namespace, more than
+/// one means confinement, no line means the answer is unknown.
+#[cfg(unix)]
+pub(crate) fn initial_pid_namespace_from_status(status: &str) -> bool {
+    match status.lines().find(|line| line.starts_with("NSpid:")) {
+        Some(line) => line["NSpid:".len()..].split_whitespace().count() == 1,
+        None => false,
+    }
+}
+
+/// Windows has no pid namespaces: whatever opens or fails to open for a
+/// recorded pid, the answer is about the machine, not about the caller's
+/// sandbox (see the unix twin for the incident that earned this question).
+#[cfg(windows)]
+pub fn kill_esrch_proves_absence() -> bool {
+    true
+}
+
 /// The single-character run state from field 3 of `/proc/<pid>/stat`
 /// (`R` running, `S`/`D` sleeping, `T` stopped, `Z` zombie, `X` dead).
 #[cfg(unix)]
