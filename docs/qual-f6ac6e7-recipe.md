@@ -1,172 +1,147 @@
-# Qualification recipe — gated Stop chain candidate `f6ac6e7` (rev 2)
+# Qualification recipe — gated Stop candidate `f6ac6e7` (rev 3)
 
-**Status: FROZEN rev 2 for root review — NOT EXECUTED.** Rev 2 applies review
-01a122ed corrections (prior 01ec6dd0 constraints stand): corrected waiting
-oracle, genuine owned sender identity for delivery, project-scope hook config
-with shared config strictly read-only, evidence preserved on failure. Rev 1
-(d12b5b8) is superseded; this file replaces it.
+**Status: FROZEN rev 3 for root review — NOT EXECUTED.** Applies review
+01a122f8: fully executable (no human permission round), hooks via
+`--setting-sources project,local` + owned `settings.local.json`, fake-HOME
+init dropped, doc-HEAD vs binary-source pins separated, `send --stdin --enter`
+fixed bytes, same-ID re-delivery refusal oracle. Supersedes rev 2 (1f53998).
 
-## Oracles grounded in source (pin `f6ac6e7`)
+## Pins (distinguished)
 
-- Readiness gate — `src/bin/aplexer/message_deferred.rs:56`: guarded
-  delivery proceeds only when the recipient's state source is `"reported"`
-  AND the state is `waiting` OR `idle`. Reported `running` refuses
-  ("recipient reported working", line 74-75); missing/stale/derived
-  readiness refuses with the full availability banner (line 65).
-  THEREFORE: **working → refusal oracle; waiting → ACCEPTANCE oracle**
-  (rev 1's waiting-refusal oracle was wrong — root 01a122ed is correct);
-  idle → acceptance.
-- Delivery authorization — `message_deferred.rs:13 authorize_delivery` with
-  `src/process.rs:87 discover_session_id` (explicit `APLEXER_SESSION_ID` or
-  the ancestor-environment walk): only the recorded **original sender**
-  (calling session id == `message.from.session_id`, same source workspace)
-  or the **recipient** (calling id == delivery recipient, same workspace)
-  may deliver. An unrecorded controller shell CANNOT deliver with
-  `--workspace` alone — rev 1's bare-shell delivery was invalid.
-
-## Candidate binding (unchanged from rev 1)
-
-- Source pin `f6ac6e78a2fe3b5d7a0b42255c84d1533a1dfe45`, clean tree at
-  build; `cargo build --release` rc=0.
-- Staged binary `/home/alexey/.aplexer-qual-f6ac6e7/bin/aplexer`, sha256
+- **Binary source pin** `f6ac6e78a2fe3b5d7a0b42255c84d1533a1dfe45`; staged
+  binary `/home/alexey/.aplexer-qual-f6ac6e7/bin/aplexer` sha256
   `0ee40cea79c72a2c5615ed82a9557de763c053033fb88dacc92714b451edc2f0`
-  (`$QUAL/bin/a` symlink; reports `a 0.1.10`). Hook commands embed this
-  exact path (`resolve_a_bin` = `current_exe`, `src/hooks/mod.rs:262`).
-- No shared install, no shared `a init`, no shared daemon/socket/state.
+  (reports `a 0.1.10`; `$QUAL/bin/a` symlink).
+- **Doc HEAD at freeze:** this commit (docs-only on top of `f6ac6e7`).
+- Preflight asserts BOTH: staged sha equals the binding;
+  `git merge-base --is-ancestor f6ac6e7 HEAD` succeeds; and
+  `git diff --quiet f6ac6e7 HEAD -- src Cargo.toml Cargo.lock` proves the
+  docs-after-f6 touched no code.
 
-## Isolation (rev 2: shared config read-only, real auth untouched)
+## Verified surface (this host, recorded)
 
-- Private registry/mailbox/socket: `APLEXER_STATE_DIR` / `APLEXER_RUNTIME_DIR`
-  under `$QUAL` (unchanged).
-- **Hooks via Claude's documented PROJECT scope** —
-  `$QUAL/work/.claude/settings.json` — never user scope, never
-  `CLAUDE_CONFIG_DIR`: rev 1's blank private config dir would have detached
-  the engine from real auth, and copying credentials into it is forbidden.
-  With real `$HOME` left alone, the engine's existing auth stays in place;
-  project settings add only hooks. Grounding: `resolve_targets`
-  (`src/hooks/mod.rs:297-332`) shows aplexer manages user-scope files only,
-  and `src/api/start/` contains no hooks reference — start neither installs
-  nor gates on hooks, so the engine picks hooks up from project scope at
-  runtime.
-- Derivation of the exact wiring (nothing hand-written): the preflight runs
-  the staged installer against a THROWAWAY home and reuses its output
-  verbatim:
+- `claude --version` → `2.1.289 (Claude Code)`; `claude --help` lines 225/227:
+  `--setting-sources <sources>`, `--settings <file-or-json>`.
+- `a start [OPTIONS] [-- <COMMAND>...]`: an explicit `--` command replaces the
+  engine default; with a command present, `resolve_launch`
+  (`src/api/start/claim.rs:22,31`) does NOT append skip-permissions argv;
+  `--engine claude` records `engine=claude` on the record
+  (`Config::resolve` preserves the explicit engine with direct argv).
+- `a send --stdin --enter` (`a send --help`): fixed bytes from stdin.
+- `a init --check --json`: no-touch contract (used read-only, no init run).
+- Delivery gate `src/bin/aplexer/message_deferred.rs:56`: proceeds iff
+  `source == "reported"` and state ∈ {`waiting`, `idle`}; reported `running`
+  refuses (":75 recipient reported working"). Sender/recipient authorization:
+  `message_deferred.rs:13` + `process.rs:87` ancestor-environ walk.
+- Hooks: `CLAUDE_EVENTS` (`src/hooks/mod.rs:152`); command builder
+  `state_report_command` (`:214`) = `'<a_bin>' state-report <state> || true`;
+  nesting shape per module docs `:50`. `a start`/worker install NO hooks
+  (no hooks reference under `src/api/start/`).
 
-      HOME="$QUAL/fakehome" "$QUAL/bin/a" init --engine claude
+## Owned hook config — `$QUAL/work/.claude/settings.local.json`
 
-  `--engine claude` scopes the run to the claude settings target only (no
-  shell rc / prompt targets, `cmd_init` prompt scoping), so the only file
-  created is `$QUAL/fakehome/.claude/settings.json`. Its hook block is then
-  copied verbatim into `$QUAL/work/.claude/settings.json`; both sha256s are
-  recorded; `$QUAL/fakehome` is preserved as evidence (it contains no
-  credentials — it was created empty for this one install).
+Derived from exact f6 `CLAUDE_EVENTS`/`state_report_command`; absolute staged
+binary; created fresh at runtime by the preflight (heredoc), never hand-edited
+in a shared file:
 
-## Preflight (evidence `$QUAL/evidence/00-preflight.log`, every step `tee -a`)
+```json
+{
+  "hooks": {
+    "Stop":              [{"hooks": [{"type": "command",
+        "command": "/home/alexey/.aplexer-qual-f6ac6e7/bin/a state-report gated-idle || true"}]}],
+    "Notification":      [{"hooks": [{"type": "command",
+        "command": "/home/alexey/.aplexer-qual-f6ac6e7/bin/a state-report waiting || true"}]}],
+    "UserPromptSubmit":  [{"hooks": [{"type": "command",
+        "command": "/home/alexey/.aplexer-qual-f6ac6e7/bin/a state-report working || true"}]}],
+    "SessionStart":      [{"hooks": [{"type": "command",
+        "command": "/home/alexey/.aplexer-qual-f6ac6e7/bin/a state-report working || true"}]}]
+  }
+}
+```
+
+Deviation, documented: `CLAUDE_EVENTS[4..6]` (`awareness:claude` on
+SessionStart/UserPromptSubmit/PostToolUse) are omitted — they install
+`src/awareness.rs`'s context-injection source, not state-report commands, and
+are not under qualification. Existing HOME/auth/shared settings stay
+read-only; nothing runs `a init` anywhere; user-scope hooks are excluded at
+launch by `--setting-sources project,local`.
+
+## Preflight (every line `tee -a $QUAL/evidence/00-preflight.log`)
 
     export QUAL=/home/alexey/.aplexer-qual-f6ac6e7
     export APLEXER_STATE_DIR=$QUAL/state
     export APLEXER_RUNTIME_DIR=$QUAL/runtime
     export PATH="$QUAL/bin:$PATH"
-    sha256sum "$QUAL/bin/aplexer"        # must equal the binding
-    command -v a                         # must print $QUAL/bin/a
-    git -C /home/alexey/git/aplexer rev-parse HEAD   # must equal the pin
-    mkdir -p "$QUAL/work" "$QUAL/evidence" "$QUAL/fakehome"
-    cd "$QUAL/work" && git init -q .
-    HOME="$QUAL/fakehome" "$QUAL/bin/a" init --engine claude
-    mkdir -p "$QUAL/work/.claude"
-    cp "$QUAL/fakehome/.claude/settings.json" "$QUAL/work/.claude/settings.json"
-    sha256sum "$QUAL/fakehome/.claude/settings.json" \\
-        "$QUAL/work/.claude/settings.json"
-    a engines                            # claude must be listed
-    sha256sum ~/.claude/settings.json ~/.gemini/settings.json \\
+    cd /home/alexey/git/aplexer
+    sha256sum "$QUAL/bin/aplexer"          # == binding
+    git merge-base --is-ancestor f6ac6e7 HEAD && echo pin-ancestor-ok
+    git diff --quiet f6ac6e7 HEAD -- src Cargo.toml Cargo.lock && echo code-frozen-ok
+    mkdir -p "$QUAL/work" "$QUAL/evidence" "$QUAL/work/.claude"
+    cat > "$QUAL/work/.claude/settings.local.json" <<'JSON'
+    <exact JSON block above>
+    JSON
+    sha256sum "$QUAL/work/.claude/settings.local.json"
+    sha256sum ~/.claude/settings.json ~/.gemini/settings.json \
         ~/.local/bin/a > "$QUAL/evidence/shared-before.sha"
+    cd "$QUAL/work" && git init -q .
 
-## Sessions and identity (genuine owned sender context)
+## Sessions (engine argv carries the setting-source exclusion)
 
-1. Recipient (flags unchanged from the verified rev-1 set):
+    a start --workspace "$QUAL/work" --tag qual --engine claude \
+        -- claude --setting-sources project,local
+    a start --workspace "$QUAL/work" --tag ctrl --engine claude \
+        -- claude --setting-sources project,local
 
-       a start --workspace "$QUAL/work" --tag qual --engine claude \\
-           --cwd "$QUAL/work" --startup-timeout-ms 30000
+Record engine must be `claude` (`a status --json` both tags). All test
+send/deliver runs INSIDE ctrl via `a send ... --enter` (recorded identity,
+ancestor walk) — no bare-shell delivery.
 
-2. Controller/sender session, recorded in the same isolated registry:
+## Fixture and controls
 
-       a start --workspace "$QUAL/work" --tag ctrl --engine claude \\
-           --cwd "$QUAL/work" --startup-timeout-ms 30000
+1. **Fresh owned README** (preflight writes `$QUAL/work/README.md`, ~120
+   words, unique token `QUAL-RUN-<runid>` on its first line).
+2. **Bounded real Working control (no permission round):** from outside,
+   `printf '%s' 'Reply with exactly QUAL-TICK-<runid> and nothing else; do not
+   use any tools.' | a send --workspace "$QUAL/work" --tag qual --stdin
+   --enter`. While `a status --json` shows `working`, inside ctrl:
+   `printf '%s' '<nonce text>' | a send --workspace "$QUAL/work" --tag ctrl
+   --stdin --enter` (nonce text = `QUAL-NONCE-<runid>: when this message
+   arrives, run: a message reply <MSG1_ID> "QUAL-ACK <runid>"`), then
+   `a message deliver <MSG1_ID> --workspace "$QUAL/work"`.
+   EXPECT: refusal `recipient reported working`; message stays queued;
+   verbatim refusal + status captured. (No-tool task ⇒ no permission prompt ⇒
+   no human round.)
+3. **Ready boundary:** qual's own gated Stop (empty `background_tasks`)
+   reports idle; `a status --json` shows fresh stamped `idle`. No
+   state-report, TTL, quiet-PTY, or forced idle anywhere.
+4. **Delivery + recipient-executed nonce ACK:** inside ctrl
+   `a message deliver <MSG1_ID> --workspace "$QUAL/work"` (gate accepts
+   reported idle); qual consumes it in a real turn and runs the instructed
+   `a message reply <MSG1_ID> "QUAL-ACK <runid>"`. Evidence: reply envelope
+   authored by qual with the verbatim nonce (`a message log`, `a message
+   show`); ctrl inbox lists it; ctrl `a message ack` consumes it.
+5. **Same-ID re-delivery refusal (no second PTY submission):** inside ctrl
+   repeat `a message deliver <MSG1_ID> --workspace "$QUAL/work"`. EXPECT:
+   refusal (nothing left to submit; verbatim error captured) and
+   `a capture --screen --workspace "$QUAL/work" --tag qual` shows no second
+   submission of the nonce.
+6. **Waiting acceptance — NOT exercised.** It would require a human
+   permission round (excluded by 01a122f8). Source guarantee stands at
+   `message_deferred.rs:56` (`waiting` is a ready state); documented as
+   unexercised.
 
-   Every `a message send` / `a message deliver` for the test is executed
-   INSIDE ctrl, e.g.:
+## Evidence and cleanup
 
-       a send --workspace "$QUAL/work" --tag ctrl \\
-           "a message send --workspace $QUAL/work --to qual '<TEXT>'" --enter
+Every command `tee -a $QUAL/evidence/NN-*.log`. On ANY failure or unexpected
+oracle: STOP and preserve `$QUAL` in full for root inspection. Green-run
+cleanup only: `a kill --workspace "$QUAL/work" --tag qual`, same for `ctrl`;
+isolated `a list` empty; re-sha the three shared files and
+`diff` against `shared-before.sha` (must be empty); `rm -rf "$QUAL"` only on
+root's release of the evidence.
 
-   so the child process resolves ctrl's recorded identity through the
-   ancestor-environment walk (`process.rs:87`) — no environment forging,
-   no bare-shell delivery.
+## Limits (no absolute claims)
 
-## Controls (rev 2 oracles)
-
-3. **Working refusal**: give qual a genuine task
-   (`a send --workspace "$QUAL/work" --tag qual "Summarize the first 50
-   lines of README.md." --enter`); while `a status --json` shows working,
-   inside ctrl send the nonce message and attempt delivery:
-
-       a message send --workspace "$QUAL/work" --to qual \\
-           "QUAL-NONCE-<runid>: when ready, reply by running: a message reply <MSG1_ID> \"QUAL-ACK <runid>\"" 
-       a message deliver <MSG1_ID> --workspace "$QUAL/work"
-
-   EXPECT: refusal ("recipient reported working"); message stays queued;
-   capture refusal text + `a status --json`.
-4. **Waiting acceptance (corrected oracle)**: with qual launched with
-   permission prompts on (start flag as in rev 1) and sitting at a real
-   permission prompt (`a status --json` shows waiting, source reported):
-   inside ctrl run `a message deliver <MSG1_ID> --workspace "$QUAL/work"`.
-   EXPECT: the gate ACCEPTS (per `message_deferred.rs:56`, waiting is a
-   ready state); record the command's verbatim output. Skipped only with
-   the reason recorded; never forced or faked.
-5. **Idle acceptance + real consumption**: after qual's turn ends, its own
-   gated Stop (`hook_event_name=Stop`, empty `background_tasks`) reports
-   idle — verified via `a status --json` (fresh stamped event). Deliver
-   then if not already delivered; qual consumes the nonce message in a
-   real turn and executes the instructed reply
-   (`a message reply <MSG1_ID> "QUAL-ACK <runid>"`) as the recipient.
-6. **Recipient-executed ACK evidence**: `a message log --workspace
-   "$QUAL/work"` contains the reply envelope authored by qual with the
-   verbatim nonce; `a message show <REPLY_ID>`; ctrl's `a message inbox`
-   lists it; `a message ack` marks it consumed. All ids verbatim.
-
-`send`/`start`/`status` flags are exactly the rev-1 verified set, plus
-`a init --engine claude` (verified against `InitArgs` in
-`src/bin/aplexer/session_diagnostics.rs`).
-
-## Evidence preservation (rev 2 — applies to every step)
-
-Every command appends to `$QUAL/evidence/NN-*.log`. On ANY failure or
-unexpected oracle: STOP immediately and PRESERVE `$QUAL` in full —
-including `$QUAL/fakehome` — for root inspection. Cleanup below runs only
-after a fully green run AND root's release; no `rm` of `$QUAL` ever happens
-on a failed run.
-
-## Cleanup (green run only, exactly owned state)
-
-    a kill --workspace "$QUAL/work" --tag qual
-    a kill --workspace "$QUAL/work" --tag ctrl
-    a list    # isolated env: empty
-    sha256sum ~/.claude/settings.json ~/.gemini/settings.json \\
-        ~/.local/bin/a > "$QUAL/evidence/shared-after.sha"
-    diff "$QUAL/evidence/shared-before.sha" "$QUAL/evidence/shared-after.sha" \\
-        || echo "FAIL: shared state touched"
-    rm -rf "$QUAL"   # only on root release of the evidence
-
-## Documented limits (no absolute claims)
-
-- Residual engine-side delay before the hook process starts remains
-  unobservable from the client (documented in source and rev-1 report
-  01a122eb); this recipe qualifies observed behavior, it proves no "never".
-- Project-scope hook pickup by the engine is Claude's documented settings
-  scope; step 5's captured state report (event-stamped shape from the
-  staged binary) is the runtime proof the hooks actually fired.
-
-## Freeze
-
-Rev 2 frozen 2026-10-10 for root review; execution awaits explicit
-authorization. Sole author: session 0dca91b2 (tag aplexer).
+Residual engine-side delay before the hook process starts is unobservable
+from the client (documented in source and reports); this recipe qualifies
+observed behavior — it proves no "never". Hook firing is proven at runtime by
+the event-stamped report shapes in captured status, not assumed.
