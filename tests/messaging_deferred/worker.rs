@@ -34,6 +34,11 @@ mod fake_worker {
             Self::spawn(record, false, Mode::NoPrompt)
         }
 
+        /// Accepts input but never renders it: the composer stays empty.
+        pub(crate) fn start_never_rendering(record: &SessionRecord) -> Self {
+            Self::spawn(record, false, Mode::NeverRenders)
+        }
+
         /// The reported bug: Enter lands inside the draft as a newline.
         pub(crate) fn start_swallowing_enter(record: &SessionRecord) -> Self {
             Self::spawn(record, false, Mode::SwallowEnter)
@@ -114,6 +119,7 @@ mod fake_worker {
         Prompt,
         NoPrompt,
         SwallowEnter,
+        NeverRenders,
     }
 
     struct Screen {
@@ -134,6 +140,10 @@ mod fake_worker {
         fn paint(&self) -> Vec<u8> {
             let mut out = b"\x1b[?2004h".to_vec();
             if self.mode == Mode::NoPrompt {
+                return out;
+            }
+            if self.mode == Mode::NeverRenders {
+                out.extend_from_slice("\x1b[2;1H❯ \x1b[2;3H".as_bytes());
                 return out;
             }
             // One row per draft line, cursor after the last: an Enter read

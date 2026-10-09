@@ -40,9 +40,13 @@ fn is_rule(row: &str) -> bool {
     trimmed.chars().count() >= 8 && trimmed.chars().all(|c| matches!(c, '─' | '━' | '═' | '-'))
 }
 
+/// Claude Code's `❯` and Codex's `›`, and nothing else: a shell's `$`/`#`/`>`
+/// or a menu's punctuation must never read as an agent's empty composer.
+const PROMPT_GLYPHS: [char; 2] = ['❯', '›'];
+
 fn is_prompt_glyph(prefix: &str) -> bool {
     let mut chars = prefix.trim().chars();
-    matches!((chars.next(), chars.next()), (Some(c), None) if !c.is_alphanumeric())
+    matches!((chars.next(), chars.next()), (Some(c), None) if PROMPT_GLYPHS.contains(&c))
 }
 
 impl ComposerView {
@@ -106,9 +110,10 @@ fn observe(
 }
 
 /// `text` then one Enter into an observable composer. `paste` brackets the
-/// text so the Enter can never be read as part of it, even if the agent
-/// drains both in one read; without it the Enter waits until the text is
-/// on screen.
+/// text so the Enter can never be read as part of it, however the agent's
+/// reads split. Either way Enter is sent only on positive evidence -- the
+/// composer showing the text -- because an empty composer after Enter proves
+/// nothing if the text was never seen arriving.
 pub(crate) fn submit_observed(
     record: &SessionRecord,
     before: &ComposerView,
@@ -124,24 +129,18 @@ pub(crate) fn submit_observed(
         );
     }
     write_text(record, text, paste)?;
-    let shown = observe(record, |view| view.region != before.region && !view.empty)?;
-    if shown.is_none() && !paste {
+    let Some(shown) = observe(record, |view| view.region != before.region && !view.empty)? else {
         bail!(
             "input injected into session {tag:?} but never appeared in its composer; Enter \
              was not sent, so the text may remain as an unsent draft"
         );
-    }
+    };
     rpc_send(record, b"\r")?;
     // Gone from the composer: emptied, or replaced by something else (a
     // permission dialog) that no longer holds the draft's first row. An Enter
     // read as a newline keeps that row and moves the cursor below it.
-    let draft_head = shown.and_then(|view| view.region.first().cloned());
-    let cleared = |view: &ComposerView| {
-        view.empty
-            || draft_head
-                .as_ref()
-                .is_some_and(|head| !view.region.contains(head))
-    };
+    let draft_head = shown.region.first().cloned().unwrap_or_default();
+    let cleared = |view: &ComposerView| view.empty || !view.region.contains(&draft_head);
     match observe(record, cleared)? {
         Some(_) => Ok(()),
         None => {
@@ -219,5 +218,19 @@ mod tests {
     fn cursor_at_column_zero_or_after_words_is_not_a_prompt() {
         assert!(!view("READY\r\n").empty);
         assert!(!view("user@host:~$ ").empty);
+    }
+
+    #[test]
+    fn only_claude_and_codex_glyphs_are_prompts() {
+        for glyph in ["❯", "›"] {
+            assert!(
+                view(&format!("\x1b[2;1H{glyph} \x1b[2;3H")).empty,
+                "{glyph}"
+            );
+        }
+        for glyph in ["$", "#", ">", "%", ":", "?", "*", "-", "»", "→", "•"] {
+            let v = view(&format!("\x1b[2;1H{glyph} \x1b[2;3H"));
+            assert!(!v.empty, "{glyph:?} must not read as an agent composer");
+        }
     }
 }

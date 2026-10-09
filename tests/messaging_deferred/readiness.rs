@@ -180,3 +180,53 @@ fn enter_swallowed_into_the_draft_is_uncertain_with_exactly_one_enter() {
     assert_eq!(writes.iter().filter(|w| w.as_slice() == b"\r").count(), 1);
     status(&case.deliver(&case.sender), "delivery-uncertain");
 }
+
+/// Pasted framed mail whose text never shows up in the composer: an empty
+/// composer after Enter would prove nothing, so Enter is never sent and the
+/// outcome is uncertain, not `submitted`.
+#[cfg(unix)]
+#[test]
+fn text_never_rendered_gets_no_enter_and_is_never_submitted() {
+    for engine in ["claude", "codex"] {
+        let mut case = rejected_case(Some("waiting"), Some(aplexer::now_ms()), None);
+        case.recipient.engine = engine.into();
+        atomic_write_json(
+            &case.harness.paths().record(case.recipient.id),
+            &case.recipient,
+        )
+        .unwrap();
+        let server = worker::Worker::start_never_rendering(&case.recipient);
+        let output = case
+            .harness
+            .command()
+            .env("APLEXER_SESSION_ID", case.sender.id.to_string())
+            .env("APLEXER_SUBMIT_TIMEOUT_MS", "300")
+            .args([
+                "--json",
+                "message",
+                "deliver",
+                &case.id().to_string(),
+                "--workspace",
+                case.recipient.workspace.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{engine}: {output:?}");
+        status(&output, "delivery-uncertain");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            value["detail"].as_str().unwrap().contains("never appeared"),
+            "{value}"
+        );
+        let writes = server.finish();
+        assert_eq!(
+            writes.first().map(Vec::as_slice),
+            Some(&b"\x1b[200~"[..]),
+            "{engine}"
+        );
+        assert!(
+            !writes.iter().any(|w| w.as_slice() == b"\r"),
+            "{engine}: {writes:?}"
+        );
+    }
+}
