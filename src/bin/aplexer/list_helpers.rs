@@ -531,7 +531,11 @@ mod display_workspace_tests {
 
     #[test]
     fn home_abbreviation_uses_native_separator() {
-        let home = PathBuf::from(if cfg!(windows) { r"C:\Users\u" } else { "/home/u" });
+        let home = PathBuf::from(if cfg!(windows) {
+            r"C:\Users\u"
+        } else {
+            "/home/u"
+        });
         let sep = std::path::MAIN_SEPARATOR;
         let ws = home.join("git").join("aplexer");
         let got = display_workspace(&ws, Some(&home));
@@ -542,6 +546,9 @@ mod display_workspace_tests {
             assert_eq!(got, "~/git/aplexer");
         }
         assert_eq!(display_workspace(&home, Some(&home)), "~");
-        assert_eq!(display_workspace(Path::new("elsewhere"), Some(&home)), "elsewhere");
+        assert_eq!(
+            display_workspace(Path::new("elsewhere"), Some(&home)),
+            "elsewhere"
+        );
     }
 }
