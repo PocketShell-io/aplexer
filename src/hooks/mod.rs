@@ -140,8 +140,13 @@ pub const HOOK_ENGINES: [&str; 6] = [
 /// flight." -- plus `stop_hook_active`. The hook reports `working` while
 /// that registry is live (the turn ended only in the foreground sense;
 /// quiet children included -- PTY silence proves nothing) and `idle` only
-/// on the engine's own done-evidence; see `gated_stop_decision` in
-/// `session_diagnostics.rs`. Other engines keep the plain `Stop` wiring.
+/// on the engine's own done-evidence -- the empty registry, the only shape
+/// the engine positively evidences "done" with; missing or malformed
+/// evidence reports NOTHING (fail closed, review round 2). Event-time
+/// fencing on the worker (`WorkerRuntime::report_state`) keeps a delayed
+/// Stop from overwriting a newer turn's truth. See `gated_stop_decision`
+/// in `session_diagnostics.rs`. Other engines keep the plain `Stop`
+/// wiring.
 pub const CLAUDE_EVENTS: [(&str, &str); 7] = [
     ("Stop", "gated-idle"),
     ("Notification", "waiting"),

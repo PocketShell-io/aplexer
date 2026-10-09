@@ -657,12 +657,42 @@ impl WorkerRuntime {
     /// unrecognised value into the record that `watch.rs`'s merge logic
     /// would then have to guess at -- the same defensive posture `rename`
     /// takes with `validate_tag` above.
-    pub(super) fn report_state(&self, state: String) -> Result<SessionRecord> {
+    ///
+    /// Turn fencing: a stamped report whose engine event predates the
+    /// newest already-applied one is refused. Hook events fire in engine
+    /// lifecycle order (Claude runs its hooks synchronously in-process),
+    /// so event-time order IS engine order and only RPC arrival can skew;
+    /// refusing the older arrival keeps the newest engine truth. A delayed
+    /// Stop from an earlier turn can therefore never overwrite a newer
+    /// UserPromptSubmit/Notification report. Unstamped (legacy) reports
+    /// bypass the fence -- exactly the pre-fence behavior -- and a
+    /// backward clock jump produces refusals, which fail closed.
+    pub(super) fn report_state(
+        &self,
+        state: String,
+        event_ms: Option<u64>,
+    ) -> Result<SessionRecord> {
         validate_reported_state(&state)?;
-        self.update_record(move |r| {
+        let mut stale = false;
+        let record = self.update_record(move |r| {
+            if report_event_is_stale(event_ms, r.reported_state_event_ms) {
+                stale = true;
+                return;
+            }
             r.reported_state = Some(state);
             r.reported_state_at_ms = Some(now_ms());
-        })
+            if event_ms.is_some() {
+                r.reported_state_event_ms = event_ms;
+            }
+        })?;
+        if stale {
+            bail!(
+                "state report refused: its engine event predates the newest \
+                 already-applied report event; a stale hook report never \
+                 overwrites a newer turn's truth"
+            );
+        }
+        Ok(record)
     }
     /// `a agent <token>` / `a agent --clear` (`Operation::SetAgent`): pin
     /// which agent this session reports, or `None` to unpin and return to
@@ -687,6 +717,33 @@ impl WorkerRuntime {
         self.update_record(move |r| {
             r.agent_override = agent;
         })
+    }
+}
+
+/// The recipient-owned turn fence: a stamped engine event older than the
+/// newest one already applied is stale. Hook events fire in engine
+/// lifecycle order (Claude runs its hooks synchronously in-process), so
+/// event-time order IS engine order; only arrival order can skew, and
+/// refusing the older arrival keeps the newest engine truth. Unstamped
+/// reports (legacy clients) bypass the fence -- exactly the pre-fence
+/// behavior -- and a backward clock jump yields refusals, which fail
+/// closed.
+fn report_event_is_stale(incoming: Option<u64>, stored: Option<u64>) -> bool {
+    matches!((incoming, stored), (Some(incoming), Some(stored)) if incoming < stored)
+}
+
+#[cfg(test)]
+mod report_fencing_tests {
+    use super::*;
+
+    #[test]
+    fn a_stale_engine_event_cannot_overwrite_a_newer_truth() {
+        assert!(report_event_is_stale(Some(100), Some(200)));
+        assert!(!report_event_is_stale(Some(200), Some(100)));
+        assert!(!report_event_is_stale(Some(100), Some(100)));
+        // Unstamped (legacy) reports bypass the fence both ways.
+        assert!(!report_event_is_stale(None, Some(200)));
+        assert!(!report_event_is_stale(Some(100), None));
     }
 }
 

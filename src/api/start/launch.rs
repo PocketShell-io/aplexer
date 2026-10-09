@@ -76,6 +76,7 @@ pub(super) fn write_initial_record(
         last_accessed_ms: None,
         reported_state: None,
         reported_state_at_ms: None,
+        reported_state_event_ms: None,
         agent_override: None,
         phase: Phase::Starting,
         worker_pid: None,

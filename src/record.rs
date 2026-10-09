@@ -303,6 +303,15 @@ pub struct SessionRecord {
     /// ms since epoch. Always `Some` when `reported_state` is `Some`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_state_at_ms: Option<u64>,
+    /// The engine-event time of the newest applied state report (ms since
+    /// epoch, stamped client-side at hook run), when the reporting client
+    /// stamps at all. `WorkerRuntime::report_state` refuses a stamped
+    /// report that predates this: a delayed Stop from an earlier turn must
+    /// never overwrite the newer UserPromptSubmit/Notification truth.
+    /// `None` (legacy client, or no stamped report yet) bypasses the
+    /// fence -- exactly the pre-fence behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_state_event_ms: Option<u64>,
     /// The agent token the user pinned for this session (`a agent <token>`),
     /// e.g. `claude` or a configured variation (`zcodex`). Detection reads
     /// the workload process tree at query time and reports whichever agent
@@ -394,6 +403,7 @@ impl SessionRecord {
             last_accessed_ms: None,
             reported_state: None,
             reported_state_at_ms: None,
+            reported_state_event_ms: None,
             agent_override: None,
             phase: Phase::Running,
             worker_pid: None,

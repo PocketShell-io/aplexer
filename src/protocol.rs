@@ -177,6 +177,17 @@ pub enum Operation {
     /// at.
     ReportState {
         state: String,
+        /// When the engine event happened (ms since epoch), stamped by the
+        /// reporting client as it runs inside the hook (hook commands run
+        /// synchronously at the event, so client-start time IS the event
+        /// time plus CLI startup). Additive like `Attach::want_screen`: an
+        /// old client never sends it, and an old worker's serde ignores
+        /// it. The worker fences on it (`WorkerRuntime::report_state`): a
+        /// report whose event predates the newest already-applied one is
+        /// refused, so a delayed Stop from an earlier turn can never
+        /// overwrite a newer UserPromptSubmit/Notification truth.
+        #[serde(default)]
+        event_ms: Option<u64>,
     },
     /// `a agent <token>` / `a agent --clear`: pin which agent this session
     /// reports (`SessionRecord::agent_override`), or unpin to return to

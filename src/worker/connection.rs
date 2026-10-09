@@ -169,7 +169,7 @@ fn dispatch_operation(
             )?,
             Err(e) => write_json(&mut stream, &Response::error(id, format!("{e:#}")))?,
         },
-        Operation::ReportState { state } => match runtime.report_state(state) {
+        Operation::ReportState { state, event_ms } => match runtime.report_state(state, event_ms) {
             Ok(record) => write_json(
                 &mut stream,
                 &Response::ok(id, serde_json::to_value(record)?),

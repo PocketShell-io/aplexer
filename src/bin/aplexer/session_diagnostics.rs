@@ -92,8 +92,10 @@ pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()
     // registry and `stop_hook_active` -- never from PTY silence or a
     // sender's claim. The wiring only exists for claude (see
     // `hooks::CLAUDE_EVENTS`); any other record engine is a miswiring and
-    // refuses (the hook's `|| true` degrades it to a no-op). Read/parse
-    // failures degrade to the plain pre-gating Stop contract (idle).
+    // refuses (the hook's `|| true` degrades it to a no-op). Every
+    // evidence failure is FAIL-CLOSED: a missing or malformed registry,
+    // or an unparseable payload, reports NOTHING -- no idle without
+    // positive engine evidence (review round 2 on 9cd07b0).
     let state = if matches!(state, ReportedState::GatedIdle) {
         if record.engine != "claude" {
             eprintln!("a state-report: gated-idle is wired for engine claude only");
@@ -103,51 +105,80 @@ pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()
         let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload);
         let parsed: serde_json::Value =
             serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null);
-        if gated_stop_decision(&parsed) == "working" {
-            ReportedState::Working
-        } else {
-            ReportedState::Idle
+        match gated_stop_decision(&parsed) {
+            GatedStop::Working => ReportedState::Working,
+            GatedStop::Idle => ReportedState::Idle,
+            GatedStop::NoEvidence => {
+                eprintln!(
+                    "a state-report: gated Stop has no usable background_tasks evidence; \
+                     reporting nothing (fail closed)"
+                );
+                return Ok(());
+            }
         }
     } else {
         state
     };
+    // Stamp the engine-event time: the hook runs this CLI synchronously at
+    // the event, so client-start time IS the event time (plus CLI
+    // startup). The worker fences on it -- see
+    // `WorkerRuntime::report_state`.
     rpc_simple(
         &record,
         Operation::ReportState {
             state: state.as_str().to_string(),
+            event_ms: Some(now_ms()),
         },
         None,
     )?;
     Ok(())
 }
 
-/// The gated Claude Stop boundary, decided entirely from the engine's own
-/// hook payload (CLI 2.1.x schema): "In-flight background work
+/// The gated Claude Stop verdict, decided entirely from the engine's own
+/// hook payload (installed CLI 2.1.289 schema, read from the binary's
+/// embedded definitions): `background_tasks` is "In-flight background work
 /// (running/pending + backgrounded) registered in this session. Lets hooks
 /// distinguish \"session is done\" from \"session is paused waiting for
 /// background work to wake it\". Empty array when nothing is in flight."
 ///
-/// - any live `background_tasks` entry -> `working`: the foreground turn
+/// - any live `background_tasks` entry -> `Working`: the foreground turn
 ///   ended, but the registry says the session is paused for background
 ///   work. Quiet children included -- PTY silence proves nothing; the
 ///   engine's own registry is the evidence.
-/// - `stop_hook_active` -> `working`: a Stop hook continued this turn; the
+/// - `stop_hook_active` -> `Working`: a Stop hook continued this turn; the
 ///   session is not done.
-/// - empty array -> `idle`: the engine's own done-evidence -- the true
-///   final boundary, whether the turn was plain or background work drained
-///   and woke the session.
+/// - an empty array of objects -> `Idle`: the engine's own done-evidence --
+///   the true final boundary, whether the turn was plain or background
+///   work drained and woke the session.
 /// - `session_crons` never block the boundary: a scheduled wake is future
 ///   work whose own lifecycle reports will push `working` when it fires.
-/// - anything else (field absent on an older CLI, unparseable payload) ->
-///   `idle`: degrade to the pre-gating Stop contract rather than invent a
-///   state the engine did not report.
-fn gated_stop_decision(payload: &serde_json::Value) -> &'static str {
+/// - field absent (older CLI), not an array, an array with a non-object
+///   entry, or an unparseable payload -> `NoEvidence`: FAIL CLOSED. The
+///   caller reports nothing rather than permitting an idle the engine did
+///   not positively evidence (review round 2 on 9cd07b0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatedStop {
+    Idle,
+    Working,
+    NoEvidence,
+}
+
+fn gated_stop_decision(payload: &serde_json::Value) -> GatedStop {
     if payload.get("stop_hook_active").and_then(|v| v.as_bool()) == Some(true) {
-        return "working";
+        return GatedStop::Working;
     }
-    match payload.get("background_tasks").and_then(|v| v.as_array()) {
-        Some(tasks) if tasks.iter().any(|task| !task.is_null()) => "working",
-        _ => "idle",
+    match payload.get("background_tasks") {
+        Some(serde_json::Value::Array(tasks)) => {
+            if tasks.iter().any(|task| !task.is_object()) {
+                return GatedStop::NoEvidence;
+            }
+            if tasks.is_empty() {
+                GatedStop::Idle
+            } else {
+                GatedStop::Working
+            }
+        }
+        _ => GatedStop::NoEvidence,
     }
 }
 
@@ -159,7 +190,7 @@ mod gated_stop_tests {
     fn empty_registry_is_the_engine_done_evidence() {
         let payload: serde_json::Value =
             serde_json::from_str(r#"{"hook_event_name":"Stop","background_tasks":[]}"#).unwrap();
-        assert_eq!(gated_stop_decision(&payload), "idle");
+        assert_eq!(gated_stop_decision(&payload), GatedStop::Idle);
     }
 
     #[test]
@@ -167,18 +198,18 @@ mod gated_stop_tests {
         let one: serde_json::Value =
             serde_json::from_str(r#"{"background_tasks":[{"task_id":"t1","state":"running"}]}"#)
                 .unwrap();
-        assert_eq!(gated_stop_decision(&one), "working");
+        assert_eq!(gated_stop_decision(&one), GatedStop::Working);
         let several: serde_json::Value =
             serde_json::from_str(r#"{"background_tasks":[{"task_id":"a"},{"task_id":"b"}]}"#)
                 .unwrap();
-        assert_eq!(gated_stop_decision(&several), "working");
+        assert_eq!(gated_stop_decision(&several), GatedStop::Working);
     }
 
     #[test]
     fn a_stop_hook_continuation_is_not_done() {
         let payload: serde_json::Value =
             serde_json::from_str(r#"{"background_tasks":[],"stop_hook_active":true}"#).unwrap();
-        assert_eq!(gated_stop_decision(&payload), "working");
+        assert_eq!(gated_stop_decision(&payload), GatedStop::Working);
     }
 
     #[test]
@@ -186,14 +217,25 @@ mod gated_stop_tests {
         let payload: serde_json::Value =
             serde_json::from_str(r#"{"background_tasks":[],"session_crons":[{"id":"c1"}]}"#)
                 .unwrap();
-        assert_eq!(gated_stop_decision(&payload), "idle");
+        assert_eq!(gated_stop_decision(&payload), GatedStop::Idle);
     }
 
     #[test]
-    fn missing_or_unparseable_evidence_degrades_to_the_plain_stop_contract() {
+    fn missing_evidence_fails_closed_instead_of_permitting_idle() {
+        // Field absent entirely (older CLI schema).
         let absent = serde_json::json!({"hook_event_name":"Stop"});
-        assert_eq!(gated_stop_decision(&absent), "idle");
-        assert_eq!(gated_stop_decision(&serde_json::Value::Null), "idle");
+        assert_eq!(gated_stop_decision(&absent), GatedStop::NoEvidence);
+        // An unparseable payload parses as Null upstream.
+        assert_eq!(
+            gated_stop_decision(&serde_json::Value::Null),
+            GatedStop::NoEvidence
+        );
+        // Registry present but not an array.
+        let not_array = serde_json::json!({"background_tasks":"none"});
+        assert_eq!(gated_stop_decision(&not_array), GatedStop::NoEvidence);
+        // Array with a schema-violating (non-object) entry: malformed.
+        let malformed = serde_json::json!({"background_tasks":[null]});
+        assert_eq!(gated_stop_decision(&malformed), GatedStop::NoEvidence);
     }
 }
 
