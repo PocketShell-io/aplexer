@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Administrative rollout wrapper: candidate 53f535a2 -> six installed aplexer ELFs.
 
-Frozen administrative fix, rev 4. Not a product code path: this file only
+Frozen administrative fix, rev 5. Not a product code path: this file only
 orchestrates a verified, atomic, per-target replace of the six named ELF
 directory entries. It never touches Python shims, hook configs, or the
 running supervisor/workers, and it never opens a target for writing --
 replacement is rename(2) over the directory entry only, so hardlink
 siblings of a replaced inode keep the old inode and content untouched.
 
-Rev 4 supersedes refused d5c8119. Preflight reads metadata and full hashes
+Rev 5 preserves refused d5c8119 and 7a06f29 receipts. Preflight reads metadata and full hashes
 only; it never runs the candidate or invokes the product state path.
 Protected workers are registered PID/birth/image-inode identities. Existing
 workers retain existing freshness behavior. This wrapper cannot restart them.
@@ -41,6 +41,7 @@ import stat
 import sys
 import time
 import uuid
+import registration_evidence
 
 CANDIDATE = "/home/alexey/.aplexer-fix-gated-idle/bin/aplexer"
 CANDIDATE_SHA = "53f535a2512f3572e61b4a0058e2506ddaa8a25186cb89b5faf17afc3aceba02"
@@ -197,7 +198,7 @@ def durable_write_json(run_dir, final_name, payload):
         os.close(dfd)
 
 
-def snapshot_workers(protected=None):
+def snapshot_workers(protected=None, classifications=None):
     """Registered native workers only; held image identity, never a process census.
 
     Postcheck follows the exact preflight set, so unrelated CLI exits/starts
@@ -205,19 +206,9 @@ def snapshot_workers(protected=None):
     """
     out, errors = {}, []
     if protected is None:
-        protected = {}
-        for path in glob.glob("/home/alexey/.local/state/aplexer/sessions/*/worker.identity.json"):
-            try:
-                with open(path) as f:
-                    identity = json.load(f)
-                with open(os.path.join(os.path.dirname(path), "session.json")) as f:
-                    record = json.load(f)
-                if record.get("worker_pid") != identity["pid"] or record.get("phase") != "running":
-                    continue
-                protected[str(identity["pid"])] = dict(birth=str(identity["start_time_ticks"]),
-                                                       session=record["id"])
-            except (OSError, ValueError, KeyError) as exc:
-                errors.append("registration %s: %s" % (path, exc))
+        protected, inventory, errors = registration_evidence.registration_inventory()
+        if classifications is not None:
+            classifications.update(inventory)
     for pid, registered in protected.items():
         try:
             proc = "/proc/%s" % pid
@@ -318,11 +309,13 @@ def preflight(run_dir):
             p.append("candidate sha mismatch")
     for t in TARGETS:
         receipt["targets"][t["name"]] = check_target(t, p, t["name"]) or {}
-    receipt["workers"], werrs = snapshot_workers()
+    receipt["registration_evidence_sha"] = sha256(registration_evidence.__file__)
+    receipt["worker_registration_classifications"] = {}
+    receipt["workers"], werrs = snapshot_workers(classifications=receipt["worker_registration_classifications"])
     receipt["worker_count"] = len(receipt["workers"])
-    receipt["worker_read_errors"] = werrs
+    receipt["worker_evidence_problems"] = werrs
     for e in werrs:
-        p.append("worker /proc read error: %s" % e)
+        p.append("registered worker evidence: %s" % e)
     receipt["hooks"] = snapshot_hooks()
     st = receipt["targets"].get("T3b") or {}
     links_key = "shared_inode_%d_links" % T3_INO
@@ -416,8 +409,9 @@ def apply():
         for line in receipt["problems"]:
             print("  " + line)
         sys.exit(1)
-    manifest = dict(nonce=nonce, run_dir=run_dir, started=receipt["when"], script_rev=4,
+    manifest = dict(nonce=nonce, run_dir=run_dir, started=receipt["when"], script_rev=5,
                     candidate_sha=CANDIDATE_SHA, wrapper_sha=receipt["wrapper_sha"],
+                    registration_evidence_sha=receipt["registration_evidence_sha"],
                     workers_before=receipt["workers"], hooks_before=receipt["hooks"],
                     committed=[], done=False, status="in-progress")
     durable_write_json(run_dir, "manifest.json", manifest)
@@ -516,6 +510,17 @@ def post_verify(before, manifest):
         problems.append("worker birth/exe snapshot changed")
     for e in errs:
         problems.append("worker /proc read error post: %s" % e)
+    # A previously excluded terminal registration must still have positive
+    # proof; an absent PID or a stale phase is never enough on its own.
+    for sid, item in before.get("worker_registration_classifications", {}).items():
+        if item.get("classification") != "TERMINAL_ABSENT":
+            continue
+        record, _ = registration_evidence.read_owned_json(item["source"]["path"])
+        identity, _ = registration_evidence.read_owned_json(item["identity_source"]["path"])
+        current = registration_evidence.inspect_registration(record, identity, registration_evidence.observer_domain())
+        if current["classification"] != "TERMINAL_ABSENT" or current["uuid"] != sid or \
+                identity != item["recorded_identity"]:
+            problems.append("terminal proof changed for registration %s" % sid)
     if snapshot_hooks() != manifest["hooks_before"]:
         problems.append("hook config hashes changed")
     return problems

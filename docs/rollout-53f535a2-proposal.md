@@ -1,6 +1,6 @@
-# Six-target administrative rollout proposal — rev 4, review freeze
+# Six-target administrative rollout proposal — rev 5, registration evidence review freeze
 
-The original wrapper at `d5c8119` remains refused and preserved in history.
+The original wrappers at `d5c8119` and `7a06f29` remain refused and preserved in history.
 This revision corrects its transaction defects. **No installed target has
 been replaced. Apply requires concrete ROOT and peer source/preflight review.**
 
@@ -105,7 +105,7 @@ umask, six fresh replacements plus untouched hardlinks, durable pre-rename
 intent, rename/postcheck failures, concurrent identity changes, invalid backups,
 partial rollback, atomic journal failure, and deleted-suffix normalization.
 
-Metadata-only preflight:
+Preserved rev-4 metadata-only preflight (still FAIL):
 `/home/alexey/.aplexer-rollout-53f535a2/preflight-6fef0ecebbd2/receipt.json`.
 All six original pins and the candidate fullhash verified; 35 registered live
 worker identities were read. Result **FAIL** because four registered identities
@@ -147,3 +147,83 @@ preserved and excluded from passing evidence.
 Validation: 519 library and 214 binary tests passed; 4 transport regressions and
 14 guarded delivery controls passed. One pre-existing unused-mut warning in
 `doctor.rs` remains. This source freeze is reviewable and has not been installed.
+
+## F. Registration evidence revision — source review only
+
+The rev-4 refusal at `7a06f29` and its immutable preflight
+`preflight-6fef0ecebbd2` remain unchanged. The original 11 transaction controls
+are byte-identical; their old receipts remain preserved. This revision adds a
+read-only evidence module and separate classification controls. It does not
+change any session record, actor, reported state, hook, account, or ELF target.
+
+Exact classification report and full preserved record/identity snapshots:
+`/home/alexey/tmp/aplexer-repair-0421/registrations-b12a9b4a58d6/report.json`.
+Adjacent manifest hashes and read-only files bind the evidence. The source
+basis is `src/record/identity.rs`, `src/process.rs`,
+`src/cgroup/identity.rs`, and `src/cgroup/recovery.rs`: inherited placement
+observations are distinct from authoritative containment locators.
+
+| Recorded UUID | Worker PID/birth | Workload PID | Recorded phase | Current verdict |
+|---|---|---|---|---|
+| 7bc9cc08-0aa5-4346-9d7b-2c9dd8fd7714 | 3986427 / 371279273 | 3986449 | running | UNKNOWN: absent leaders; populated shared login scope, no authoritative containment handle |
+| 6ef7413b-7bfe-4127-b58e-69d775e286e2 | 2552583 / 358499641 | 2552586 | running | TERMINAL_ABSENT under the recorded containment contract: leaders absent and UUID-bound scope absent in its verified kernel domain |
+| 3f154b52-80ad-4770-b60c-31718208fe64 | 2382710 / 369624706 | 2382739 | running | UNKNOWN: absent leaders and inherited scope observed absent, without authoritative containment identity |
+| b5883ba1-e006-4144-acd5-58c1ba3f1251 | 997321 / 369465796 | 997362 | running | UNKNOWN: same inherited-scope limitation |
+
+All four immutable worker identities record boot
+`edbec548-453f-4111-b38e-e7c16d12aa93`, matching current observation. Both recorded
+PIDs are absent for each record. Original `phase=running`, `containment_empty=false`,
+and socket directory entries are preserved; neither a stale phase nor a socket
+entry establishes live or terminal state.
+
+For `agent-dashboard-head`, the authoritative scope is
+`aplexer-workload-6ef7413b-7bfe-4127-b58e-69d775e286e2.scope`. Its recorded cgroup/mount
+namespace identities (4/4026531835 and 4/4026531841), cgroup mount 33, and root
+28/1 match the current host. The UUID-bound directory is absent within that
+same cgroup2 domain. This is positive terminal proof for the recorded containment
+boundary, not a claim about arbitrary escaped processes outside that boundary.
+The record is retained unchanged.
+
+The shared `card` scope was populated and held 50 measured current actors. All
+were preserved. No attributable current descendants of the four recorded
+worker/workload roots were found through PPID, process group, session group,
+or `APLEXER_SESSION_ID` binding. The report preserves 283 permission/transient
+read errors from the broader attribution inventory; those errors prevent using
+that inventory as proof of universal descendant absence. The two vanished
+inherited `mdfix` scopes do not establish an authoritative per-session boundary.
+Their UNKNOWN verdicts remain refusals.
+
+The revised preflight protects registered LIVE_WORKER identities using the
+existing PID/birth/mapped dev/inode check. It records TERMINAL_ABSENT separately
+only after verified initial PID visibility, valid boot/record binding, absent
+worker/workload measurements, and UUID-bound containment absence/emptiness in
+the recorded cgroup2 domain. Reused PIDs, unknown measurements, namespace/mount
+mismatch, missing authority, and a live workload cannot qualify as terminal.
+An existing registered live worker remains protected even if its persisted
+phase says failed. Inactive records with positively absent leaders retain the
+prior exclusion from active preflight scope, explicitly labeled
+OUTSIDE_PRIOR_ACTIVE_SCOPE; that label makes no terminal containment claim.
+Unreadable inactive records or present actors are not silently excluded.
+Post-verification rechecks every positive terminal exclusion; loss of proof
+joins the existing scoped transaction failure handler.
+
+Validation adds separate controls for terminal stale phase without record
+mutation, inherited/unknown containment, real numeric PID with mismatched birth,
+real live workload, exact live worker with failed phase, permission/missing-stat
+faults, nested visibility/boot mismatch, UUID/domain/symlink/counter validation,
+registration inventory refusal/protection, changing measurements, and loss of
+terminal proof during post-verification. No real state-report, kill, restart,
+record deletion, or shared daemon change is part of these controls.
+
+The new natural preflight remains **FAIL** on the three UNKNOWN active
+registrations. It is a new source-reviewed refusal receipt, not a relabeling of
+the earlier four-PID refusal or authorization to apply. The six original ELF
+pins, unchanged candidate53, live worker set, hook hashes, hardlinks, and current
+account remain the protection contract. ROOT review is required before any
+six-target apply.
+
+Final rev-5 metadata-only refusal receipt: `/home/alexey/.aplexer-rollout-53f535a2/preflight-0ec71577fd83/receipt.json`. It records 35 LIVE_WORKER identities, one TERMINAL_ABSENT, three UNKNOWN refusals, and five inactive registrations explicitly outside the prior active scope. Both wrapper and evidence-module full hashes are bound in the receipt.
+
+A second read-only classification report, bound to the final evidence-module and producer-script hashes, is preserved at `/home/alexey/tmp/aplexer-repair-0421/registrations-fee2fcf8dd19/report.json`. The first report above remains unchanged. The fresh inventory recorded 296 attribution read errors; these remain limits, not absence proof.
+
+Final checks: 11 new registration evidence controls passed; the unchanged original 11 transaction tests passed against this revision. No apply has run.
