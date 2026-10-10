@@ -223,13 +223,16 @@ pub(crate) struct SendArgs {
     /// Bytes to type into the session
     #[arg(value_name = "TEXT")]
     pub(crate) text: Option<String>,
-    /// Read the bytes to send from stdin instead of TEXT
+    /// Read input from stdin; with --enter, submit UTF-8 text like TEXT
     #[arg(long)]
     pub(crate) stdin: bool,
+    /// Send literal bytes without agent paste framing (binary/control input)
+    #[arg(long, conflicts_with = "hex")]
+    pub(crate) raw: bool,
     /// Interpret TEXT as hex and send the decoded bytes
     #[arg(long)]
     pub(crate) hex: bool,
-    /// Append a carriage return, like pressing Enter in an agent prompt
+    /// Write text then Enter; PTY acknowledgement does not prove turn consumption
     #[arg(long)]
     pub(crate) enter: bool,
 }

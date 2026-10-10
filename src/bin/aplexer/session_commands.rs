@@ -408,6 +408,16 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
     if args.hex {
         data = parse_hex(&data)?;
     }
+    // Input origin is not input intent. Piped text needs the same Codex
+    // paste event as positional text; literal terminal/binary input opts out.
+    let kind = if args.raw || args.hex {
+        SubmissionKind::Raw
+    } else {
+        SubmissionKind::Text
+    };
+    if args.enter && !args.raw && !args.hex {
+        validate_submission_text(&data)?;
+    }
     if args.enter {
         data.push(b'\r');
     }
@@ -416,11 +426,6 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
     }
     let mut sent = 0usize;
     if args.enter {
-        let kind = if args.hex || args.stdin {
-            SubmissionKind::Raw
-        } else {
-            SubmissionKind::Text
-        };
         rpc_send_submitted(&record, &data, kind)?;
         sent = data.len();
     } else {
@@ -432,7 +437,8 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
     if json_output {
         println!(
             "{}",
-            json!({"id":record.id,"bytes":sent,"status":"pty_written"})
+            json!({"id":record.id,"bytes":sent,"status":"pty_written",
+                   "enter_written":args.enter,"consumed":null})
         );
     }
     Ok(())

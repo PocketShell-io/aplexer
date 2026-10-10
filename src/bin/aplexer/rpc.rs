@@ -63,11 +63,26 @@ pub(crate) enum SubmissionKind {
     FramedMessage,
 }
 
+pub(crate) fn validate_submission_text(data: &[u8]) -> Result<()> {
+    let text = std::str::from_utf8(data)
+        .context("--enter expects UTF-8 text; use --raw or --hex for literal bytes")?;
+    if text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        bail!("--enter text contains terminal controls; use --raw or --hex for literal bytes");
+    }
+    Ok(())
+}
+
 /// Submit agent input as text, then a distinct Enter event. Codex accepts an
 /// explicit bracketed paste as one event and clears its paste-burst Enter
 /// suppression state; plain text may still be draining through its key-event
 /// queue after our wall-clock delay. Framed pane mail also honors a live
 /// workload's advertised paste mode, even if the session engine is `shell`.
+/// Success acknowledges PTY writes only. Native transcript/user-turn evidence
+/// or a recipient reply is needed to establish consumption; never retry on
+/// that distinction alone, since the first write may already be consumed.
 pub(crate) fn rpc_send_submitted(
     record: &SessionRecord,
     data: &[u8],

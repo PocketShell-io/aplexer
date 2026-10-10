@@ -90,7 +90,10 @@ fn handle_send(
     match runtime.send(&next.payload) {
         Ok(()) => write_json(
             stream,
-            &Response::ok(id.to_owned(), json!({"bytes": bytes})),
+            &Response::ok(
+                id.to_owned(),
+                json!({"bytes": bytes, "status": "pty_written", "consumed": null}),
+            ),
         ),
         Err(e) => write_json(stream, &Response::error(id.to_owned(), format!("{e:#}"))),
     }
