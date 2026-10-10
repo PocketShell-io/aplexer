@@ -26,6 +26,7 @@ $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer
 $compiler = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe' | Select-Object -Last 1
 if (-not $compiler) { throw 'MSVC compiler provenance unavailable' }
 $linker = Join-Path (Split-Path $compiler) 'link.exe'
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
 Invoke-Recorded 'build-tools' 'python' @('-m', 'pip', 'install', '--disable-pip-version-check', 'maturin==1.14.1', 'pytest==9.0.2')
 Invoke-Recorded 'native-exe' 'cargo' @('build', '--locked', '--release', '--bins', '--target', 'x86_64-pc-windows-msvc')
 $exe = (Resolve-Path 'target/x86_64-pc-windows-msvc/release/aplexer.exe').Path
@@ -47,7 +48,7 @@ Invoke-Recorded 'cold-pytest-install' $py @('-m', 'pip', 'install', '--disable-p
 $env:APLEXER_RUN_IN_PLACE = '1'
 Invoke-Recorded 'cold-cli-version' (Resolve-Path 'wheel-test/Scripts/aplexer.exe').Path @('--version')
 Invoke-Recorded 'cold-alias-version' (Resolve-Path 'wheel-test/Scripts/a.exe').Path @('--version')
-Invoke-Recorded 'cold-native-controls' $py @('-m', 'pytest', '-q', 'python/tests/test_binding_defaults.py', 'python/tests/test_models.py', 'python/tests/test_protocol.py')
+Invoke-Recorded 'cold-native-controls' $py @('-m', 'pytest', '-q', 'python/tests')
 Copy-Item 'wheel-test/Lib/site-packages/aplexer/_native.pyd' (Join-Path $outDir 'native/_native.pyd')
 @{head=$head; tree=$tree; run=$env:GITHUB_RUN_ID; attempt=$env:GITHUB_RUN_ATTEMPT;
     runner=$env:ImageVersion; os=[Environment]::OSVersion.VersionString;
