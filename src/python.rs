@@ -10,6 +10,10 @@ use uuid::Uuid;
 
 use crate::api::{self, StartRequest};
 use crate::paths::Paths;
+#[cfg(windows)]
+use crate::sys::windows::signal::SIGHUP;
+#[cfg(unix)]
+use libc::SIGHUP;
 
 fn py_err(err: anyhow::Error) -> PyErr {
     // `Display` alone keeps only the outermost context, so a caller would see
@@ -229,7 +233,7 @@ fn capture<'py>(
 #[pyfunction]
 #[pyo3(signature = (
     selector,
-    signal=libc::SIGHUP,
+    signal=SIGHUP,
     grace_ms=2_000,
     state_dir=None,
     runtime_dir=None,

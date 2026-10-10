@@ -27,6 +27,12 @@ failed Windows validation job; its head is `776f7932...`, not this author's
 HEAD. Do not transfer its compile success or failures to this source snapshot.
 Raw release/job responses are preserved in the evidence directory below.
 
+Maintained correction now imports SIGHUP from the platform implementation,
+gates the Unix-only `DifferentBoot` match arm, and supplies missing state-event
+fields in two existing test fixtures. Native HUP remains unsupported on Windows;
+public `Client.kill` still defaults to TERM(15). Linux worker behavior and
+dependencies are unchanged. Corrected source commit/tree are in the new freeze.
+
 **Recovered private lineage:** the exact EXE
 `07ae4821f9e13c8d4083dd490e8b664286f033678688b7c79f8b77a5f8cfeadd`
 exists as `aplexer_cli/bin/aplexer.exe` inside the private wheel
@@ -53,8 +59,10 @@ Client wheel SHA-256:
 its `_native.pyd` SHA-256:
 `f56f717aa37fd3eafb842685f362b179069aba57b994aa8c7d3a9d24a95f4992`.
 The recorded basic Python-client lifecycle smoke is not a CLI-driven
-PowerShell attach, SSH terminal or SFTP acceptance test. No Rust unit-test
-execution receipt is supplied by that private build.
+PowerShell attach, SSH terminal or SFTP acceptance test. The recovered V50
+dossier additionally supplies actual full Aplexer+Bash terminal lifecycle
+evidence for the inherited private pair. Its exact scope is recorded below.
+No Rust unit-test execution receipt is supplied by that private build.
 
 ## Producer invocation, configuration and DLL seam
 
@@ -146,12 +154,10 @@ result. CI's `validate.ps1` adds formatting/clippy/Python suites with Rust
 For wheel assembly, `scripts/build-wheels.py --platform windows-amd64`
 consumes staged `aplexer.exe`. CLI metadata requires
 `aplexer-client==0.1.10`; a CLI wheel is not a standalone installer closure.
-The maintained Python build currently references Unix-only `libc::SIGHUP`
-under feature `python`, so the normal Windows two-wheel build has a known
-source blocker. The private compile patch conditionally imports platform
-SIGHUP and retains unsupported-HUP behavior; it is **not applied here**.
-Any normal maintained binding build must first integrate/review that fix,
-then build with pinned Maturin and run cold-install plus native tests.
+The former Unix-only `libc::SIGHUP` reference under feature `python` is now
+corrected in maintained source, preserving the private patch's platform
+import and unsupported-HUP behavior. Fresh normal Windows binding builds
+must use this corrected source, pinned Maturin and actual native controls.
 Native `--bins` with default features does not enable this Python path.
 
 Before installer acceptance, producer must demonstrate under its ordinary
@@ -161,7 +167,9 @@ scoped kill including descendants, correct private state/config and worker
 image, and SFTP upload/download/rename/list with exact byte roundtrip.
 Preserve missing-capability errors and all native receipts. A source compile,
 filename, `--version`, Python smoke, or shell-only endpoint is insufficient.
-No Windows build or end-to-end control was executed in this Linux audit.
+No new Windows executable or end-to-end control was executed in this Linux
+audit. New Windows-target checks and Linux-native package controls are
+recorded below; inherited V50 evidence is not reassigned to corrected binaries.
 
 ## Review artifacts and unresolved boundary
 
@@ -172,7 +180,76 @@ inventory/job snapshots, and immutable freeze manifest.
 Inbox request `01a123ff-6925-77e3-a383-c9480fd3cea5` asks producer for its
 exact source, invocation/env/config/DLL role and capability contract;
 `01a123ff-e039-7570-a0f0-9386620c97b0` supplies recovered private provenance.
-Until that interface is bound, normal runtime closure and PowerShell-only
-endpoint integration remain unqualified. There is a concrete maintained
-native build path and a verified private artifact, but no reviewed normal
-Windows artifact or complete generic installer acceptance inferred here.
+PowerShell-only replacement and complete generic installer acceptance remain
+unqualified. The demonstrated full engine closure and new source/build
+controls are now bound below; fresh corrected Windows EXE/PYD linking remains
+unmeasured pending an existing supported build-only runner route.
+
+## Recovered full runtime closure and new controls
+
+Recovered dossier:
+`/home/alexey/tmp/pocketshell-root-coordinator-7d6d2296d94b/recovered-quiet-openssh-v26a-source-build/reviewed-public-dossiers/windows-aplexer-msys-backend-source-role-handoff.json`,
+SHA-256 `5dc313e792965eafaf9ab7167aee1add5bbbddbaeb9a03a6e178960d656657ca`.
+Its V50 actual lifecycle binds historical native Aplexer+Bash PTY input,
+default footer, resize, keyboard detach, same-UUID reconnect, rename, stop,
+and empty cleanup for UUID `808d67ab-8edb-47e2-8bac-f3a055c6e747`.
+Result pin: `f83e63b5f439d377666485131e84e2e12cb337efc10bee7e04895ff05dbead83`.
+This closes full-terminal historical evidence availability; it does not
+qualify the new maintained build, tray/login, current host availability or
+an untested PowerShell replacement.
+
+The demonstrated engine closure is PortableGit 2.56.0.2, archive
+`16ca394bdb94b372267d79e1e10b68763674f73e03e0648202a7971a8a730a84`,
+with all 9622 files (97 materialized links) and only `usr/bin/msys-2.0.dll`
+changed to `3674908a60758965f142bb4cc01ca268f9ca9524df92c2820d15db3b92179d6d`.
+MSYS source `5a1665c8a0fb24930e55f1621441dfd98a798c15`, archive
+`ce1a003f647119738875010630a25c032c161b5c72cceb8416c5b551781391a9`,
+and patched console source
+`717e49fe10e8a31df0a21035b8b1f74987460a61b4a2bf34a498ee9ff4710e46`
+bind the resize/input mutex correction. The obsolete output-name harness
+refusal remains preserved despite compiler exit 0; later V50 actual use is
+separate evidence. Do not narrow this to Bash-only, drop native Aplexer,
+or replace the entire engine closure with two filenames. For this demonstrated
+engine, `backendDLL` is the Bash/MSYS runtime role, separate from the PYD and
+VC runtime. Producer's exact schema binding still requires its confirmation.
+
+The generic setup config for that demonstrated engine should render the
+catalogued full shell path as an argv array:
+`shell = ['<managed-runtime engine root>\usr\bin\bash.exe', '--login', '-i']`.
+This is a template, not a personal configuration copy. Maintained shell
+selection sets `CHERE_INVOKING=1` and `TERM=xterm-256color` for Bash. Keep
+the full engine runtime colocated, an explicit managed config/runtime/state
+binding and the native EXE/PYD pair; do not change account/model defaults.
+
+The adjacent quiet SSH dossier SHA-256
+`827a4ee271a63fa0729f42269ff26e200113e2b9a1dd0a76a57356d5a24a0900`
+and additive compiler-daemon cleanup receipt are frozen unchanged as separate
+roles. Retain daemon/auth/session/shellhost/crypto and SFTP source/import
+closure. They are not Aplexer DLLs or newly executed by this owner. Generate
+generic roles first; per-host configuration and enrolled public tuples belong
+to ordinary setup. No auth/key/personal config copies enter this package.
+
+New finite controls are stored under
+`/home/alexey/tmp/aplexer-repair-0421/windows-binding-maintained/`:
+
+- Pre-fix Windows-target checking failed with E0433 at the binding default
+  and E0599 for `DifferentBoot`. Intermediate fixture failures are preserved.
+- `cargo +1.95.0 check --locked --features python --all-targets --target
+  x86_64-pc-windows-msvc` passes, as does the same full check with release MSRV
+  1.85.0. Cross-PyO3 CPython 3.11 configuration and isolated target directories
+  provide actual Windows compilation/type checking, not linking/execution.
+- Pinned Maturin 1.14.1 builds a fresh Linux-native abi3 wheel from the fix.
+  Importing that wheel executes 11 no-session ABI/model/protocol controls,
+  including compiled PyO3 invalid-signal validation and distinct public
+  default TERM/explicit HUP forwarding.
+- Maintained Windows wheel assembly succeeds using the exact inherited
+  `07ae` payload. Its output is explicitly an inherited-payload packaging
+  control, not a fresh Windows executable built from corrected source.
+  RECORD/hash verification is included in the freeze.
+- Formatting/diff checks and read-only Linux worker/target/hook preservation
+  checks accompany the source freeze. No live runtime sessions are created.
+
+Fresh Windows EXE/PYD linking/native controls need an existing supported
+Windows build-only runner. This host has no Windows linker/runtime; the route
+was requested from producer and ROOT without requesting a laptop install,
+new runtime session, authentication copy or personal per-host release.

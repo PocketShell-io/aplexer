@@ -507,7 +507,9 @@ impl SessionRecord {
             // A different boot (Linux) or a recycled pid is decided from
             // readable evidence about the machine, not from this caller's
             // pid visibility.
-            Ok(WorkerIdentity::DifferentBoot) | Ok(WorkerIdentity::PidReused { .. }) => false,
+            #[cfg(unix)]
+            Ok(WorkerIdentity::DifferentBoot) => false,
+            Ok(WorkerIdentity::PidReused { .. }) => false,
             // "No process holds that pid" needs the same proof as the
             // early path above: a confined caller's /proc lacks every
             // host pid.
