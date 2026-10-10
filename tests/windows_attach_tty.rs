@@ -86,6 +86,9 @@ impl Env {
         ];
         args.extend_from_slice(argv);
         let out = self.run(&args);
+        if !out.status.success() {
+            self.diagnostics();
+        }
         assert!(out.status.success(), "start failed: {out:?}");
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
         v["id"].as_str().unwrap().to_owned()
@@ -102,10 +105,51 @@ impl Env {
                 .map(|v| v["state"].as_str() != Some("exited"))
                 .unwrap_or(false)
     }
+
+    // The footer truncates connection errors, and start's error cannot include
+    // the worker's stderr. Preserve fixture-only evidence before Drop cleans
+    // it up; never print the launch environment (it can carry credentials).
+    fn diagnostics(&self) {
+        fn visit(path: &std::path::Path) {
+            let Ok(entries) = std::fs::read_dir(path) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(&path);
+                } else if path.file_name().is_some_and(|name| name == "worker.log") {
+                    eprintln!(
+                        "fixture worker log {}:\n{}",
+                        path.display(),
+                        std::fs::read_to_string(&path).unwrap_or_else(|e| e.to_string())
+                    );
+                } else if path.file_name().is_some_and(|name| name == "session.json") {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        if let Ok(record) = serde_json::from_slice::<Value>(&bytes) {
+                            eprintln!(
+                                "fixture record {}: id={} phase={} worker={} workload={} error={}",
+                                path.display(),
+                                record["id"],
+                                record["phase"],
+                                record["worker_pid"],
+                                record["workload_pid"],
+                                record["error"]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        visit(self.state.path());
+    }
 }
 
 impl Drop for Env {
     fn drop(&mut self) {
+        if thread::panicking() {
+            self.diagnostics();
+        }
         // Kill any leftover sessions so temp dirs can be removed.
         let out = self.run(&["list", "--json"]);
         if let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) {
