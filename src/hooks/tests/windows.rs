@@ -309,7 +309,7 @@ fn hooks_written_to_disk_actually_run() {
             command,
             &log,
             command.contains("exit 0"),
-            "state-report idle",
+            "state-report gated-idle",
         );
     }
 }
