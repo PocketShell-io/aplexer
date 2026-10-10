@@ -132,6 +132,10 @@ jobs:
       # Same single-call gate as the Linux job, through the PowerShell port.
       # Linux-only suites (cgroup delegation, startup-test-hooks) are gated
       # off on Windows in v1 and are not run here.
+      - name: Exercise abandoned pipe client recovery
+        shell: pwsh
+        run: scripts/check-test-execution.ps1 -Min 1 -- cargo test --locked --lib abandoned_client_before_accept_does_not_terminate_listener -- --nocapture
+
       - name: Exercise native worker startup with failure diagnostics
         shell: pwsh
         run: cargo test --locked --test windows_attach_tty repeated_startup_identifies_and_reaches_the_exact_worker -- --nocapture

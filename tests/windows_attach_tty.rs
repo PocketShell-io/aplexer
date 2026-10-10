@@ -288,7 +288,7 @@ fn repeated_startup_identifies_and_reaches_the_exact_worker() {
         assert!(status.status.success(), "worker {index}: {status:?}");
         let value: Value = serde_json::from_slice(&status.stdout).unwrap();
         assert_eq!(value["id"], id, "status must identify this exact worker");
-        assert!(env.alive(&id), "worker {index} exited after startup");
+        assert_eq!(value["worker_reachable"], true, "worker {index}: {value}");
         let killed = env.run(&["kill", &id, "--signal", "KILL", "--grace-ms", "0"]);
         assert!(killed.status.success(), "cleanup {index}: {killed:?}");
     }

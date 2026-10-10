@@ -581,6 +581,15 @@ impl Listener {
             Outcome::Failed(code) if code == ERROR_PIPE_CONNECTED => {}
             Outcome::TimedOut(_) => return Ok(None),
             Outcome::Stopped(_) => return Ok(None),
+            Outcome::Failed(code) if code == ERROR_NO_DATA => {
+                // A client can connect and close before ConnectNamedPipe.
+                // Windows then reports a closing instance, not a failed
+                // listener. Replace that instance before releasing its handle
+                // so the worker survives an abandoned readiness/RPC probe.
+                let replacement = self.create_instance(false)?;
+                *guard = Some(replacement);
+                return Ok(None);
+            }
             Outcome::Failed(code) => return Err(os_err(code)),
         }
         let connected = guard.take().unwrap();
@@ -722,6 +731,38 @@ mod tests {
         }
         t.join().unwrap();
         assert!(!pipe_exists(&path));
+    }
+
+    #[test]
+    fn abandoned_client_before_accept_does_not_terminate_listener() {
+        let path = unique();
+        let listener = Listener::bind(&path).unwrap();
+        // Deterministically close the client before the server accepts it.
+        // This used to return ERROR_NO_DATA and terminate the whole worker.
+        drop(connect(&path, Duration::from_secs(5)).unwrap());
+        assert!(listener
+            .accept_timeout(Duration::from_millis(100))
+            .unwrap()
+            .is_none());
+        assert!(pipe_exists(&path));
+
+        let server = thread::spawn(move || {
+            let mut stream = listener
+                .accept_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert!(stream.peer_is_current_user().unwrap());
+            let mut bytes = [0; 4];
+            stream.read_exact(&mut bytes).unwrap();
+            stream.write_all(&bytes).unwrap();
+        });
+        let mut client = connect(&path, Duration::from_secs(5)).unwrap();
+        client.write_all(b"pong").unwrap();
+        let mut reply = [0; 4];
+        client.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"pong");
+        drop(client);
+        server.join().unwrap();
     }
 
     #[test]
