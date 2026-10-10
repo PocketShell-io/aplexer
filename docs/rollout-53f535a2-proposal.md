@@ -1,91 +1,121 @@
-# Non-disruptive shared CLI rollout proposal — candidate 53f535a2 (source 6dabc1ec)
+# Non-disruptive shared CLI rollout — candidate 53f535a2 (source 6dabc1ec), rev 2
 
-**PROPOSAL ONLY — no step below has been executed.** ROOT acceptance required
-(ref 01a12324: real gated-idle qualification of `6dabc1e`/`53f535a2` passed;
-final ROOT proof review pending). Candidate staged at
-`/home/alexey/.aplexer-fix-gated-idle/bin/aplexer`, sha256
-`53f535a2512f3572e61b4a0058e2506ddaa8a25186cb89b5faf17afc3aceba02`,
-`--version` -> `a 0.1.10`.
+**PROPOSAL + FROZEN ADMINISTRATIVE SCRIPT — nothing has been replaced.** ROOT
+acceptance required before `apply`. Rev 2 supersedes rev 1 (9476b27) per ROOT
+review: exactly SIX named ELF targets, full-hash/uid/mode pins, O_EXCL +
+O_NOFOLLOW tempfile discipline, shared-inode safety, corrected worker-launch
+claim, no unconditional post-Stop claim. Wrapper:
+`docs/rollout-53f535a2/apply_rollout.py` (stdlib-only python3;
+`preflight` / `apply` / `rollback --manifest`).
 
-## A. Verified installed inventory (read-only audit, 2026-10-10)
+Candidate: `/home/alexey/.aplexer-fix-gated-idle/bin/aplexer`
+sha256 `53f535a2512f3572e61b4a0058e2506ddaa8a25186cb89b5faf17afc3aceba02`,
+uid 1000. Read-only preflight (three PASS receipts, latest
+`/home/alexey/.aplexer-rollout-53f535a2/preflight-4233d34debf5/`): all six
+targets verified against the pins below; parse probe
+`env -u APLEXER_SESSION_ID <candidate> state-report gated-idle </dev/null`
+→ exit 1, stderr `a state-report: gated-idle is wired for engine claude only`
+(clap fix proven, no state-store write possible).
 
-| id | path | kind | sha256-8 | ver | role |
-|----|------|------|----------|-----|------|
-| T1 | `/home/alexey/.local/bin/aplexer` (`a` -> symlink to it) | native ELF | `5655521e` | 0.1.10 | **The reporter.** `~/.claude/settings.json` hooks call `/home/alexey/.local/bin/a state-report {working,waiting,idle}` on SessionStart/UserPromptSubmit/Notification/Stop for every Claude session. |
-| T2 | `~/.local/share/uv/tools/pocketshell/lib/python3.14/site-packages/aplexer_cli/bin/aplexer` | native ELF | `790dfc64` | 0.1.9 | uv-tools `pocketshell` package bundle. The `uv-tools/pocketshell/bin/{a,aplexer}` console scripts are Python shims that exec this file — shims NOT replaced. |
-| T3 | `~/git/pocketshell-cli{,-presence,-gateway-service,-windows-gateway}/.venv/lib/python3.14/site-packages/aplexer_cli/bin/aplexer` | native ELF | `0a4e6893` (x4 identical) | 0.1.8 | Per-repo venv bundles. Shims `.venv/bin/a` differ per repo (`732999d4` in pocketshell-cli; `f967c088`/`9da9fd11`/`eff2a8be` elsewhere) — shims NOT replaced. |
-| T4 | `~/git/aplexer/python-cli/.venv` (shim `745ffb80`) | dev venv | — | — | This repo's dev-only venv. OUT OF SCOPE. |
-| T5 | `/usr/bin/aplexer` | **deleted inode** | unavailable | unknown | The RUNNING supervisor + 43 live workers hold a deleted inode (exe resolves per /proc, file absent on disk, not dpkg-owned). No on-disk file to replace; NOT touched — no daemon restart. |
+## A. The six targets (preflight-verified 2026-10-10)
 
-ROOT's named SHAs confirmed against disk: `565552`=T1, `732999`=pocketshell-cli
-shim, `0a4e`=T3 bundles, `790dfc`=T2. Running processes are unreachable from
-this rollout by construction: same-directory `rename(2)` never disturbs an
-executing inode.
+| id | full path | sha256 (current) | uid/gid | mode | inode | nlink |
+|----|-----------|------------------|---------|------|-------|-------|
+| T1 | /home/alexey/.local/bin/aplexer | 5655521e4881ad8e9d283434027361c0905f2f04e11a55c26ed7c473a3f1ad48 | 1000/1000 | 775 | 6314299 | 1 |
+| T2 | /home/alexey/.local/share/uv/tools/pocketshell/lib/python3.14/site-packages/aplexer_cli/bin/aplexer | 790dfc6446a709499cbdf02a36d04eb3224eb352e55cbefd7937888e7cb69eb1 | 1000/1000 | 775 | 16254705 | 1 |
+| T3a | /home/alexey/git/pocketshell-cli/.venv/lib/python3.14/site-packages/aplexer_cli/bin/aplexer | 0a4e6893e22429867c8d396711ecb526ad4e506627f3889dd7f6ee8969ff25ac | 1000/1000 | 775 | 11944740 | 1 |
+| T3b | /home/alexey/git/pocketshell-cli-presence/.venv/lib/python3.14/site-packages/aplexer_cli/bin/aplexer | 0a4e6893… (same) | 1000/1000 | 775 | 14332318 | 5 |
+| T3c | /home/alexey/git/pocketshell-cli-gateway-service/.venv/…/aplexer_cli/bin/aplexer | 0a4e6893… (same) | 1000/1000 | 775 | 14332318 | 5 |
+| T3d | /home/alexey/git/pocketshell-cli-windows-gateway/.venv/…/aplexer_cli/bin/aplexer | 0a4e6893… (same) | 1000/1000 | 775 | 14332318 | 5 |
 
-## B. Compatibility — old live workers / new reporter
+Out of scope, preserved untouched: every Python shim (`a`/`aplexer` console
+scripts, e.g. pocketshell-cli shim 732999d4…), all hook configs, the dev venv
+`~/git/aplexer/python-cli/.venv`, and the running daemon processes.
 
-- **Wire protocol**: candidate is the same 0.1.10 line; protocol magic and
-  `Response.version` unchanged (`src/protocol.rs:56`), so the new client talks
-  to the running supervisor cleanly.
-- **Reports**: the new reporter adds `event_ms` and `engine_session_id`,
-  both `#[serde(default)] Option` — `src/protocol.rs:180-193` states the
-  design contract explicitly: an old client never sends them and **an old
-  worker's serde ignores them**. New reporter -> old workers: accepted, no
-  breakage.
-- **Hook configs**: path-based and untouched on disk (no `a init`, no hooks
-  reinit). Cached plain states (`idle`/`waiting`/`working`) parse unchanged;
-  the `6dabc1e` ValueEnum alias additionally makes any `gated-idle` wiring
-  parse — cached project contexts heal on binary swap alone.
-- **What the swap does NOT do**: the running supervisor and all 43 workers
-  keep their old in-memory code (deleted inode; worker spawn uses
-  `current_exe()`, `src/worker/spawn.rs:103`, so even new workers inherit the
-  old inode). The worker-side freshness fences (stamp ordering, engine-session
-  fence, unstamped refusal) activate only after a root-authorized supervisor
-  restart — explicitly out of scope here.
-- **Stale-idle / later-PTY contradictions** (finished Fleet and this
-  session): preserved as refusals — never faked, never bypassed. Each affected
-  session resolves genuinely at its next real Stop, when the fixed reporter
-  writes a fresh stamped report through the existing wiring.
+## B. Shared-inode safety (T3b/c/d = inode 14332318, nlink 5)
 
-## C. Atomic replace procedure (per target; independent, reversible)
+Three of the six names share one inode; two further (unnamed) links to the
+same inode exist elsewhere (nlink 5). The wrapper NEVER opens a target for
+writing and never hardlinks: backup and candidate are new inodes created in
+the target's own directory, then `rename(2)` replaces exactly the one named
+directory entry. The other links — named or not — keep the old inode and
+bytes. Pre/post control: the preflight enumerates samefile links (bounded
+sweep) and `apply` re-verifies after each T3 rename that the not-yet-named
+siblings still hold inode 14332318 with sha 0a4e6893…, and post-apply that
+every unnamed discovered link is unchanged.
 
-Preflight (read-only): re-run `sha256sum` on every target and the candidate;
-assert candidate == `53f535a2…`; parse probe
-`env -u APLEXER_SESSION_ID <staged> state-report gated-idle </dev/null` ->
-exit 1 with `gated-idle is wired for engine claude only` (proves the clap fix;
-env-unset guarantees no write into the shared store).
+## C. Per-target procedure (apply; stops at FIRST discrepancy)
 
-For each target T1, T2, T3x4 (same directory, same filesystem — never
-truncate-in-place, which would break a hook executing concurrently):
+For each target in order T1, T2, T3a, T3b, T3c, T3d, with a fresh per-run
+nonce:
 
-```sh
-cp -p <path> <path>.bak-<old8>                      # backup, mode/owner kept
-install -m 0755 /home/alexey/.aplexer-fix-gated-idle/bin/aplexer <dir>/.aplexer.new-53f535a2
-mv -f <dir>/.aplexer.new-53f535a2 <path>            # atomic rename(2)
-sha256sum <path>                                    # must print 53f535a2…
-```
+1. Re-assert target state: regular file, mode 775, uid 1000, sha == pinned
+   original. Any drift → stop before touching anything.
+2. Backup: same dir, `.<name>.orig-<nonce>`, created O_CREAT|O_EXCL|O_NOFOLLOW,
+   mode 0775 (original preserved); bytes copied from the target
+   (O_NOFOLLOW source), fsync, then verified: sha == original full sha, mode
+   0775, uid 1000.
+3. Candidate tempfile: same dir, `.<name>.new-<nonce>`,
+   O_CREAT|O_EXCL|O_NOFOLLOW, mode 0755; candidate bytes copied, fsync,
+   verified: sha == 53f535a2…, mode 0755, uid 1000, regular inode.
+4. `rename(2)` tempfile over the target (atomic, same directory).
+5. Post-rename verify: mode 0755, uid 1000, sha == candidate, inode == the
+   tempfile's new inode (never a hardlink of the old one).
 
-Order: T1 first (the load-bearing Claude reporter), then T2, then the four
-T3s. Each target verifies independently; rollback is per-target. Backups stay
-on disk until ROOT final acceptance; deleting them is a separate root-approved
-step.
+Backup stays 0775 (original); the installed entry is 0755 — a deliberate,
+documented tightening. Backups and all receipts are retained under
+`/home/alexey/.aplexer-rollout-53f535a2/` (manifest.json per run).
 
-## D. Post-rollout verification (non-disruptive)
+Rollback (automatic on failure; `rollback --manifest` manual): ONLY targets
+committed by this run whose current content still equals the candidate SHA
+are restored, from their verified original backup (sha-rechecked first). A
+target whose content changed concurrently is never overwritten — it is
+skipped and reported.
 
-1. `sha256sum` all seven replaced paths == `53f535a2…`.
-2. Parse probe at T1 through the `a` symlink (as in the preflight).
-3. Read-only `a status` / `a message inbox` — running sessions unaffected.
-4. The next natural Stop in any live Claude session writes a stamped report
-   via the new code; old workers ignore the additive fields.
+## D. Non-disruption controls (before/after, same run)
 
-## E. Rollback
+- Worker/mapped-image snapshot: every live process whose exe image mentions
+  aplexer — pid, kernel birth time (/proc/<pid>/stat field 22), exe target,
+  aplexer map-line count. Preflight PASS snapshot: 1226 processes
+  (superset of the 43 shared native workers; 1181 execute the absent
+  `/usr/bin/aplexer` inode — the paths are gone from disk per `ls`, the
+  kernel readlink simply omits the " (deleted)" marker for these — plus 17
+  holders of a previously-replaced T1 inode, which is exactly the
+  rename-swap behavior this rollout relies on). `apply` refuses to finish
+  unless this snapshot is byte-identical afterwards.
+- Hook configs: sha256 of `~/.claude/settings.json` plus every
+  `~/git/*/.claude/settings*.json` referencing `state-report`; identical
+  before/after required.
+- Unnamed hardlink siblings of 14332318: unchanged inode + sha required.
 
-`mv -f <path>.bak-<old8> <path>` per target, then sha-verify against the old
-hash. Rename-atomic in both directions; no downtime.
+## E. Compatibility — corrected claims only
 
-## F. Explicit non-goals (this proposal)
+- Old live workers retain their old freshness behavior; the peer review found
+  no ABI blocker for the six-target 53f535a2 rollout (same 0.1.10 protocol
+  line; report fields `event_ms`/`engine_session_id` are `serde(default)`
+  additive, ignored by old workers' serde — `src/protocol.rs:180-193`).
+- REVISED (rev-1 claim withdrawn): worker launch resolves the worker
+  executable via `APLEXER_WORKER` → `current_exe()` → sibling → PATH fallback
+  (`src/process.rs:381-409`) and the workload environment prepends the binary
+  directory to PATH (`src/worker/spawn.rs:102-118`). This rollout therefore
+  makes NO claim about which code future workers execute; no
+  worker-freshness deployment is claimed. The worker-side fences
+  (stamp ordering, engine-session fence, unstamped refusal) reach live
+  sessions only through a separate, root-authorized supervisor restart —
+  explicitly out of scope here.
+- REVISED (rev-1 claim withdrawn): after a live session's next real Stop, the
+  fixed reporter writes a fresh stamped report through the existing wiring.
+  The guarded decision may then legitimately conclude idle, working, or
+  no-evidence — all remain valid outcomes/refusals. No unconditional
+  next-Stop-idle claim is made; no idle is ever forced or faked.
+- Hook configs are path-based: the rename(2) swap heals cached wiring with
+  zero re-init. Already-deployed `gated-idle` spellings parse via the
+  6dabc1e ValueEnum alias.
 
-No supervisor/daemon restart; no `a init` / hooks reinit; no
-`settings.json` edits; no session kills; no `/usr/bin/aplexer` restoration; no
-`uv tool upgrade` / `uv pip install --reinstall` (either would clobber T2 —
-documented hazard); no wheel publication; T4 untouched.
+## F. Explicit non-goals
+
+No supervisor/daemon restart; no `a init` / hooks reinit; no settings or
+shim edits; no session kills; no `/usr/bin/aplexer` restoration or other
+seventh path; no `uv tool upgrade` / reinstall (would clobber T2); no wheel
+publication; no product source changes (this is an administrative fix only).
+Nothing executes until ROOT review accepts this freeze.
