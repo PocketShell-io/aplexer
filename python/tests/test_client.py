@@ -200,7 +200,7 @@ def test_client_resolves_relative_paths_once_before_chdir(monkeypatch, tmp_path)
         ("XDG_CONFIG_HOME", "relative-config"),
     ],
 )
-def test_native_client_rejects_relative_xdg_paths(
+def test_native_client_platform_path_discovery_with_relative_xdg_paths(
     monkeypatch, tmp_path, variable, value
 ):
     monkeypatch.delenv("APLEXER_RUNTIME_DIR", raising=False)
@@ -211,8 +211,21 @@ def test_native_client_rejects_relative_xdg_paths(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv(variable, value)
 
-    with pytest.raises(AplexerError, match=rf"{variable} must be an absolute path"):
-        Client().snapshot()
+    if WINDOWS:
+        # Windows discovers private AppData roots, not XDG roots. Keep this
+        # native control active there, with isolated defaults, rather than
+        # asserting Unix-only rejection or touching the runner's real state.
+        local = tmp_path / "local"
+        monkeypatch.setenv("LOCALAPPDATA", str(local))
+        monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
+        assert Client().snapshot() == []
+        assert (local / "aplexer" / "run" / "sessions").is_dir()
+        assert (local / "aplexer" / "state" / "sessions").is_dir()
+        assert not (tmp_path / "runtime" / "aplexer").exists()
+        assert not (tmp_path / "state" / "aplexer").exists()
+    else:
+        with pytest.raises(AplexerError, match=rf"{variable} must be an absolute path"):
+            Client().snapshot()
 
 
 def test_operational_methods_use_native_boundary_and_preserve_bytes(monkeypatch, tmp_path):

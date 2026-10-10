@@ -46,6 +46,7 @@ if ($cli.Count -ne 1 -or $client.Count -ne 1) { throw 'Expected exact wheel pair
 Invoke-Recorded 'cold-wheel-install' $py @('-m', 'pip', 'install', '--no-index', '--find-links', (Join-Path $outDir 'client-dist'), $cli[0].FullName)
 Invoke-Recorded 'cold-pytest-install' $py @('-m', 'pip', 'install', '--disable-pip-version-check', 'pytest==9.0.2')
 $env:APLEXER_RUN_IN_PLACE = '1'
+$env:APLEXER_WORKER = $exe
 Invoke-Recorded 'cold-cli-version' (Resolve-Path 'wheel-test/Scripts/aplexer.exe').Path @('--version')
 Invoke-Recorded 'cold-alias-version' (Resolve-Path 'wheel-test/Scripts/a.exe').Path @('--version')
 Invoke-Recorded 'cold-native-controls' $py @('-m', 'pytest', '-q', 'python/tests')
@@ -53,6 +54,7 @@ Copy-Item 'wheel-test/Lib/site-packages/aplexer/_native.pyd' (Join-Path $outDir 
 @{head=$head; tree=$tree; run=$env:GITHUB_RUN_ID; attempt=$env:GITHUB_RUN_ATTEMPT;
     runner=$env:ImageVersion; os=[Environment]::OSVersion.VersionString;
     target='x86_64-pc-windows-msvc'; status='PASS';
+    worker=@{path=$exe; sha256=(Get-FileHash $exe -Algorithm SHA256).Hash.ToLower(); selection='APLEXER_WORKER for cold-installed native client controls'};
     cl=@{path=$compiler; version=(Get-Item $compiler).VersionInfo.FileVersion; sha256=(Get-FileHash $compiler -Algorithm SHA256).Hash.ToLower()};
     linker=@{path=$linker; version=(Get-Item $linker).VersionInfo.FileVersion; sha256=(Get-FileHash $linker -Algorithm SHA256).Hash.ToLower()};
     cargoLockSha256=(Get-FileHash Cargo.lock -Algorithm SHA256).Hash.ToLower();
