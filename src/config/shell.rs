@@ -433,14 +433,18 @@ pub fn select_shell(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use std::fs;
+    #[cfg(windows)]
     use tempfile::TempDir;
 
+    #[cfg(windows)]
     fn touch(path: &Path) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, b"MZ").unwrap();
     }
 
+    #[cfg(windows)]
     fn ctx_with(path_dirs: &[&Path]) -> ShellContext {
         ShellContext {
             path: std::env::join_paths(path_dirs)
@@ -738,8 +742,10 @@ powershell_execution_policy = \"bypass\"
     #[cfg(unix)]
     #[test]
     fn unix_default_is_login_shell_unchanged() {
-        let mut ctx = ShellContext::default();
-        ctx.login_shell = Some("/bin/zsh".into());
+        let ctx = ShellContext {
+            login_shell: Some("/bin/zsh".into()),
+            ..ShellContext::default()
+        };
         let sel = select_shell(&ctx, None, None, None).unwrap();
         assert_eq!(sel.argv, vec!["/bin/zsh".to_string(), "-l".to_string()]);
         assert!(sel.env.is_empty());

@@ -428,7 +428,7 @@ fn engine_resolution_check(paths: &Paths) -> Value {
     if !not_installed.is_empty() {
         detail.push_str(&format!("; not installed: {}", not_installed.join(", ")));
     }
-    let mut check = json!({
+    let check = json!({
         "name": "engine_resolution",
         "ok": flagged.is_empty() && policy_ok,
         "severity": if flagged.is_empty() && policy_ok { "ok" } else { "warning" },
@@ -438,9 +438,11 @@ fn engine_resolution_check(paths: &Paths) -> Value {
         "executables": rows.iter().map(engine_resolution_row_json).collect::<Vec<_>>(),
     });
     #[cfg(windows)]
-    {
+    let check = {
+        let mut check = check;
         check["powershell_execution_policy"] = policy_json;
-    }
+        check
+    };
     check
 }
 

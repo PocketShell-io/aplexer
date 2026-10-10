@@ -43,6 +43,8 @@ fn stale_running_record(paths: &Paths) -> SessionRecord {
         last_accessed_ms: None,
         reported_state: None,
         reported_state_at_ms: None,
+        reported_state_event_ms: None,
+        reported_state_engine_session_id: None,
         phase: Phase::Running,
         worker_pid: None,
         agent_override: None,

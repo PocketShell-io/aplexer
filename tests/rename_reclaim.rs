@@ -268,6 +268,8 @@ fn seed_starting_stub(harness: &Harness, workspace: &TempDir, tag: &str) -> Sess
         last_accessed_ms: None,
         reported_state: None,
         reported_state_at_ms: None,
+        reported_state_event_ms: None,
+        reported_state_engine_session_id: None,
         phase: Phase::Starting,
         worker_pid: None,
         agent_override: None,
