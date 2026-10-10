@@ -156,6 +156,14 @@ class Evidence(unittest.TestCase):
                 problems=rollout.post_verify(before,manifest)
                 self.assertEqual(bool(problems),expected)
 
+    def test_held_process_image_snapshot_survives_json_roundtrip(self):
+        live=e.process_probe(os.getpid())
+        protected={str(os.getpid()):{'birth':live['birth'],'session':'fixture'}}
+        snapshot,errors=rollout.snapshot_workers(protected)
+        self.assertEqual(errors,[])
+        self.assertTrue(snapshot)
+        self.assertEqual(json.loads(json.dumps(snapshot)),snapshot)
+
 
 if __name__ == '__main__':
     unittest.main()

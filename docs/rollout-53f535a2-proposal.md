@@ -227,3 +227,7 @@ Final rev-5 metadata-only refusal receipt: `/home/alexey/.aplexer-rollout-53f535
 A second read-only classification report, bound to the final evidence-module and producer-script hashes, is preserved at `/home/alexey/tmp/aplexer-repair-0421/registrations-fee2fcf8dd19/report.json`. The first report above remains unchanged. The fresh inventory recorded 296 attribution read errors; these remain limits, not absence proof.
 
 Final checks: 11 new registration evidence controls passed; the unchanged original 11 transaction tests passed against this revision. No apply has run.
+
+The immutable first preservation guard retains its raw comparison result (`false` from Python tuple versus JSON list representation). Independent canonical comparison matched all 35 protected worker identities with no measurement errors. Mapping coordinates now use JSON-stable lists; a new real held-image round-trip control passes. The 12 classification controls and unchanged 11 transaction controls pass.
+
+Final JSON-stable rev-5 preflight: `/home/alexey/.aplexer-rollout-53f535a2/preflight-6e4e2398c419/receipt.json`. This new receipt still refuses the three UNKNOWN registrations; earlier refusal receipts remain untouched.

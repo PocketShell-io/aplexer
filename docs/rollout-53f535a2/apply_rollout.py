@@ -221,9 +221,9 @@ def snapshot_workers(protected=None, classifications=None):
             exe = os.readlink(proc + "/exe").removesuffix(" (deleted)")
             map_dev = "%02x:%02x" % (os.major(image.st_dev), os.minor(image.st_dev))
             with open(proc + "/maps") as f:
-                mappings = sorted(set(tuple(line.split()[3:5]) for line in f
+                mappings = [list(item) for item in sorted(set(tuple(line.split()[3:5]) for line in f
                                       if len(line.split()) >= 5 and
-                                      line.split()[4] == str(image.st_ino) and line.split()[3] == map_dev))
+                                      line.split()[4] == str(image.st_ino) and line.split()[3] == map_dev))]
             with open(proc + "/stat") as f:
                 final_stat = f.read()
             if final_stat[final_stat.rindex(")") + 2:].split()[19] != birth:
