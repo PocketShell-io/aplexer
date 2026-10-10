@@ -277,6 +277,23 @@ fn start_cmd(env: &Env, tag: &str) -> String {
     env.start(tag, &["cmd.exe"])
 }
 
+#[test]
+fn repeated_startup_identifies_and_reaches_the_exact_worker() {
+    let env = Env::new();
+    // Real Windows CI failures exited before startup's containment receipt.
+    // Exercise that boundary repeatedly without retrying a failed start.
+    for index in 0..32 {
+        let id = start_cmd(&env, &format!("startup-{index}"));
+        let status = env.run(&["status", &id, "--json"]);
+        assert!(status.status.success(), "worker {index}: {status:?}");
+        let value: Value = serde_json::from_slice(&status.stdout).unwrap();
+        assert_eq!(value["id"], id, "status must identify this exact worker");
+        assert!(env.alive(&id), "worker {index} exited after startup");
+        let killed = env.run(&["kill", &id, "--signal", "KILL", "--grace-ms", "0"]);
+        assert!(killed.status.success(), "cleanup {index}: {killed:?}");
+    }
+}
+
 impl Term {
     /// The screen as a terminal would show it, rows joined by `\n`.
     fn screen(&self) -> String {

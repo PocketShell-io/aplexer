@@ -132,6 +132,10 @@ jobs:
       # Same single-call gate as the Linux job, through the PowerShell port.
       # Linux-only suites (cgroup delegation, startup-test-hooks) are gated
       # off on Windows in v1 and are not run here.
+      - name: Exercise native worker startup with failure diagnostics
+        shell: pwsh
+        run: cargo test --locked --test windows_attach_tty repeated_startup_identifies_and_reaches_the_exact_worker -- --nocapture
+
       - name: Run the local gate
         shell: pwsh
         run: scripts/validate.ps1
