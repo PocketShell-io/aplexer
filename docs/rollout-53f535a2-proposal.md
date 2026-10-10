@@ -1,7 +1,9 @@
-# Non-disruptive shared CLI rollout — candidate 53f535a2 (source 6dabc1ec), rev 2
+# Non-disruptive shared CLI rollout — candidate 53f535a2 (source 6dabc1ec), rev 3
 
 **PROPOSAL + FROZEN ADMINISTRATIVE SCRIPT — nothing has been replaced.** ROOT
-acceptance required before `apply`. Rev 2 supersedes rev 1 (9476b27) per ROOT
+acceptance required before `apply`. Rev 3 supersedes rev 2 (9ddd315, kept as
+the refused baseline) per ROOT journal findings (inbox 01a12347, mapped in
+section G); rev 2 had superseded rev 1 (9476b27) per ROOT
 review: exactly SIX named ELF targets, full-hash/uid/mode pins, O_EXCL +
 O_NOFOLLOW tempfile discipline, shared-inode safety, corrected worker-launch
 claim, no unconditional post-Stop claim. Wrapper:
@@ -66,11 +68,15 @@ Backup stays 0775 (original); the installed entry is 0755 — a deliberate,
 documented tightening. Backups and all receipts are retained under
 `/home/alexey/.aplexer-rollout-53f535a2/` (manifest.json per run).
 
-Rollback (automatic on failure; `rollback --manifest` manual): ONLY targets
-committed by this run whose current content still equals the candidate SHA
-are restored, from their verified original backup (sha-rechecked first). A
-target whose content changed concurrently is never overwritten — it is
-skipped and reported.
+Rollback (automatic on failure; `rollback --manifest [--force]` manual): ONLY
+targets committed by this run whose on-disk file still matches the recorded
+installed identity (dev, inode, uid, mode) AND still hashes to the candidate
+SHA are restored, from a backup re-verified by lstat against its recorded pin
+(non-symlink regular, uid/gid, mode 0775, dev/ino, full original sha). A
+target whose inode or content changed concurrently is never overwritten — it
+is skipped and reported. Interrupted runs stay recoverable: the per-target
+intent record (backup pin + install identity) is durable BEFORE each
+rename(2), so `rollback --manifest --force` can conclude custody safely.
 
 ## D. Non-disruption controls (before/after, same run)
 
@@ -119,3 +125,49 @@ shim edits; no session kills; no `/usr/bin/aplexer` restoration or other
 seventh path; no `uv tool upgrade` / reinstall (would clobber T2); no wheel
 publication; no product source changes (this is an administrative fix only).
 Nothing executes until ROOT review accepts this freeze.
+
+
+---
+
+## G. Rev 3 (corrected freeze, 2026-10-10) — mapping of ROOT journal findings
+
+Rev 2 (9ddd315) is preserved untouched as the refused baseline. The six
+targets, the candidate, and all non-goals are unchanged; only the wrapper
+hardening below is new.
+
+1. **Durable journal** (finding: manifest overwritten non-atomically, no
+   fsync). Every manifest/receipt write is now a fresh `O_EXCL|O_NOFOLLOW`
+   temp in the run dir, fchmod 0644, `fsync`, same-dir atomic rename,
+   directory fsync. Each target's INTENT record — backup pin and the exact
+   install identity — is durable BEFORE that target's `rename(2)`. An
+   interrupted run (crash/SIGKILL mid-apply or mid-postcheck) always leaves
+   backup custody and a recoverable transaction: `rollback --manifest
+   --force` (non-finalized statuses are gated behind `--force`; finalized
+   ones roll back directly).
+2. **Installed-identity rollback** (finding: content-only comparison could
+   clobber a concurrent same-sha replacement). Each committed entry records
+   the installed identity (dev, inode, regular, uid, gid, mode, candidate
+   sha) observed after its rename. Rollback restores only a target still
+   matching that identity AND the candidate sha; a concurrent same-sha
+   replacement (new inode) or any concurrent content change is skipped and
+   reported, never overwritten.
+3. **Backup pins** (finding: lstat validation incomplete). Backups are
+   re-verified at restore time against the identity recorded at creation:
+   non-symlink regular file, uid/gid, mode 0775, dev/ino, and the full
+   original sha. Mismatch -> skip and report.
+4. **Post-verify inside the transaction** (finding: postcheck failures
+   escaped the scoped rollback). Post-verify now runs inside the `try`: any
+   problem — including a failed `/proc/<pid>/stat|maps|exe` read or a
+   process disappearing mid-check — takes the same first-discrepancy
+   scoped-rollback path. The worker snapshot returns an explicit read-error
+   list; preflight treats read errors as FAIL.
+5. **Additional hardening found while correcting** (declared, not a ROOT
+   finding): exact modes are enforced with `fchmod` because a umask can mask
+   `os.open`'s mode argument (latent rev-2 defect — would have broken the
+   0775 backup mode under umask 022); sources are opened `O_NOFOLLOW`; every
+   created file is `fstat`-verified regular + owned before use; the wrapper
+   records its own sha256 in every receipt/manifest for provenance.
+
+Read-only preflight re-run with the rev-3 wrapper: PASS (receipt under
+`/home/alexey/.aplexer-rollout-53f535a2/`, see freeze report). Still nothing
+has been replaced; `apply` remains gated on ROOT acceptance of this freeze.
