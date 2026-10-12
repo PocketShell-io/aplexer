@@ -13,6 +13,7 @@ mod connect;
 mod launch;
 mod supersede;
 mod tag;
+mod trust;
 
 pub(crate) use claim::{claim_holder_pair, retire_reclaimed_holder};
 use claim::{claim_pair, resolve_launch};
@@ -21,6 +22,7 @@ use connect::*;
 use launch::{await_worker_ready, commit_replacement, spawn_worker_process, write_initial_record};
 use supersede::*;
 pub use tag::pick_fresh_tag;
+pub use trust::{prepare_workspace_trust, prepare_workspace_trust_in_roots};
 
 #[derive(Debug, Clone)]
 pub struct StartRequest {
@@ -73,6 +75,16 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
     ensure_sigchld_compatible_for_child_management()?;
     let id = Uuid::new_v4();
     let (workspace, launch) = resolve_launch(paths, req)?;
+    if !req.no_skip_permissions {
+        if let Err(error) = prepare_workspace_trust(
+            &workspace,
+            &launch.cwd,
+            &launch.engine,
+            &launch.env,
+        ) {
+            eprintln!("warning: could not prepare workspace trust ({error:#})");
+        }
+    }
     // Resolved before the registry lock so a missing worker executable
     // fails the start without holding up other commands.
     let command = worker_command(id, req.python.as_deref())?;
