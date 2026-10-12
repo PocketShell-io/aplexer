@@ -17,6 +17,13 @@ import subprocess
 import sys
 import time
 
+# Ensure XDG_RUNTIME_DIR is populated when run from cron or stripped environments
+if "XDG_RUNTIME_DIR" not in os.environ:
+    uid = os.getuid()
+    run_user = pathlib.Path(f"/run/user/{uid}")
+    if run_user.is_dir():
+        os.environ["XDG_RUNTIME_DIR"] = str(run_user)
+
 A = os.environ.get("APLEXER_A") or shutil.which("a") or "/home/alexey/.local/bin/a"
 PROC = pathlib.Path("/proc")
 

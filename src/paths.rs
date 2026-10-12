@@ -175,11 +175,15 @@ pub(crate) fn home_dir() -> Result<PathBuf> {
 }
 
 #[cfg(unix)]
-fn default_runtime_root() -> Result<PathBuf> {
+pub(crate) fn default_runtime_root() -> Result<PathBuf> {
     if let Some(value) = env::var_os("XDG_RUNTIME_DIR") {
         return Ok(absolute_xdg_path(PathBuf::from(value), "XDG_RUNTIME_DIR")?.join("aplexer"));
     }
     let uid = unsafe { libc::geteuid() };
+    let run_user = PathBuf::from(format!("/run/user/{uid}"));
+    if run_user.is_dir() {
+        return Ok(run_user.join("aplexer"));
+    }
     Ok(PathBuf::from(format!("/tmp/aplexer-{uid}")))
 }
 

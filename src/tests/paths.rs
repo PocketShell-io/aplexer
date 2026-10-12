@@ -85,3 +85,16 @@ fn xdg_paths_must_be_absolute() {
         PathBuf::from("/run/user/1000")
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn default_runtime_root_falls_back_consistently() {
+    let root = crate::paths::default_runtime_root().unwrap();
+    let uid = unsafe { libc::geteuid() };
+    let run_user = PathBuf::from(format!("/run/user/{uid}"));
+    if run_user.is_dir() {
+        assert_eq!(root, run_user.join("aplexer"));
+    } else {
+        assert_eq!(root, PathBuf::from(format!("/tmp/aplexer-{uid}")));
+    }
+}
