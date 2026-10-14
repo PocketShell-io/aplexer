@@ -1,4 +1,10 @@
-# PSC-RPC-1 (aplexer stdio helper)
+# PSC-RPC (aplexer stdio helper)
+
+`a rpc --stdio --protocol N` (N = 1 or 2) is the versioned resident helper.
+Protocol 2 is a strict superset of protocol 1: every v1 method behaves
+identically under `--protocol 2`, and `--protocol 1` output is byte-for-byte
+unchanged. A protocol-1 client never receives event frames. The sections
+below describe protocol 1; protocol 2 additions are in "PSC-RPC-2" at the end.
 
 Launch `a rpc --stdio --protocol 1`. Stdout contains only frames; diagnostics go to stderr. Frames are unsigned uint32 big-endian byte length followed by UTF-8 JSON, nonzero and <=16 MiB. Truncated or oversized frames terminate the channel without executing them. Requests: `{protocol:1,id:"unique string",method:"ping",params:{}}`. IDs must be unique within a helper lifetime. Responses: `{protocol:1,id,result:...}` or `{protocol:1,id,error:{code,message,notDispatched}}`. Responses may arrive out of order. At most 32 requests execute concurrently; bounded admission applies backpressure. Duplicate IDs are rejected and never executed again. No automatic send replay after dispatch or channel loss.
 
@@ -57,3 +63,78 @@ A separate run concurrent with repository validation failed those limits: status
 At 500 registry rows (one live worker plus 499 terminal records), the same final binary and 1,000 samples with 16 KiB captures measured p95 raw list 7.716 ms, status 1.609 ms, capture 1.530 ms and no-enter send 2.229 ms. Registry visibility p95 was 73.0 ms (p99 110.6 ms). The raw list includes all 500 complete records and Python decoding; PSC listing excludes terminal records. This fixture therefore measures full-registry scale, not 500 live sessions.
 
 The submission investigation follows `worker/connection.rs::handle_send`: successful `runtime.send` produces `status:"pty_written", consumed:null`. PTY writable/drained events prove kernel transport progress; they do not acknowledge the agent's key-event/paste parser. Bracketed-paste mode only advertises a terminal capability. State hooks and screen changes are not correlated acknowledgements for an individual send request. None of these safely replaces the existing text-to-Enter barrier for Codex/Claude, so this change retains it and makes no new consumption claim.
+
+## PSC-RPC-2 (push subscriptions)
+
+Launch `a rpc --stdio --protocol 2`. Framing, IDs, admission, duplicate-ID
+rejection and every v1 method are unchanged; response and error envelopes
+carry `protocol:2`, and `capabilities` reports `protocol:2` with `methods`
+extended by `subscribe` and `unsubscribe`. A v1 request (`protocol:1`) to a
+v2 helper is rejected as `unsupported_protocol`, and `subscribe`/`unsubscribe`
+to a v1 helper fail as `unsupported_method` without dispatching.
+
+- `subscribe {topics:[...], format?:"psc", selectorMode?:"psc"}` →
+  `{subscription:"sub-N", seq}`. Topics: `sessions`, and
+  `screen:<selector>` with the exact `capture` selector rules (UUID, UUID
+  prefix, `workspace:tag`, plus `selectorMode:"psc"`). Unknown, empty,
+  duplicated or (for screens) empty-selector topics are `invalid_request`;
+  at most 16 screen topics per helper. `seq` is the first event's `seq`
+  (or the next sequence number when no initial frame is due, e.g. a screen
+  topic whose first capture is still failing).
+- `unsubscribe {subscription}` → `{unsubscribed:"sub-N"}`; an unknown
+  subscription is `invalid_request`. Unsubscribe never touches the registry,
+  so it works even while the snapshot is unavailable.
+- Right after the response, one `{event:"snapshot", topic:"sessions", ...}`
+  carrying the same data as `list` (`format:"psc"` selects the schema-3
+  listing, otherwise the raw array). Afterwards a new `snapshot` whenever the
+  list result changes, coalesced to at most one per 50 ms. Change detection
+  ignores wall-clock and sampler fields (`activity_epoch`, agent activity
+  state, CPU/process counts, last-activity/access/update timestamps), so
+  flowing output alone never spams snapshots: activity-only changes ride the
+  5 s heartbeat cadence (a snapshot goes out in place of the heartbeat)
+  while membership, phase, state, tags, agent, attachment and warnings still
+  push within 200 ms. Activity-derived fields in the replica may therefore
+  be up to 5 s old.
+- `screen:<selector>` resolves once and pins the UUID. The helper pushes
+  `{event:"screen", topic, data}` (the `capture screenPlain` result plus the
+  `session` row in `selectorMode:"psc"`) when the rendered screen changes, at
+  most 10 Hz. Screens are polled at most every 100 ms, and a topic whose
+  capture fails backs off for 2 s so a wedged worker cannot stall the
+  publisher tick. When the pinned session ends (record gone or terminal
+  phase), it pushes `{event:"ended", topic}` and drops the topic. Per-screen
+  frames are bounded by `maxCaptureBytes`.
+- Event frames use the same framing, without an `id`:
+  `{protocol:2, event, subscription, topic, seq, data?}` (heartbeats also
+  carry `generation`). `seq` is strictly increasing per helper generation
+  across all topics; events never carry `id`, so clients tell them apart
+  from responses.
+- Backpressure is latest-wins per (subscription, topic): a newer frame for a
+  key with a queued frame replaces it in place and carries `"gap":true`; a
+  heartbeat newer than queued state is dropped instead (the queued frame
+  proves freshness better); `ended` evicts its topic's queued frame, carries
+  the gap when it displaces one, and is itself never dropped. Overflow evicts
+  the oldest non-`ended` frame and marks its key, so the gap always lands on
+  the right topic; a hard 16-frame cap applies regardless. Every snapshot
+  and screen frame is full state, so the client resumes from the latest
+  delivered frame after a gap.
+- Heartbeat: a topic with no frame for 5 s emits
+  `{event:"heartbeat", seq, generation}`. The replica age is the time since
+  the last frame; no heartbeat while the registry snapshot is unavailable
+  (a heartbeat would certify freshness the helper cannot vouch for).
+- New error codes: none; `invalid_request` covers bad topics, too many
+  screens and unknown subscriptions. Selector failures reuse `not_found` /
+  `ambiguous` (and the `SESSION_*` shapes in `selectorMode:"psc"`).
+
+Implementation: `subscribe` is prepared lock-free (selector resolution and
+initial screen captures first, which may block on a worker), then inserted,
+answered and primed under the stdout lock, so the response always precedes
+the first event on the wire and captures never stall the event writer or
+other responses. A publisher thread evaluates subscriptions every 20 ms
+(screen polls at most every 100 ms, 2 s backoff after a failed capture)
+without holding locks across worker I/O, and a writer thread drains the
+bounded queue. `send` ordering, duplicate-ID rejection, the 65,536-ID cap
+and the never-replay rule are unchanged.
+
+Measured locally (Linux, debug build, one live session): record-write to
+`sessions` snapshot delivery p50 61 ms, p95 71 ms (n=20), dominated by the
+50 ms coalescing window plus the 20 ms registry poll, as designed.
