@@ -127,6 +127,56 @@ fn status_json_value_preserves_runtime_diagnostics() {
 }
 
 #[test]
+fn status_cli_agent_fields_follow_main_detector_and_rpc_clears_stale_agents() {
+    for phase in [
+        Phase::Starting,
+        Phase::Running,
+        Phase::Exiting,
+        Phase::Exited,
+        Phase::Failed,
+    ] {
+        for agent_override in [None, Some("codex")] {
+            let mut current = mk_record("/ws", "status-parity", phase.clone());
+            current.agent_override = agent_override.map(str::to_owned);
+            // Main's CLI renderer always obtains these fields from this
+            // detector, including terminal records with a retained agent pin.
+            let detected = aplexer::api::record_detected(&current);
+            let expected_agent = json!(detected.as_ref().map(|d| d.kind));
+            let expected_profile = json!(detected.as_ref().map(|d| d.profile_label()));
+            let status = StatusData {
+                current,
+                raw: Value::Null,
+                worker_reachable: false,
+                rpc_error: None,
+                cgroup_stats: None,
+                history_persistence_error: None,
+                record_persistence_error: None,
+                foreground_command: None,
+                warning: None,
+                proc_usage: SessionProcUsage {
+                    processes: 0,
+                    cpu_percent: None,
+                },
+            };
+            let cli = status.json_value().unwrap();
+            assert_eq!(cli["agent"], expected_agent);
+            assert_eq!(cli["agent_profile"], expected_profile);
+            assert_eq!(cli, status.json_value_with_enrichment(None).unwrap());
+
+            let cached = json!({"agent":"claude", "agent_profile":"stale-profile"});
+            let rpc = status.json_value_with_enrichment(Some(&cached)).unwrap();
+            if status.current.worker_phase_active() {
+                assert_eq!(rpc["agent"], "claude");
+                assert_eq!(rpc["agent_profile"], "stale-profile");
+            } else {
+                assert!(rpc["agent"].is_null());
+                assert!(rpc["agent_profile"].is_null());
+            }
+        }
+    }
+}
+
+#[test]
 fn status_bar_sanitizes_record_fields_and_flash_messages() {
     let ctx = status_ctx_for_test(true);
     {

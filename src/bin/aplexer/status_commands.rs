@@ -93,12 +93,16 @@ impl StatusData {
             self.worker_alive(),
             self.current.created_at_ms
         ));
-        if !self.current.worker_phase_active() {
-            value["agent"] = Value::Null;
-            value["agent_profile"] = Value::Null;
-        } else if let Some(row) = enrichment {
-            value["agent"] = row["agent"].clone();
-            value["agent_profile"] = row["agent_profile"].clone();
+        if let Some(row) = enrichment {
+            // A cached RPC row can precede the worker's terminal transition.
+            // The CLI keeps using its original query-time detector below.
+            if self.current.worker_phase_active() {
+                value["agent"] = row["agent"].clone();
+                value["agent_profile"] = row["agent_profile"].clone();
+            } else {
+                value["agent"] = Value::Null;
+                value["agent_profile"] = Value::Null;
+            }
         } else {
             let detected = aplexer::api::record_detected(&self.current);
             value["agent"] = json!(detected.as_ref().map(|d| d.kind));
