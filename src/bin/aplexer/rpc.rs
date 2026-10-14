@@ -144,10 +144,10 @@ pub(crate) fn wait_before_enter(record: &SessionRecord, timing: SubmissionTiming
 fn composer_snapshot(record: &SessionRecord) -> ComposerSnapshot {
     rpc_capture_screen(record, false)
         .ok()
-        .and_then(|bytes| {
+        .map(|bytes| {
             let mut parser = vt100::Parser::new(24, 80, 0);
             parser.process(&bytes);
-            Some(ComposerSnapshot::from_screen(parser.screen()))
+            ComposerSnapshot::from_screen(parser.screen())
         })
         .unwrap_or_default()
 }
