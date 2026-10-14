@@ -142,6 +142,16 @@ pub fn resolve_record(
     tag: Option<&str>,
 ) -> Result<SessionRecord> {
     let records = list_records(paths)?;
+    resolve_records(&records, selector, workspace, tag)
+}
+
+/// Resolve against one immutable resident registry generation using CLI rules.
+pub fn resolve_records(
+    records: &[SessionRecord],
+    selector: Option<&str>,
+    workspace: Option<&Path>,
+    tag: Option<&str>,
+) -> Result<SessionRecord> {
     let mut matches: Vec<&SessionRecord> = Vec::new();
     if let Some(raw) = selector {
         let needle = raw.to_ascii_lowercase();

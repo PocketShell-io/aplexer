@@ -206,3 +206,6 @@ mod switching_tests {
 pub(crate) fn entrypoint() {
     cli::main();
 }
+
+#[path = "stdio_rpc.rs"]
+mod stdio_rpc;

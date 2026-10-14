@@ -247,12 +247,35 @@ pub fn snapshot_json(paths: &Paths, running: bool) -> Result<Value> {
     // waiting for a later one.
     crate::warnings::sweep_warnings(paths);
     let records = list_records(paths)?;
+    snapshot_records_json(paths, &records, running)
+}
+
+/// Shared snapshot renderer for the CLI and resident RPC index.
+pub fn snapshot_records_json(
+    paths: &Paths,
+    records: &[SessionRecord],
+    running: bool,
+) -> Result<Value> {
+    snapshot_records_json_with_usage(paths, records, running, None)
+}
+
+/// Resident consumers may supply separately sampled process usage so /proc
+/// reconciliation cannot delay registry change visibility.
+pub fn snapshot_records_json_with_usage(
+    paths: &Paths,
+    records: &[SessionRecord],
+    running: bool,
+    sampled_usage: Option<&BTreeMap<Uuid, crate::SessionProcUsage>>,
+) -> Result<Value> {
+    let variants = Config::load(paths)
+        .map(|c| profile_variants(&c))
+        .unwrap_or_default();
     let mut enriched = Vec::with_capacity(records.len());
     let mut roots = Vec::new();
     // One clock for the whole snapshot, so two rows created in the same
     // instant cannot land on opposite sides of the startup window.
     let now = crate::now_ms();
-    for record in &records {
+    for record in records {
         // One liveness probe per row: it reads the identity sidecar and
         // `/proc`, and both the `running` filter and the row need it.
         let worker_alive = record.worker_alive();
@@ -281,7 +304,7 @@ pub fn snapshot_json(paths: &Paths, running: bool) -> Result<Value> {
         // variation the same way profiles are registered (spec.md 9): the
         // profile id (`zcodex`, `godex`, ...) or `"default"` for the
         // engine's own config, `null` exactly when `agent` is.
-        let detected = record_detected(record);
+        let detected = record_detected_with(record, &variants);
         value["agent"] = json!(detected.as_ref().map(|d| d.kind));
         value["agent_profile"] = json!(detected.as_ref().map(|d| d.profile_label()));
         // Placement facts derived from the recorded cgroup paths
@@ -312,11 +335,18 @@ pub fn snapshot_json(paths: &Paths, running: bool) -> Result<Value> {
     // a previous listing already stored a sample (the human list does that
     // with a short bracket). A dead worker is an empty tree, not a guess
     // about whichever process now owns its old pid.
-    let usage = crate::proc_usage::cached_session_proc_usage(
-        Path::new("/proc"),
-        &paths.proc_usage_cache(),
-        &roots,
-    );
+    let computed;
+    let usage = match sampled_usage {
+        Some(usage) => usage,
+        None => {
+            computed = crate::proc_usage::cached_session_proc_usage(
+                Path::new("/proc"),
+                &paths.proc_usage_cache(),
+                &roots,
+            );
+            &computed
+        }
+    };
     for value in &mut enriched {
         let id = value
             .get("id")

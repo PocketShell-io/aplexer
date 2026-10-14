@@ -253,6 +253,7 @@ fn args_of(argv: &[&str]) -> Vec<String> {
 
 fn command_name(command: &Commands) -> &'static str {
     match command {
+        Commands::Rpc { .. } => "rpc",
         Commands::Start(_) => "start",
         Commands::New(_) => "new",
         Commands::Here(_) => "here",
