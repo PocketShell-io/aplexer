@@ -1,4 +1,6 @@
 //! PSC-RPC-1: bounded framed stdio, resident registry and atomic worker calls.
+//! Protocol 2 (same framing, `protocol:2`) adds push subscriptions
+//! (`subscribe`/`unsubscribe`, event frames); see `stdio_rpc_subscribe`.
 use super::capture_commands::capture_json_value;
 use super::status_commands::StatusData;
 use super::*;
@@ -11,12 +13,15 @@ mod cache;
 mod operations;
 #[path = "stdio_rpc_psc.rs"]
 mod psc;
+#[path = "stdio_rpc_subscribe.rs"]
+mod subscribe;
 #[path = "stdio_rpc_versions.rs"]
 mod versions;
 #[path = "stdio_rpc_wire.rs"]
 mod wire;
 use cache::{refresh_loop, usage_loop, Snapshot};
 use operations::{execute, validate};
+use subscribe::{publisher_loop, writer_loop, Bus, Subs};
 use versions::installed_versions;
 use wire::{failure, read_packet, write_cached_result, write_packet};
 
@@ -68,9 +73,10 @@ impl Drop for SendTurn {
 }
 
 pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
-    if protocol != 1 {
+    if protocol != 1 && protocol != 2 {
         bail!("unsupported stdio RPC protocol {protocol}");
     }
+    let proto = protocol;
     let versions = installed_versions();
     let state = Arc::new(RwLock::new(Snapshot::load(&paths)?));
     let stop = Arc::new(AtomicBool::new(false));
@@ -88,6 +94,31 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
         generation: Uuid::new_v4().to_string(),
         versions,
     });
+    // Push subscriptions (protocol 2 only): the publisher evaluates them on
+    // a tick and the writer drains the bounded event queue to stdout.
+    let subs = Arc::new(Mutex::new(Subs::default()));
+    let bus = Arc::new(Bus::new());
+    let publisher = if proto == 2 {
+        let (p, s, b, i, t) = (
+            paths.clone(),
+            state.clone(),
+            bus.clone(),
+            info.clone(),
+            stop.clone(),
+        );
+        let subs = subs.clone();
+        Some(thread::spawn(move || {
+            publisher_loop(proto, p, s, subs, b, i, t)
+        }))
+    } else {
+        None
+    };
+    let writer = if proto == 2 {
+        let (o, b, t) = (stdout.clone(), bus.clone(), stop.clone());
+        Some(thread::spawn(move || writer_loop(o, b, t)))
+    } else {
+        None
+    };
     let mut ids = HashSet::new();
     let mut gates: HashMap<Uuid, SendGate> = HashMap::new();
     // Reuse bounded worker threads: no OS thread spawn on a warm request.
@@ -116,12 +147,15 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
                 Err(e) => {
                     write_packet(
                         &mut *stdout.lock().unwrap(),
-                        &failure(id, "invalid_request", e, true),
+                        &failure(id, proto, "invalid_request", e, true),
                     )?;
                     continue;
                 }
             };
-            let reject = if call.protocol != 1 {
+            let known = ["ping", "list", "status", "capture", "send"];
+            let known_v2 =
+                proto == 2 && ["subscribe", "unsubscribe"].contains(&call.method.as_str());
+            let reject = if call.protocol != proto {
                 Some(("unsupported_protocol", "unsupported protocol".to_owned()))
             } else if ids.contains(&call.id) {
                 Some(("duplicate_id", "request id already used".to_owned()))
@@ -131,11 +165,11 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
                     "request id capacity exhausted; reconnect".to_owned(),
                 ))
             } else {
-                validate(&call).err().map(|e| {
+                validate(&call, proto).err().map(|e| {
                     (
                         if call.method != "capabilities"
-                            && !["ping", "list", "status", "capture", "send"]
-                                .contains(&call.method.as_str())
+                            && !known.contains(&call.method.as_str())
+                            && !known_v2
                         {
                             "unsupported_method"
                         } else {
@@ -148,7 +182,7 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
             if let Some((code, message)) = reject {
                 write_packet(
                     &mut *stdout.lock().unwrap(),
-                    &failure(id, code, message, true),
+                    &failure(id, proto, code, message, true),
                 )?;
                 continue;
             }
@@ -169,10 +203,48 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
                 if let Some(e) = error {
                     write_packet(
                         &mut *stdout.lock().unwrap(),
-                        &failure(id, "registry_unavailable", e, true),
+                        &failure(id, proto, "registry_unavailable", e, true),
                     )?;
                 } else {
-                    write_cached_result(&mut *stdout.lock().unwrap(), &id, &data, &meta)?;
+                    write_cached_result(&mut *stdout.lock().unwrap(), proto, &id, &data, &meta)?;
+                }
+                continue;
+            }
+            // Protocol-2 control plane: answered synchronously in this loop
+            // (like the cached list above) so the response always precedes
+            // the first event frame on the wire.
+            if proto == 2 && (call.method == "subscribe" || call.method == "unsubscribe") {
+                let mut out = stdout.lock().unwrap();
+                if call.method == "subscribe" {
+                    match subscribe::handle_subscribe(proto, &call, &paths, &state, &subs, &bus) {
+                        Ok((result, initial, sub_id)) => {
+                            let meta = state.read().unwrap().meta();
+                            write_packet(
+                                &mut *out,
+                                &json!({"protocol":proto,"id":call.id,"result":result,"meta":meta}),
+                            )?;
+                            for frame in initial {
+                                write_packet(&mut *out, &frame)?;
+                            }
+                            subs.lock().unwrap().prime(&sub_id);
+                        }
+                        Err(frame) => {
+                            write_packet(&mut *out, &frame)?;
+                        }
+                    }
+                } else {
+                    match subscribe::handle_unsubscribe(proto, &call, &subs) {
+                        Ok(result) => {
+                            let meta = state.read().unwrap().meta();
+                            write_packet(
+                                &mut *out,
+                                &json!({"protocol":proto,"id":call.id,"result":result,"meta":meta}),
+                            )?;
+                        }
+                        Err(frame) => {
+                            write_packet(&mut *out, &frame)?;
+                        }
+                    }
                 }
                 continue;
             }
@@ -181,7 +253,7 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
                 if let Some(e) = guard.unavailable() {
                     write_packet(
                         &mut *stdout.lock().unwrap(),
-                        &failure(id, "registry_unavailable", e, true),
+                        &failure(id, proto, "registry_unavailable", e, true),
                     )?;
                     continue;
                 }
@@ -192,7 +264,7 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
                             Err(error) => {
                                 write_packet(
                                     &mut *stdout.lock().unwrap(),
-                                    &json!({"protocol":1,"id":id,"error":error}),
+                                    &json!({"protocol":proto,"id":id,"error":error}),
                                 )?;
                                 continue;
                             }
@@ -210,7 +282,7 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
                             };
                             write_packet(
                                 &mut *stdout.lock().unwrap(),
-                                &failure(id, code, e, true),
+                                &failure(id, proto, code, e, true),
                             )?;
                             continue;
                         }
@@ -264,7 +336,7 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
                     t.wait();
                 }
                 let mut dispatched = false;
-                let result = execute(&p, &call, record, row, &mut dispatched, &info, &s);
+                let result = execute(proto, &p, &call, record, row, &mut dispatched, &info, &s);
                 let mut meta = meta;
                 for field in ["ageMs", "processAgeMs"] {
                     meta[field] = json!(meta[field]
@@ -273,9 +345,12 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
                         .saturating_add(admitted.elapsed().as_millis() as u64));
                 }
                 let response = match result {
-                    Ok(result) => json!({"protocol":1,"id":call.id,"result":result,"meta":meta}),
+                    Ok(result) => {
+                        json!({"protocol":proto,"id":call.id,"result":result,"meta":meta})
+                    }
                     Err(e) => failure(
                         json!(call.id),
+                        proto,
                         "operation_failed",
                         format!("{e:#}"),
                         !dispatched,
@@ -301,6 +376,13 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
         let _ = worker.join();
     }
     stop.store(true, Ordering::Relaxed);
+    bus.notify();
+    if let Some(thread) = publisher {
+        let _ = thread.join();
+    }
+    if let Some(thread) = writer {
+        let _ = thread.join();
+    }
     let _ = refresher.join();
     let _ = sampler.join();
     result

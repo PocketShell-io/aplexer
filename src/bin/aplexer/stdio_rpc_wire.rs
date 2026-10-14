@@ -22,7 +22,9 @@ pub(super) fn read_packet(reader: &mut impl Read) -> Result<Option<Vec<u8>>> {
 pub(super) fn write_packet(writer: &mut impl Write, value: &Value) -> Result<()> {
     let mut bytes = serde_json::to_vec(value)?;
     if bytes.len() > FRAME_LIMIT {
-        bytes = serde_json::to_vec(&json!({"protocol":1,"id":value["id"],"error":{
+        // The value already carries its protocol; preserve it in the error.
+        let proto = value["protocol"].as_u64().unwrap_or(1);
+        bytes = serde_json::to_vec(&json!({"protocol":proto,"id":value["id"],"error":{
             "code":"response_too_large","message":"response exceeds frame limit","notDispatched":false}}))?;
     }
     writer.write_all(&(bytes.len() as u32).to_be_bytes())?;
@@ -32,12 +34,13 @@ pub(super) fn write_packet(writer: &mut impl Write, value: &Value) -> Result<()>
 }
 pub(super) fn write_cached_result(
     writer: &mut impl Write,
+    proto: u32,
     id: &Value,
     data: &[u8],
     meta: &Value,
 ) -> Result<()> {
     let prefix = format!(
-        "{{\"protocol\":1,\"id\":{},\"result\":",
+        "{{\"protocol\":{proto},\"id\":{},\"result\":",
         serde_json::to_string(id)?
     );
     let suffix = format!(",\"meta\":{}}}", serde_json::to_string(meta)?);
@@ -47,6 +50,7 @@ pub(super) fn write_cached_result(
             writer,
             &failure(
                 id.clone(),
+                proto,
                 "response_too_large",
                 "response exceeds frame limit",
                 true,
@@ -62,11 +66,12 @@ pub(super) fn write_cached_result(
 }
 pub(super) fn failure(
     id: Value,
+    proto: u32,
     code: &str,
     message: impl ToString,
     not_dispatched: bool,
 ) -> Value {
-    json!({"protocol":1,"id":id,"error":{"code":code,"message":message.to_string(),"notDispatched":not_dispatched}})
+    json!({"protocol":proto,"id":id,"error":{"code":code,"message":message.to_string(),"notDispatched":not_dispatched}})
 }
 
 #[cfg(test)]

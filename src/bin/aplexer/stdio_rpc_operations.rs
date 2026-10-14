@@ -1,7 +1,7 @@
 //! Request validation and UUID-pinned live worker operations.
 use super::*;
 
-pub(super) fn validate(call: &Call) -> Result<()> {
+pub(super) fn validate(call: &Call, proto: u32) -> Result<()> {
     if call.id.is_empty() || call.id.len() > 128 {
         bail!("id must be a nonempty string <=128 bytes");
     }
@@ -14,6 +14,12 @@ pub(super) fn validate(call: &Call) -> Result<()> {
             if call.params["selector"].as_str().is_none() {
                 bail!("selector must be a string");
             }
+        }
+        "subscribe" | "unsubscribe" => {
+            if proto != 2 {
+                bail!("unsupported method");
+            }
+            subscribe::validate(call)?;
         }
         _ => bail!("unsupported method"),
     }
@@ -64,7 +70,11 @@ pub(super) fn validate(call: &Call) -> Result<()> {
     Ok(())
 }
 
+/// Request/response execution shared by both protocols; `proto` only selects
+/// the version stamp on versioned payloads (capabilities).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute(
+    proto: u32,
     paths: &Paths,
     call: &Call,
     record: Option<SessionRecord>,
@@ -75,9 +85,13 @@ pub(super) fn execute(
 ) -> Result<Value> {
     match call.method.as_str() {
         "capabilities" => {
+            let mut methods = vec!["capabilities", "ping", "list", "status", "capture", "send"];
+            if proto == 2 {
+                methods.extend(["subscribe", "unsubscribe"]);
+            }
             return Ok(
-                json!({"protocol":1,"version":env!("CARGO_PKG_VERSION"),"pscSchema":3,"selectorModes":["aplexer","psc"],"versions":info.versions,"maxFrameBytes":FRAME_LIMIT,"maxSendBytes":PAYLOAD_LIMIT,"maxCaptureBytes":PAYLOAD_LIMIT,"methods":["capabilities","ping","list","status","capture","send"],"generation":info.generation}),
-            )
+                json!({"protocol":proto,"version":env!("CARGO_PKG_VERSION"),"pscSchema":3,"selectorModes":["aplexer","psc"],"versions":info.versions,"maxFrameBytes":FRAME_LIMIT,"maxSendBytes":PAYLOAD_LIMIT,"maxCaptureBytes":PAYLOAD_LIMIT,"methods":methods,"generation":info.generation}),
+            );
         }
         "ping" => return Ok(json!({"ok":true,"generation":info.generation})),
         "list" => {
