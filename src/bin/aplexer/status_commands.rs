@@ -70,6 +70,10 @@ impl StatusData {
     }
 
     pub(crate) fn json_value(&self) -> Result<Value> {
+        self.json_value_with_enrichment(None)
+    }
+
+    pub(crate) fn json_value_with_enrichment(&self, enrichment: Option<&Value>) -> Result<Value> {
         let mut value = serde_json::to_value(public_session_record(&self.current))?;
         if let Some(stats) = &self.cgroup_stats {
             value["cgroup"] = stats.clone();
@@ -89,9 +93,21 @@ impl StatusData {
             self.worker_alive(),
             self.current.created_at_ms
         ));
-        let detected = aplexer::api::record_detected(&self.current);
-        value["agent"] = json!(detected.as_ref().map(|d| d.kind));
-        value["agent_profile"] = json!(detected.as_ref().map(|d| d.profile_label()));
+        if let Some(row) = enrichment {
+            // A cached RPC row can precede the worker's terminal transition.
+            // The CLI keeps using its original query-time detector below.
+            if self.current.worker_phase_active() {
+                value["agent"] = row["agent"].clone();
+                value["agent_profile"] = row["agent_profile"].clone();
+            } else {
+                value["agent"] = Value::Null;
+                value["agent_profile"] = Value::Null;
+            }
+        } else {
+            let detected = aplexer::api::record_detected(&self.current);
+            value["agent"] = json!(detected.as_ref().map(|d| d.kind));
+            value["agent_profile"] = json!(detected.as_ref().map(|d| d.profile_label()));
+        }
         value["worker_placement"] =
             aplexer::placement::placement_summary(self.current.worker_cgroup.as_deref());
         value["workload_placement"] =
@@ -106,6 +122,11 @@ impl StatusData {
             Some(warning) => warning.to_json(),
             None => Value::Null,
         };
+        if let Some(row) = enrichment {
+            for field in ["processes", "cpu_percent", "warning"] {
+                value[field] = row[field].clone();
+            }
+        }
         if let Some(error) = &self.rpc_error {
             value["rpc_error"] = json!(error);
         }

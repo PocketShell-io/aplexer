@@ -22,6 +22,7 @@ pub(crate) fn run() -> Result<()> {
     // and similar tools default to a listing rather than printing usage.
     let command = cli.command.unwrap_or(Commands::List(ListArgs::default()));
     match command {
+        Commands::Rpc { stdio: _, protocol } => super::stdio_rpc::run(paths, protocol),
         Commands::Start(args) => cmd_start(&paths, args, cli.json),
         Commands::Context(args) => cmd_context(&paths, args, cli.json),
         Commands::Work(args) => cmd_work(&paths, args, cli.json),

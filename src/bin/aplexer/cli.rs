@@ -26,6 +26,13 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
+    /// Run the versioned, framed resident RPC helper.
+    Rpc {
+        #[arg(long, required = true)]
+        stdio: bool,
+        #[arg(long, default_value_t = 1)]
+        protocol: u32,
+    },
     /// Start a new session (workspace + tag + engine/profile) and its worker.
     #[command(after_help = START_EXAMPLES)]
     Start(StartArgs),

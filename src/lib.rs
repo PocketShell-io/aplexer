@@ -48,7 +48,8 @@ pub use record::*;
 
 mod registry;
 pub use registry::{
-    list_records, read_record, read_session_record, resolve_record, NO_MATCHING_SESSION,
+    list_records, read_record, read_session_record, resolve_record, resolve_records,
+    NO_MATCHING_SESSION,
 };
 
 mod paths;
