@@ -266,7 +266,9 @@ mod tests {
         );
 
         // Idempotence: calling again changes nothing
-        let wrote = update_claude_trust(&claude_json, std::slice::from_ref(&ws), false).unwrap();
+        let canonical_ws = crate::canonical_workspace(&ws).unwrap();
+        let wrote =
+            update_claude_trust(&claude_json, std::slice::from_ref(&canonical_ws), false).unwrap();
         assert!(!wrote);
     }
 
@@ -297,7 +299,9 @@ mod tests {
         );
 
         // Idempotence
-        let wrote = update_codex_trust(&codex_config, std::slice::from_ref(&ws), false).unwrap();
+        let canonical_ws = crate::canonical_workspace(&ws).unwrap();
+        let wrote =
+            update_codex_trust(&codex_config, std::slice::from_ref(&canonical_ws), false).unwrap();
         assert!(!wrote);
     }
 
