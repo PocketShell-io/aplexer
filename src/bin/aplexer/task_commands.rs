@@ -88,12 +88,9 @@ pub(crate) fn cmd_task(paths: &Paths, args: TaskRunArgs, json_output: bool) -> R
     let mut argv = launch.command.clone();
     argv.extend(task_argv);
     if !args.no_skip_permissions {
-        if let Err(error) = aplexer::api::prepare_workspace_trust(
-            &launch.cwd,
-            &launch.cwd,
-            &engine,
-            &launch.env,
-        ) {
+        if let Err(error) =
+            aplexer::api::prepare_workspace_trust(&launch.cwd, &launch.cwd, &engine, &launch.env)
+        {
             eprintln!("warning: could not prepare workspace trust ({error:#})");
         }
         argv.extend(launch.skip_permissions_argv.clone());

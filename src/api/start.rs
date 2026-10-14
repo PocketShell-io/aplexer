@@ -76,12 +76,9 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
     let id = Uuid::new_v4();
     let (workspace, launch) = resolve_launch(paths, req)?;
     if !req.no_skip_permissions {
-        if let Err(error) = prepare_workspace_trust(
-            &workspace,
-            &launch.cwd,
-            &launch.engine,
-            &launch.env,
-        ) {
+        if let Err(error) =
+            prepare_workspace_trust(&workspace, &launch.cwd, &launch.engine, &launch.env)
+        {
             eprintln!("warning: could not prepare workspace trust ({error:#})");
         }
     }

@@ -46,26 +46,33 @@ pub fn update_claude_trust(
         serde_json::json!({})
     };
 
-    let obj = root
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("root of {} is not a JSON object", claude_json_path.display()))?;
+    let obj = root.as_object_mut().ok_or_else(|| {
+        anyhow!(
+            "root of {} is not a JSON object",
+            claude_json_path.display()
+        )
+    })?;
 
     let projects_val = obj
         .entry("projects")
         .or_insert_with(|| serde_json::json!({}));
-    let projects = projects_val
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("'projects' in {} is not a JSON object", claude_json_path.display()))?;
+    let projects = projects_val.as_object_mut().ok_or_else(|| {
+        anyhow!(
+            "'projects' in {} is not a JSON object",
+            claude_json_path.display()
+        )
+    })?;
 
     let mut changed = false;
     for dir in dirs {
         let key = dir.to_string_lossy().to_string();
-        let project_val = projects
-            .entry(key)
-            .or_insert_with(|| serde_json::json!({}));
+        let project_val = projects.entry(key).or_insert_with(|| serde_json::json!({}));
         if let Some(project) = project_val.as_object_mut() {
             if project.get("hasTrustDialogAccepted") != Some(&serde_json::Value::Bool(true)) {
-                project.insert("hasTrustDialogAccepted".to_string(), serde_json::Value::Bool(true));
+                project.insert(
+                    "hasTrustDialogAccepted".to_string(),
+                    serde_json::Value::Bool(true),
+                );
                 changed = true;
             }
         }
@@ -112,10 +119,7 @@ pub fn update_codex_trust(
     for dir in dirs {
         let key = dir.to_string_lossy().to_string();
         let project = ensure_child_table(projects_table, &key);
-        let is_trusted = project
-            .get("trust_level")
-            .and_then(|v| v.as_str())
-            == Some("trusted");
+        let is_trusted = project.get("trust_level").and_then(|v| v.as_str()) == Some("trusted");
         if !is_trusted {
             project.insert("trust_level", toml_edit::value("trusted"));
             changed = true;
@@ -252,14 +256,17 @@ mod tests {
 
         let content = fs::read_to_string(&claude_json).unwrap();
         let val: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let ws_key = crate::canonical_workspace(&ws).unwrap().to_string_lossy().to_string();
+        let ws_key = crate::canonical_workspace(&ws)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         assert_eq!(
             val["projects"][&ws_key]["hasTrustDialogAccepted"],
             serde_json::Value::Bool(true)
         );
 
         // Idempotence: calling again changes nothing
-        let wrote = update_claude_trust(&claude_json, &[ws.clone()], false).unwrap();
+        let wrote = update_claude_trust(&claude_json, std::slice::from_ref(&ws), false).unwrap();
         assert!(!wrote);
     }
 
@@ -280,14 +287,17 @@ mod tests {
         let content = fs::read_to_string(&codex_config).unwrap();
         assert!(content.contains("trust_level = \"trusted\""));
         let doc: DocumentMut = content.parse().unwrap();
-        let ws_key = crate::canonical_workspace(&ws).unwrap().to_string_lossy().to_string();
+        let ws_key = crate::canonical_workspace(&ws)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         assert_eq!(
             doc["projects"][&ws_key]["trust_level"].as_str(),
             Some("trusted")
         );
 
         // Idempotence
-        let wrote = update_codex_trust(&codex_config, &[ws.clone()], false).unwrap();
+        let wrote = update_codex_trust(&codex_config, std::slice::from_ref(&ws), false).unwrap();
         assert!(!wrote);
     }
 
@@ -330,7 +340,10 @@ mod tests {
         let c_content = fs::read_to_string(&claude_json).unwrap();
         let c_val: serde_json::Value = serde_json::from_str(&c_content).unwrap();
         assert_eq!(c_val["existing"], 123);
-        let ws_key = crate::canonical_workspace(&ws).unwrap().to_string_lossy().to_string();
+        let ws_key = crate::canonical_workspace(&ws)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         assert_eq!(
             c_val["projects"][&ws_key]["hasTrustDialogAccepted"],
             serde_json::Value::Bool(true)
