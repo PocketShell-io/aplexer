@@ -210,26 +210,32 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
                 }
                 continue;
             }
-            // Protocol-2 control plane: answered synchronously in this loop
-            // (like the cached list above) so the response always precedes
-            // the first event frame on the wire.
+            // Protocol-2 control plane: prepared lock-free (captures first),
+            // then committed under the stdout lock like the cached list
+            // above, so the response always precedes the first event frame
+            // on the wire.
             if proto == 2 && (call.method == "subscribe" || call.method == "unsubscribe") {
-                let mut out = stdout.lock().unwrap();
                 if call.method == "subscribe" {
-                    match subscribe::handle_subscribe(proto, &call, &paths, &state, &subs, &bus) {
-                        Ok((result, initial, sub_id)) => {
+                    match subscribe::prepare_subscribe(proto, &call, &paths, &state, &subs, &bus) {
+                        Ok(prepared) => {
                             let meta = state.read().unwrap().meta();
+                            let mut out = stdout.lock().unwrap();
+                            subs.lock().unwrap().insert(
+                                prepared.sub_id.clone(),
+                                prepared.states,
+                                prepared.format_psc,
+                            );
                             write_packet(
                                 &mut *out,
-                                &json!({"protocol":proto,"id":call.id,"result":result,"meta":meta}),
+                                &json!({"protocol":proto,"id":call.id,"result":prepared.result,"meta":meta}),
                             )?;
-                            for frame in initial {
+                            for frame in prepared.initial {
                                 write_packet(&mut *out, &frame)?;
                             }
-                            subs.lock().unwrap().prime(&sub_id);
+                            subs.lock().unwrap().prime(&prepared.sub_id);
                         }
                         Err(frame) => {
-                            write_packet(&mut *out, &frame)?;
+                            write_packet(&mut *stdout.lock().unwrap(), &frame)?;
                         }
                     }
                 } else {
@@ -237,12 +243,12 @@ pub(crate) fn run(paths: Paths, protocol: u32) -> Result<()> {
                         Ok(result) => {
                             let meta = state.read().unwrap().meta();
                             write_packet(
-                                &mut *out,
+                                &mut *stdout.lock().unwrap(),
                                 &json!({"protocol":proto,"id":call.id,"result":result,"meta":meta}),
                             )?;
                         }
                         Err(frame) => {
-                            write_packet(&mut *out, &frame)?;
+                            write_packet(&mut *stdout.lock().unwrap(), &frame)?;
                         }
                     }
                 }

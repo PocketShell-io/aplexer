@@ -87,21 +87,34 @@ to a v1 helper fail as `unsupported_method` without dispatching.
 - Right after the response, one `{event:"snapshot", topic:"sessions", ...}`
   carrying the same data as `list` (`format:"psc"` selects the schema-3
   listing, otherwise the raw array). Afterwards a new `snapshot` whenever the
-  list result changes, coalesced to at most one per 50 ms and compared by
-  content hash. The response `seq` is the first event's `seq`.
+  list result changes, coalesced to at most one per 50 ms. Change detection
+  ignores wall-clock and sampler fields (`activity_epoch`, agent activity
+  state, CPU/process counts, last-activity/access/update timestamps), so
+  flowing output alone never spams snapshots: activity-only changes ride the
+  5 s heartbeat cadence (a snapshot goes out in place of the heartbeat)
+  while membership, phase, state, tags, agent, attachment and warnings still
+  push within 200 ms. Activity-derived fields in the replica may therefore
+  be up to 5 s old.
 - `screen:<selector>` resolves once and pins the UUID. The helper pushes
   `{event:"screen", topic, data}` (the `capture screenPlain` result plus the
   `session` row in `selectorMode:"psc"`) when the rendered screen changes, at
-  most 10 Hz. When the pinned session ends (record gone or terminal phase),
-  it pushes `{event:"ended", topic}` and drops the topic. Per-screen frames
-  are bounded by `maxCaptureBytes`.
+  most 10 Hz. Screens are polled at most every 100 ms, and a topic whose
+  capture fails backs off for 2 s so a wedged worker cannot stall the
+  publisher tick. When the pinned session ends (record gone or terminal
+  phase), it pushes `{event:"ended", topic}` and drops the topic. Per-screen
+  frames are bounded by `maxCaptureBytes`.
 - Event frames use the same framing, without an `id`:
   `{protocol:2, event, subscription, topic, seq, data?}` (heartbeats also
   carry `generation`). `seq` is strictly increasing per helper generation
   across all topics; events never carry `id`, so clients tell them apart
   from responses.
-- Backpressure: at most 16 queued frames per helper; overflow drops the
-  oldest and the next delivered frame carries `"gap":true`. Every snapshot
+- Backpressure is latest-wins per (subscription, topic): a newer frame for a
+  key with a queued frame replaces it in place and carries `"gap":true`; a
+  heartbeat newer than queued state is dropped instead (the queued frame
+  proves freshness better); `ended` evicts its topic's queued frame, carries
+  the gap when it displaces one, and is itself never dropped. Overflow evicts
+  the oldest non-`ended` frame and marks its key, so the gap always lands on
+  the right topic; a hard 16-frame cap applies regardless. Every snapshot
   and screen frame is full state, so the client resumes from the latest
   delivered frame after a gap.
 - Heartbeat: a topic with no frame for 5 s emits
@@ -112,13 +125,15 @@ to a v1 helper fail as `unsupported_method` without dispatching.
   screens and unknown subscriptions. Selector failures reuse `not_found` /
   `ambiguous` (and the `SESSION_*` shapes in `selectorMode:"psc"`).
 
-Implementation: the request loop answers `subscribe`/`unsubscribe`
-synchronously (like the cached `list` fast path), so the response always
-precedes the first event on the wire; topics stay dormant until those bytes
-are flushed. A publisher thread evaluates subscriptions every 20 ms (screen
-topics polled at most every 100 ms) without holding locks across worker I/O,
-and a writer thread drains the bounded queue. `send` ordering, duplicate-ID
-rejection, the 65,536-ID cap and the never-replay rule are unchanged.
+Implementation: `subscribe` is prepared lock-free (selector resolution and
+initial screen captures first, which may block on a worker), then inserted,
+answered and primed under the stdout lock, so the response always precedes
+the first event on the wire and captures never stall the event writer or
+other responses. A publisher thread evaluates subscriptions every 20 ms
+(screen polls at most every 100 ms, 2 s backoff after a failed capture)
+without holding locks across worker I/O, and a writer thread drains the
+bounded queue. `send` ordering, duplicate-ID rejection, the 65,536-ID cap
+and the never-replay rule are unchanged.
 
 Measured locally (Linux, debug build, one live session): record-write to
 `sessions` snapshot delivery p50 61 ms, p95 71 ms (n=20), dominated by the

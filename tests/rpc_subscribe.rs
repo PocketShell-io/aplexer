@@ -132,6 +132,34 @@ impl Helper {
         }
     }
 
+    /// Non-blocking event check for windows where silence is expected:
+    /// returns the first matching frame without waiting out the timeout.
+    fn poll_event(&mut self, event: &str, timeout: Duration) -> Option<Value> {
+        let want = |f: &Value| f.get("event") == Some(&Value::String(event.to_owned()));
+        if let Some(frame) = self.take_from_stash(want) {
+            return Some(frame);
+        }
+        match self.rx.recv_timeout(timeout) {
+            Ok(Some(frame)) if want(&frame) => Some(frame),
+            Ok(Some(frame)) => {
+                self.pending.push(frame);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Pull every buffered frame (stash first, then the pipe) until quiet.
+    fn drain(&mut self, quiet: Duration) -> Vec<Value> {
+        let mut frames = std::mem::take(&mut self.pending);
+        loop {
+            match self.rx.recv_timeout(quiet) {
+                Ok(Some(frame)) => frames.push(frame),
+                _ => return frames,
+            }
+        }
+    }
+
     fn expect_quiet(&mut self, quiet: Duration) {
         assert!(self.pending.is_empty(), "stale frames: {:?}", self.pending);
         match self.rx.recv_timeout(quiet) {
@@ -399,50 +427,101 @@ fn subscription_limits_and_bad_selectors_fail_closed() {
 fn dropped_frames_resume_with_gap_and_latest_state() {
     let h = support::Harness::new();
     let mut record = h.record(Phase::Exited, None, b"");
+    // Screen mirror on a Running record; the sessions topic is structural.
+    let mut live = h.record(Phase::Running, None, b"");
+    let screen_topic = format!("screen:{}", live.id);
+    std::fs::write(h.paths().screen_txt(live.id), b"screen-v1").unwrap();
     let mut rpc = Helper::new(&h, 2);
-    subscribe(&mut rpc, json!({"topics": ["sessions"]}));
+    let (_, result) = subscribe(&mut rpc, json!({"topics": ["sessions", screen_topic]}));
+    let sub = result["subscription"].as_str().unwrap().to_owned();
     rpc.expect_event("snapshot", Duration::from_secs(5));
-    // Stop draining: emissions outpace the deaf client until the bounded
-    // queue overflows and the gap flag is set.
+    rpc.expect_event("screen", Duration::from_secs(5));
+    // Go deaf while both topics move: tag churn coalesces per key, the
+    // screen rewrite queues behind it, and ending the session must evict
+    // the stale screen frame with an `ended` that is never dropped.
     rpc.set_flow(false);
     let hammered = Instant::now();
     let mut n = 0;
-    while hammered.elapsed() < Duration::from_secs(6) {
+    while hammered.elapsed() < Duration::from_secs(5) {
         record.tag = format!("hammer-{n}");
         atomic_write_json(&h.paths().record(record.id), &record).unwrap();
         n += 1;
-    }
-    rpc.set_flow(true);
-    // The reader may have drained pre-drop frames first; the gap marker is
-    // the first frame the helper popped after dropping.
-    let mut found = false;
-    for _ in 0..300 {
-        let frame = rpc.expect_event("snapshot", Duration::from_secs(15));
-        if frame.get("gap") == Some(&Value::Bool(true)) {
-            found = true;
+        // Paced: emissions are time-based (50 ms coalescing), so pacing
+        // only spares CPU/disk for concurrently running suites.
+        std::thread::sleep(Duration::from_millis(5));
+        if hammered.elapsed() > Duration::from_millis(4800) {
             break;
         }
     }
-    assert!(found, "no frame carried gap:true");
-    // After resuming, the next change arrives clean and current. Stale
-    // backlog frames may still precede it, so scan to the final tag.
+    std::fs::write(h.paths().screen_txt(live.id), b"screen-v2").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    live.phase = Phase::Exited;
+    atomic_write_json(&h.paths().record(live.id), &live).unwrap();
     record.tag = "final-tag".into();
     atomic_write_json(&h.paths().record(record.id), &record).unwrap();
-    let mut fresh = None;
-    for _ in 0..50 {
-        let frame = rpc.expect_event("snapshot", Duration::from_secs(10));
-        if frame["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["tag"] == "final-tag")
+    std::thread::sleep(Duration::from_millis(500));
+    rpc.set_flow(true);
+    // Drain everything the deaf window buffered: pipe backlog first, then
+    // the backed-up queue. Per-topic latest wins means at most one frame
+    // per key is current; scan to the finals.
+    let frames = rpc.drain(Duration::from_millis(500));
+    assert!(!frames.is_empty(), "deaf window produced no frames");
+    let snapshots: Vec<&Value> = frames
+        .iter()
+        .filter(|f| f.get("event") == Some(&Value::String("snapshot".to_owned())))
+        .collect();
+    let ended: Vec<&Value> = frames
+        .iter()
+        .filter(|f| f.get("event") == Some(&Value::String("ended".to_owned())))
+        .collect();
+    // The sessions final is the latest state and carries the gap: its
+    // predecessors coalesced while nobody drained.
+    let final_snapshot = snapshots.last().expect("no sessions snapshot");
+    assert!(final_snapshot["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["tag"] == "final-tag"));
+    assert_eq!(final_snapshot.get("gap"), Some(&Value::Bool(true)));
+    assert_eq!(final_snapshot["subscription"], sub);
+    // The screen topic ends exactly once, is never dropped, and its `ended`
+    // evicted the stale screen frame (gap on the right topic, no data).
+    assert_eq!(ended.len(), 1, "expected one ended frame, got {ended:?}");
+    assert_eq!(ended[0]["subscription"], sub);
+    assert_eq!(ended[0]["topic"], screen_topic);
+    assert_eq!(ended[0].get("gap"), Some(&Value::Bool(true)));
+    assert!(ended[0].get("data").is_none());
+}
+
+#[test]
+fn activity_only_changes_ride_the_heartbeat() {
+    let h = support::Harness::new();
+    let mut record = h.record(Phase::Exited, None, b"");
+    let mut rpc = Helper::new(&h, 2);
+    subscribe(&mut rpc, json!({"topics": ["sessions"]}));
+    rpc.expect_event("snapshot", Duration::from_secs(5));
+    // Flowing output touches only wall-clock fields. For six seconds nothing
+    // structural changes, so at most the heartbeat-cadence snapshot may go
+    // out (once, ~5 s in, in place of the heartbeat).
+    let window = Instant::now();
+    let mut snapshots = 0;
+    while window.elapsed() < Duration::from_secs(6) {
+        record.last_activity_ms = Some(aplexer::now_ms());
+        record.updated_at_ms = aplexer::now_ms();
+        atomic_write_json(&h.paths().record(record.id), &record).unwrap();
+        while rpc
+            .poll_event("snapshot", Duration::from_millis(5))
+            .is_some()
         {
-            fresh = Some(frame);
-            break;
+            snapshots += 1;
         }
+        // Paced for concurrently running suites; activity stays continuous.
+        std::thread::sleep(Duration::from_millis(40));
     }
-    let fresh = fresh.expect("never saw the final snapshot");
-    assert!(fresh.get("gap").is_none());
+    assert!(
+        snapshots <= 1,
+        "activity churned {snapshots} snapshots in 6 s; want at most the 5 s heartbeat-cadence one"
+    );
 }
 
 #[test]

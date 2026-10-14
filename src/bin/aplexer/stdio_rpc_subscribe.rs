@@ -21,6 +21,9 @@ const SCREEN_MIN_INTERVAL: Duration = Duration::from_millis(100);
 const SCREEN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// A topic that produced no frame for this long gets a heartbeat.
 const HEARTBEAT_IDLE: Duration = Duration::from_secs(5);
+/// A topic whose screen capture failed is skipped this long (a wedged
+/// worker must not stall snapshots and heartbeats on the publisher tick).
+const CAPTURE_BACKOFF: Duration = Duration::from_secs(2);
 /// Publisher tick: well under the 200 ms change-to-snapshot bound.
 const PUBLISH_TICK: Duration = Duration::from_millis(20);
 /// Bounded event queue; overflow drops the oldest and marks the gap.
@@ -28,10 +31,75 @@ const EVENT_QUEUE_CAP: usize = 16;
 /// At most this many screen topics per helper generation.
 const MAX_SCREEN_TOPICS: usize = 16;
 
+/// Raw-list row fields that tick with wall-clock or sampler activity rather
+/// than session events. `state`/`phase`/`exit`/`reported_state` stay: their
+/// flips (lifecycle, crash, genuine agent reports) must push within 200 ms.
+const RAW_VOLATILE_FIELDS: &[&str] = &[
+    "cpu_percent",
+    "processes",
+    "last_activity_ms",
+    "last_accessed_ms",
+    "updated_at_ms",
+    "reported_state_at_ms",
+    "reported_state_event_ms",
+];
+/// Schema-3 row fields with the same property. `agent_state` covers both
+/// the reported states and the wall-clock activity heuristic; genuine
+/// reported transitions ride along with activity and arrive within 5 s.
+const PSC_VOLATILE_FIELDS: &[&str] = &["activity_epoch", "agent_state", "agent_state_source"];
+
 fn content_hash(bytes: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);
     hasher.finish()
+}
+
+/// Activity-stripped hash of a sessions snapshot: wall-clock and sampler
+/// fields are excluded, so flowing output or process sampling alone never
+/// counts as a change. Everything event-like (membership, phase, state,
+/// tags, agent, attachment, warnings, errors) stays verbatim and still
+/// pushes within 200 ms.
+fn stable_sessions_key(data: &Value, format_psc: bool) -> u64 {
+    fn row_key(row: &Value, volatile: &[&str]) -> String {
+        match row.as_object() {
+            Some(map) => {
+                let mut parts: Vec<String> = map
+                    .iter()
+                    .filter(|(key, _)| !volatile.contains(&key.as_str()))
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect();
+                parts.sort();
+                parts.join(",")
+            }
+            None => row.to_string(),
+        }
+    }
+    if format_psc {
+        let mut rows: Vec<String> = data
+            .get("sessions")
+            .and_then(Value::as_array)
+            .map(|sessions| {
+                sessions
+                    .iter()
+                    .map(|session| row_key(session, PSC_VOLATILE_FIELDS))
+                    .collect()
+            })
+            .unwrap_or_default();
+        rows.sort();
+        let errors = data.get("errors").map(Value::to_string).unwrap_or_default();
+        content_hash(format!("{}|{errors}", rows.join(";")).as_bytes())
+    } else {
+        let mut rows: Vec<String> = data
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| row_key(row, RAW_VOLATILE_FIELDS))
+                    .collect()
+            })
+            .unwrap_or_default();
+        rows.sort();
+        content_hash(rows.join(";").as_bytes())
+    }
 }
 
 pub(super) enum Topic {
@@ -58,11 +126,14 @@ pub(super) struct TopicState {
     emitted: Instant,
     /// Last frame time of any kind (heartbeat deadline).
     framed: Instant,
-    /// Content hash of the last emitted frame (`None` until the first
-    /// successful capture for screen topics).
+    /// Full content hash at the last emission.
     hash: Option<u64>,
+    /// Activity-stripped hash at the last emission (sessions topics).
+    stable: Option<u64>,
     /// Last screen poll time.
     polled: Instant,
+    /// A failed screen capture backs the topic off until this time.
+    backoff_until: Instant,
     /// The request loop sets this after writing the initial frames, so the
     /// publisher never emits for a subscription whose response is not yet
     /// on the wire (wire order would otherwise invert under a concurrent tick).
@@ -91,7 +162,7 @@ impl Subs {
     }
 
     /// Mark every topic of a subscription live after its initial frames are
-    /// on the wire. See `handle_subscribe` for the ordering argument.
+    /// on the wire. See `prepare_subscribe` for the ordering argument.
     pub(super) fn prime(&mut self, id: &str) {
         if let Some(sub) = self.subscriptions.get_mut(id) {
             for topic in &mut sub.topics {
@@ -99,11 +170,36 @@ impl Subs {
             }
         }
     }
+
+    pub(super) fn insert(&mut self, id: String, topics: Vec<TopicState>, format_psc: bool) {
+        self.subscriptions
+            .insert(id, Subscription { topics, format_psc });
+    }
+}
+
+/// Event kinds in replace precedence order: a queued frame is replaced in
+/// place only by a frame of equal-or-higher information content, so a
+/// heartbeat never clobbers a queued snapshot and an `ended` always wins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Kind {
+    Heartbeat,
+    Screen,
+    Snapshot,
+    Ended,
+}
+
+struct Queued {
+    sub: String,
+    topic: String,
+    kind: Kind,
+    frame: Value,
 }
 
 struct BusInner {
-    queue: VecDeque<Value>,
-    dropped: bool,
+    queue: VecDeque<Queued>,
+    /// Keys whose queued frame was evicted under pressure: their next frame
+    /// carries `gap:true`.
+    gap_keys: HashSet<(String, String)>,
 }
 
 pub(super) struct Bus {
@@ -117,7 +213,7 @@ impl Bus {
         Self {
             inner: Mutex::new(BusInner {
                 queue: VecDeque::new(),
-                dropped: false,
+                gap_keys: HashSet::new(),
             }),
             wake: Condvar::new(),
             seq: AtomicU64::new(1),
@@ -128,13 +224,64 @@ impl Bus {
         self.seq.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub(super) fn push(&self, frame: Value) {
+    /// Latest wins per (subscription, topic): a newer frame for a key with a
+    /// queued frame replaces it in place and carries `gap:true` (an
+    /// intermediate state was skipped). `ended` additionally evicts any
+    /// queued frame of its topic and is itself never dropped. A heartbeat
+    /// newer than queued state is dropped outright: the queued frame proves
+    /// freshness better. Overflow evicts the oldest non-`ended` frame and
+    /// marks its key, so the gap always lands on the right topic.
+    pub(super) fn push(&self, sub: &str, topic: &str, kind: Kind, mut frame: Value) {
         let mut guard = self.inner.lock().unwrap();
-        if guard.queue.len() >= EVENT_QUEUE_CAP {
-            guard.queue.pop_front();
-            guard.dropped = true;
+        if kind == Kind::Ended {
+            // The terminal truth supersedes any undelivered frame of its
+            // topic; like every replacement, it carries the gap when it
+            // actually displaces one.
+            let displaced = guard.queue.iter().any(|q| q.sub == sub && q.topic == topic);
+            guard.queue.retain(|q| !(q.sub == sub && q.topic == topic));
+            if displaced {
+                if let Some(object) = frame.as_object_mut() {
+                    object.insert("gap".to_owned(), Value::Bool(true));
+                }
+            }
+        } else if let Some(existing) = guard
+            .queue
+            .iter_mut()
+            .find(|q| q.sub == sub && q.topic == topic)
+        {
+            if kind >= existing.kind {
+                existing.kind = kind;
+                existing.frame = frame;
+                if let Some(object) = existing.frame.as_object_mut() {
+                    object.insert("gap".to_owned(), Value::Bool(true));
+                }
+                guard.gap_keys.remove(&(sub.to_owned(), topic.to_owned()));
+            }
+            self.wake.notify_one();
+            return;
         }
-        guard.queue.push_back(frame);
+        while guard.queue.len() >= EVENT_QUEUE_CAP {
+            let evicted = guard.queue.iter().position(|q| q.kind != Kind::Ended);
+            match evicted {
+                Some(index) => {
+                    let evicted = guard.queue.remove(index).unwrap();
+                    guard.gap_keys.insert((evicted.sub, evicted.topic));
+                }
+                None => break,
+            }
+        }
+        let key = (sub.to_owned(), topic.to_owned());
+        if guard.gap_keys.remove(&key) {
+            if let Some(object) = frame.as_object_mut() {
+                object.insert("gap".to_owned(), Value::Bool(true));
+            }
+        }
+        guard.queue.push_back(Queued {
+            sub: key.0,
+            topic: key.1,
+            kind,
+            frame,
+        });
         self.wake.notify_one();
     }
 
@@ -272,17 +419,29 @@ fn session_live(record: &SessionRecord) -> bool {
     !matches!(record.phase, Phase::Exited | Phase::Failed)
 }
 
-/// Handle `subscribe` synchronously in the request loop, so the response is
-/// on the wire before any event. Returns the result value, the initial
-/// frames in wire order, and the subscription id to prime afterwards.
-pub(super) fn handle_subscribe(
+/// Prepared subscription: everything `subscribe` needs before it takes the
+/// stdout lock. Resolution and the initial screen captures run here, lock
+/// free, so a wedged worker stalls neither the event writer nor other
+/// responses waiting on stdout.
+pub(super) struct Prepared {
+    pub(super) sub_id: String,
+    pub(super) result: Value,
+    pub(super) initial: Vec<Value>,
+    pub(super) states: Vec<TopicState>,
+    pub(super) format_psc: bool,
+}
+
+/// Prepare `subscribe` without touching stdout or inserting anything, so
+/// the request loop can capture first and lock afterwards. Returns the
+/// prepared subscription for the loop to insert, write and prime.
+pub(super) fn prepare_subscribe(
     proto: u32,
     call: &Call,
     paths: &Paths,
     state: &Arc<RwLock<Snapshot>>,
     subs: &Arc<Mutex<Subs>>,
     bus: &Arc<Bus>,
-) -> std::result::Result<(Value, Vec<Value>, String), Value> {
+) -> std::result::Result<Prepared, Value> {
     let request_id = json!(call.id.clone());
     let fail = |code: &str, message: String| -> Value {
         failure(request_id.clone(), proto, code, message, true)
@@ -311,15 +470,17 @@ pub(super) fn handle_subscribe(
     };
     drop(guard);
     let new_screens = topics.iter().filter(|t| t.starts_with("screen:")).count();
-    {
-        let subs_guard = subs.lock().unwrap();
+    let sub_id = {
+        let mut subs_guard = subs.lock().unwrap();
         if subs_guard.screen_topics() + new_screens > MAX_SCREEN_TOPICS {
             return Err(fail(
                 "invalid_request",
                 format!("at most {MAX_SCREEN_TOPICS} screen topics per helper"),
             ));
         }
-    }
+        subs_guard.next += 1;
+        format!("sub-{}", subs_guard.next)
+    };
     let mut resolved = Vec::new();
     for topic in &topics {
         if let Some(selector) = topic.strip_prefix("screen:") {
@@ -341,10 +502,10 @@ pub(super) fn handle_subscribe(
         initial.push(event_frame(
             proto,
             "snapshot",
-            "",
+            &sub_id,
             "sessions",
             seq,
-            Some(data),
+            Some(data.clone()),
             None,
         ));
         states.push(TopicState {
@@ -352,7 +513,9 @@ pub(super) fn handle_subscribe(
             emitted: now,
             framed: now,
             hash: Some(content_hash(&list_bytes)),
+            stable: Some(stable_sessions_key(&data, format_psc)),
             polled: now,
+            backoff_until: now,
             primed: false,
         });
     }
@@ -366,7 +529,7 @@ pub(super) fn handle_subscribe(
                     initial.push(event_frame(
                         proto,
                         "screen",
-                        "",
+                        &sub_id,
                         &topic,
                         seq,
                         Some(data),
@@ -385,25 +548,26 @@ pub(super) fn handle_subscribe(
             emitted: now,
             framed: now,
             hash: baseline,
+            stable: None,
             polled: now,
+            // A failed first capture backs off like a publisher miss, so a
+            // wedged worker does not hot-poll from the first tick.
+            backoff_until: if baseline.is_none() {
+                now + CAPTURE_BACKOFF
+            } else {
+                now
+            },
             primed: false,
         });
     }
-    let mut subs_guard = subs.lock().unwrap();
-    subs_guard.next += 1;
-    let sub_id = format!("sub-{}", subs_guard.next);
-    for frame in &mut initial {
-        frame["subscription"] = json!(sub_id.clone());
-    }
-    subs_guard.subscriptions.insert(
-        sub_id.clone(),
-        Subscription {
-            topics: states,
-            format_psc,
-        },
-    );
     let seq = first_seq.unwrap_or_else(|| bus.seq.load(Ordering::Relaxed));
-    Ok((json!({"subscription":sub_id,"seq":seq}), initial, sub_id))
+    Ok(Prepared {
+        sub_id: sub_id.clone(),
+        result: json!({"subscription":sub_id,"seq":seq}),
+        initial,
+        states,
+        format_psc,
+    })
 }
 
 /// Handle `unsubscribe` synchronously; it never touches the registry.
@@ -494,7 +658,9 @@ pub(super) fn publisher_loop(
                         psc_mode,
                     } = &topic.topic
                     {
-                        if now.duration_since(topic.polled) >= SCREEN_POLL_INTERVAL {
+                        if now >= topic.backoff_until
+                            && now.duration_since(topic.polled) >= SCREEN_POLL_INTERVAL
+                        {
                             topic.polled = now;
                             polls.push(ScreenPoll {
                                 sub: id.clone(),
@@ -533,29 +699,69 @@ pub(super) fn publisher_loop(
                     } else {
                         guard.list_bytes.clone()
                     };
-                    let hash = content_hash(&bytes);
+                    let full = content_hash(&bytes);
+                    // Activity-only changes (flowing output, sampler ticks)
+                    // ride the heartbeat cadence; anything structural pushes
+                    // at the coalescing cadence.
+                    let stable = snapshot_value(&bytes)
+                        .map(|data| stable_sessions_key(&data, sub.format_psc))
+                        .ok();
                     if let Some(topic) = sub
                         .topics
                         .iter_mut()
                         .find(|t| matches!(t.topic, Topic::Sessions))
                     {
+                        let structural = stable != topic.stable;
                         if topic.primed
-                            && topic.hash != Some(hash)
+                            && structural
                             && now.duration_since(topic.emitted) >= SNAPSHOT_MIN_INTERVAL
                         {
                             if let Ok(data) = snapshot_value(&bytes) {
-                                topic.hash = Some(hash);
+                                topic.hash = Some(full);
+                                topic.stable = stable;
                                 topic.emitted = now;
                                 topic.framed = now;
-                                bus.push(event_frame(
-                                    proto,
-                                    "snapshot",
+                                bus.push(
                                     id,
                                     "sessions",
-                                    bus.alloc_seq(),
-                                    Some(data),
-                                    None,
-                                ));
+                                    Kind::Snapshot,
+                                    event_frame(
+                                        proto,
+                                        "snapshot",
+                                        id,
+                                        "sessions",
+                                        bus.alloc_seq(),
+                                        Some(data),
+                                        None,
+                                    ),
+                                );
+                            }
+                        } else if topic.primed
+                            && !structural
+                            && topic.hash != Some(full)
+                            && now.duration_since(topic.framed) >= HEARTBEAT_IDLE
+                        {
+                            // Activity moved but nothing structural did: the
+                            // snapshot goes out in place of the heartbeat.
+                            if let Ok(data) = snapshot_value(&bytes) {
+                                topic.hash = Some(full);
+                                topic.stable = stable;
+                                topic.emitted = now;
+                                topic.framed = now;
+                                bus.push(
+                                    id,
+                                    "sessions",
+                                    Kind::Snapshot,
+                                    event_frame(
+                                        proto,
+                                        "snapshot",
+                                        id,
+                                        "sessions",
+                                        bus.alloc_seq(),
+                                        Some(data),
+                                        None,
+                                    ),
+                                );
                             }
                         }
                     }
@@ -573,15 +779,20 @@ pub(super) fn publisher_loop(
                 }
                 match outcome {
                     ScreenOutcome::Ended => {
-                        bus.push(event_frame(
-                            proto,
-                            "ended",
+                        bus.push(
                             &poll.sub,
                             &poll.name,
-                            bus.alloc_seq(),
-                            None,
-                            None,
-                        ));
+                            Kind::Ended,
+                            event_frame(
+                                proto,
+                                "ended",
+                                &poll.sub,
+                                &poll.name,
+                                bus.alloc_seq(),
+                                None,
+                                None,
+                            ),
+                        );
                         sub.topics.remove(poll.index);
                     }
                     ScreenOutcome::Captured(hash, data) => {
@@ -591,18 +802,27 @@ pub(super) fn publisher_loop(
                             topic.hash = Some(hash);
                             topic.emitted = now;
                             topic.framed = now;
-                            bus.push(event_frame(
-                                proto,
-                                "screen",
+                            bus.push(
                                 &poll.sub,
                                 &poll.name,
-                                bus.alloc_seq(),
-                                Some(data),
-                                None,
-                            ));
+                                Kind::Screen,
+                                event_frame(
+                                    proto,
+                                    "screen",
+                                    &poll.sub,
+                                    &poll.name,
+                                    bus.alloc_seq(),
+                                    Some(data),
+                                    None,
+                                ),
+                            );
                         }
                     }
-                    ScreenOutcome::Skipped => {}
+                    ScreenOutcome::Skipped => {
+                        // A failed capture backs off: a wedged worker must
+                        // not hot-poll and stall the publisher tick.
+                        topic.backoff_until = now + CAPTURE_BACKOFF;
+                    }
                 }
             }
             for (id, sub) in subs_guard.subscriptions.iter_mut() {
@@ -612,15 +832,20 @@ pub(super) fn publisher_loop(
                     }
                     if now.duration_since(topic.framed) >= HEARTBEAT_IDLE {
                         topic.framed = now;
-                        bus.push(event_frame(
-                            proto,
-                            "heartbeat",
+                        bus.push(
                             id,
                             topic.topic.name(),
-                            bus.alloc_seq(),
-                            None,
-                            Some(&info.generation),
-                        ));
+                            Kind::Heartbeat,
+                            event_frame(
+                                proto,
+                                "heartbeat",
+                                id,
+                                topic.topic.name(),
+                                bus.alloc_seq(),
+                                None,
+                                Some(&info.generation),
+                            ),
+                        );
                     }
                 }
             }
@@ -628,9 +853,11 @@ pub(super) fn publisher_loop(
     }
 }
 
-/// Drain the bounded event queue to stdout. A client that stops draining
-/// blocks here on a full pipe while the publisher keeps only the latest
-/// bounded frames and marks the gap; a broken pipe ends the thread.
+/// Drain the bounded event queue to stdout. Gap marking happens at push
+/// time (per-topic latest wins), so this only moves frames in order. A
+/// client that stops draining blocks here on a full pipe while the
+/// publisher keeps only the latest bounded frames; a broken pipe ends
+/// the thread.
 pub(super) fn writer_loop(out: Arc<Mutex<std::io::Stdout>>, bus: Arc<Bus>, stop: Arc<AtomicBool>) {
     loop {
         let frame = {
@@ -645,14 +872,7 @@ pub(super) fn writer_loop(out: Arc<Mutex<std::io::Stdout>>, bus: Arc<Bus>, stop:
                     .unwrap()
                     .0;
             }
-            let mut frame = guard.queue.pop_front().unwrap();
-            if guard.dropped {
-                guard.dropped = false;
-                if let Some(object) = frame.as_object_mut() {
-                    object.insert("gap".to_owned(), Value::Bool(true));
-                }
-            }
-            frame
+            guard.queue.pop_front().unwrap().frame
         };
         if write_packet(&mut *out.lock().unwrap(), &frame).is_err() {
             return;
