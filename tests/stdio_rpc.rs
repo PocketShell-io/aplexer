@@ -390,3 +390,33 @@ fn uncertain_send_is_never_reported_as_not_dispatched_or_replayed() {
     drop(rpc);
     assert_eq!(server.finish(), vec![b"one".to_vec()]);
 }
+
+#[test]
+fn registry_corruption_fails_closed_and_recovery_refreshes_rows() {
+    let h = support::Harness::new();
+    let record = h.record(Phase::Exited, None, b"");
+    let mut rpc = Helper::new(&h);
+    assert!(rpc.call("list", json!({})).get("result").is_some());
+    std::fs::write(h.paths().record(record.id), b"{").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let reply = rpc.call("list", json!({}));
+        if reply.get("error").is_some() {
+            assert_eq!(reply["error"]["code"], "registry_unavailable");
+            assert_eq!(reply["error"]["notDispatched"], true);
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    atomic_write_json(&h.paths().record(record.id), &record).unwrap();
+    loop {
+        let reply = rpc.call("list", json!({}));
+        if reply.get("result").is_some() {
+            assert_eq!(reply["result"][0]["id"], record.id.to_string());
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
