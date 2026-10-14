@@ -415,6 +415,8 @@ fn env_unset_union_is_forced() {
             env_unset: vec!["ANTHROPIC_API_KEY".into(), "MY_CUSTOM_VAR".into()],
             skip_permissions_argv: Vec::new(),
             task_argv: Vec::new(),
+            enter_delay_ms: None,
+            enter_settle: None,
         },
     );
     let launch = config
@@ -508,6 +510,8 @@ fn skip_permissions_argv_ported_values() {
                 env_unset: Vec::new(),
                 skip_permissions_argv: vec!["--dangerously-skip-permissions".into()],
                 task_argv: Vec::new(),
+                enter_delay_ms: None,
+                enter_settle: None,
             },
         )]),
         ..Config::default()

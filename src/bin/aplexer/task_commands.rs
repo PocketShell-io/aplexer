@@ -338,6 +338,7 @@ fn send_task_notice(
         check_body_size(&envelope.body)?;
         let mp = ensure_workspace(paths, &workspace)?;
         let sent = finish_send(
+            paths,
             &mp,
             &records,
             &workspace,

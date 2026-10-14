@@ -22,7 +22,9 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use crate::{validate_history_bytes, validate_limits, Limits, Paths, DEFAULT_HISTORY_BYTES};
+use crate::{
+    validate_history_bytes, validate_limits, Limits, Paths, SubmissionTiming, DEFAULT_HISTORY_BYTES,
+};
 
 impl Config {
     fn validate(&self) -> Result<()> {
@@ -46,6 +48,14 @@ impl Config {
             }
             if engine.command[0].is_empty() {
                 bail!("engine {name:?} command executable must not be empty");
+            }
+            if let Some(delay_ms) = engine.enter_delay_ms {
+                if delay_ms > crate::enter_timing::MAX_ENTER_DELAY_MS {
+                    bail!(
+                        "engine {name:?} enter_delay_ms {delay_ms} exceeds the maximum {}",
+                        crate::enter_timing::MAX_ENTER_DELAY_MS
+                    );
+                }
             }
         }
 
@@ -85,6 +95,20 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// The resolved wait-before-Enter for one target engine: the engine's
+    /// `[engines.<id>]` entry (`enter_delay_ms` / `enter_settle`) over the
+    /// built-in per-family defaults. See `enter_timing`.
+    pub fn submission_timing(&self, engine: &str) -> SubmissionTiming {
+        match self.engines.get(engine) {
+            Some(engine_config) => SubmissionTiming::resolve(
+                engine,
+                engine_config.enter_delay_ms,
+                engine_config.enter_settle,
+            ),
+            None => SubmissionTiming::builtin(engine),
+        }
     }
 
     pub fn load(paths: &Paths) -> Result<Self> {

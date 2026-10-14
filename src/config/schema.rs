@@ -38,6 +38,22 @@ pub struct EngineConfig {
     /// with neither refuses task runs rather than guessing its flags.
     #[serde(default)]
     pub task_argv: Vec<String>,
+    /// Wall-clock gap in milliseconds between this engine receiving pasted
+    /// text and the Enter that submits it (`a send --enter`, `a message send
+    /// --pane`). Codex-family TUIs swallow an Enter that lands while a paste
+    /// burst is still draining; the delay floors that race. Unset falls back
+    /// to the built-in per-family default (`enter_timing`); capped at
+    /// `MAX_ENTER_DELAY_MS`.
+    #[serde(default)]
+    pub enter_delay_ms: Option<u64>,
+    /// After `enter_delay_ms` elapsed, keep polling the captured screen
+    /// until the composer line stops changing (bounded by
+    /// `SETTLE_MAX_WAIT_MS`) before pressing Enter, so an unusually large
+    /// paste extends the wait instead of racing it. Unset falls back to
+    /// the family builtin (on for codex, off elsewhere); an explicit
+    /// `false` always wins.
+    #[serde(default)]
+    pub enter_settle: Option<bool>,
 }
 impl EngineConfig {
     /// Effective unset policy for one named engine. `shell` is the deliberate

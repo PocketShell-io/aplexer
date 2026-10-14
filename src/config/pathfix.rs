@@ -620,6 +620,8 @@ mod tests {
             env_unset: Vec::new(),
             skip_permissions_argv: Vec::new(),
             task_argv: Vec::new(),
+            enter_delay_ms: None,
+            enter_settle: None,
         }
     }
 
@@ -809,6 +811,8 @@ mod tests {
                     env_unset: Vec::new(),
                     skip_permissions_argv: vec!["--auto".into()],
                     task_argv: Vec::new(),
+                    enter_delay_ms: None,
+                    enter_settle: None,
                 },
             )]),
             ..Config::default()

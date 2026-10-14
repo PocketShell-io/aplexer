@@ -87,6 +87,7 @@ pub(crate) fn rpc_send_submitted(
     record: &SessionRecord,
     data: &[u8],
     kind: SubmissionKind,
+    timing: SubmissionTiming,
 ) -> Result<()> {
     let Some((&b'\r', text)) = data.split_last() else {
         bail!("submitted input must end with carriage return");
@@ -109,9 +110,55 @@ pub(crate) fn rpc_send_submitted(
         rpc_send(record, b"\x1b[201~")?;
     }
     if !text.is_empty() {
-        thread::sleep(Duration::from_millis(300));
+        wait_before_enter(record, timing);
     }
     rpc_send(record, b"\r")
+}
+
+/// The wall-clock gap between the last pasted byte and Enter: the timing's
+/// floor delay, optionally extended by settle detection -- poll the
+/// captured screen until the composer line stops changing (bounded), so a
+/// large paste is not raced. Pure delay when settle is off.
+pub(crate) fn wait_before_enter(record: &SessionRecord, timing: SubmissionTiming) {
+    let floor = Duration::from_millis(timing.delay_ms);
+    if !timing.settle {
+        thread::sleep(floor);
+        return;
+    }
+    let start = Instant::now();
+    let give_up = floor + Duration::from_millis(SETTLE_MAX_WAIT_MS);
+    let mut watcher = SettleWatcher::new();
+    loop {
+        let stable = watcher.observe(composer_snapshot(record));
+        if start.elapsed() >= give_up || (start.elapsed() >= floor && stable >= SETTLE_STABLE_POLLS)
+        {
+            break;
+        }
+        thread::sleep(Duration::from_millis(SETTLE_POLL_MS));
+    }
+}
+
+/// One settle observation of the target pane. An unreadable screen degrades
+/// to the default snapshot, which reads as stability and fails the wait
+/// open; the floor delay still applies.
+fn composer_snapshot(record: &SessionRecord) -> ComposerSnapshot {
+    rpc_capture_screen(record, false)
+        .ok()
+        .and_then(|bytes| {
+            let mut parser = vt100::Parser::new(24, 80, 0);
+            parser.process(&bytes);
+            Some(ComposerSnapshot::from_screen(parser.screen()))
+        })
+        .unwrap_or_default()
+}
+
+/// The submission timing for one engine, from the state dir's config; a
+/// config load failure degrades to the built-in family default so a broken
+/// config file never blocks a send.
+pub(crate) fn submission_timing(paths: &Paths, engine: &str) -> SubmissionTiming {
+    Config::load(paths)
+        .map(|config| config.submission_timing(engine))
+        .unwrap_or_else(|_| SubmissionTiming::builtin(engine))
 }
 
 fn terminal_accepts_bracketed_paste(record: &SessionRecord) -> Result<bool> {

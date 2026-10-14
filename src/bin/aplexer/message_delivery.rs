@@ -41,6 +41,7 @@ fn select_pane_record<'a>(
 }
 
 pub(crate) fn deliver_pane(
+    paths: &Paths,
     records: &[SessionRecord],
     workspace: &Path,
     envelope: &MessageEnvelope,
@@ -59,7 +60,8 @@ pub(crate) fn deliver_pane(
     } else {
         SubmissionKind::FramedMessage
     };
-    rpc_send_submitted(record, &input, kind)
+    let timing = submission_timing(paths, &record.engine);
+    rpc_send_submitted(record, &input, kind, timing)
         .with_context(|| format!("submit message in session {tag:?}'s PTY"))
 }
 
@@ -107,6 +109,7 @@ pub(crate) fn parse_data_arg(raw: Option<&str>) -> Result<Option<Value>> {
 /// real mail. If injection fails after persistence, the recipient still has
 /// an unread inbox message and the caller gets that explicit outcome.
 pub(crate) fn finish_send(
+    paths: &Paths,
     mp: &MessagePaths,
     records: &[SessionRecord],
     workspace: &Path,
@@ -118,13 +121,14 @@ pub(crate) fn finish_send(
     }
     write_message_in(mp, &envelope)?;
     if pane.pane {
-        finish_pane(mp, records, workspace, &mut envelope, pane)?;
+        finish_pane(paths, mp, records, workspace, &mut envelope, pane)?;
     }
     let _ = maybe_gc_in(mp, workspace, records);
     Ok(envelope)
 }
 
 fn finish_pane(
+    paths: &Paths,
     mp: &MessagePaths,
     records: &[SessionRecord],
     workspace: &Path,
@@ -136,7 +140,7 @@ fn finish_pane(
         workspace,
         envelope.id,
         |current| pane_target(records, workspace, current).map(|_| ()),
-        |current| deliver_pane(records, workspace, current, pane.raw, pane.no_enter),
+        |current| deliver_pane(paths, records, workspace, current, pane.raw, pane.no_enter),
     )?;
     match outcome.status {
         SubmissionStatus::Submitted | SubmissionStatus::AlreadySubmitted => {

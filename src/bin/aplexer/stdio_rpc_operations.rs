@@ -167,12 +167,13 @@ pub(super) fn execute(
                 rpc_send(&record, &data)?;
                 rpc_send(&record, b"\x1b[201~")?;
                 if submit {
-                    thread::sleep(Duration::from_millis(300));
+                    wait_before_enter(&record, submission_timing(paths, &record.engine));
                     rpc_send(&record, b"\r")?;
                 }
             } else if submit {
                 data.push(b'\r');
-                rpc_send_submitted(&record, &data, SubmissionKind::Text)?;
+                let timing = submission_timing(paths, &record.engine);
+                rpc_send_submitted(&record, &data, SubmissionKind::Text, timing)?;
             } else if !data.is_empty() {
                 rpc_send(&record, &data)?;
             }

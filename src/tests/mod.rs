@@ -3,6 +3,7 @@
 #[cfg(unix)]
 mod cgroup;
 mod config;
+mod enter_timing;
 mod history;
 mod paths;
 mod persist;

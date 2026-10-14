@@ -324,6 +324,34 @@ pids = 256
 
 Then use it: `a start --profile large`.
 
+### Submit timing (`enter_delay_ms`, `enter_settle`)
+
+When aplexer submits agent input (`a send --enter`, `a message send
+--pane`), it writes the text first and presses Enter as a distinct, later
+keystroke. Agent TUIs drain pasted bytes through their own key-event
+queues, and an Enter landing while a large paste is still draining can be
+swallowed: the message sits in the composer and never submits. The
+wall-clock gap between the two writes is an engine-family property,
+measured per family by `tools/enter_delay_matrix.py` and built in as the
+default. Two per-engine keys tune it:
+
+```toml
+[engines.codex]
+enter_delay_ms = 500   # floor gap between last pasted byte and Enter
+enter_settle = true    # extend the wait until the composer stops changing
+```
+
+`enter_delay_ms` replaces the family default (capped at 10000, validated
+at config load; codex ships 400ms, everything else the measured shipped
+default). `enter_settle` additionally polls the captured screen after the
+floor elapsed and waits -- bounded, at most a couple of seconds -- until
+the composer line has stayed unchanged, so an unusually large paste
+extends the wait instead of racing it. Settle only ever extends the wait;
+it never replaces the floor. Unset keys take the family builtin: codex
+ships settle on (its paste-burst Enter suppression outlives the moment
+the composer renders the paste), every other family off; an explicit
+`enter_settle = false` always wins.
+
 ## Resource limits
 
 On hosts with cgroup-v2 delegation (a normal systemd desktop or server),

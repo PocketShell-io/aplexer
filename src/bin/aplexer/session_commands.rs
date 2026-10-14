@@ -426,7 +426,8 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
     }
     let mut sent = 0usize;
     if args.enter {
-        rpc_send_submitted(&record, &data, kind)?;
+        let timing = submission_timing(paths, &record.engine);
+        rpc_send_submitted(&record, &data, kind, timing)?;
         sent = data.len();
     } else {
         for chunk in data.chunks(MAX_FRAME_BYTES) {

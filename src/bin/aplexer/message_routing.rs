@@ -149,7 +149,7 @@ fn finish_and_print(
 ) -> Result<()> {
     let workspace = envelope.workspace.clone();
     let mp = ensure_workspace(paths, &workspace)?;
-    let sent = finish_send(&mp, records, &workspace, envelope, pane)?;
+    let sent = finish_send(paths, &mp, records, &workspace, envelope, pane)?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&sent)?);
     } else {

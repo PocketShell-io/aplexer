@@ -7,6 +7,7 @@ pub mod agent_kind;
 pub mod api;
 pub mod awareness;
 pub mod coordination;
+pub mod enter_timing;
 pub mod handoff_schedule;
 pub mod hooks;
 pub mod messaging;
@@ -30,6 +31,7 @@ pub use protocol::*;
 
 mod config;
 pub use config::*;
+pub use enter_timing::*;
 
 mod util;
 pub use util::*;

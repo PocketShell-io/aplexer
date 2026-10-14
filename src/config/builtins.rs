@@ -52,6 +52,8 @@ impl Config {
                 // builtin table; builtins leave it empty so one table owns
                 // the noninteractive defaults.
                 task_argv: Vec::new(),
+                enter_delay_ms: None,
+                enter_settle: None,
             }
         }
         let shell_argv = default_shell_argv();

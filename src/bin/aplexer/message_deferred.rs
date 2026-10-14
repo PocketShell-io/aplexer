@@ -95,10 +95,12 @@ fn deliver_existing(paths: &Paths, args: MessageDeliverArgs) -> Result<Submissio
         },
         |current| {
             let target = delivery_target(&records, current)?;
+            let timing = submission_timing(paths, &target.engine);
             rpc_send_submitted(
                 target,
                 &pane_input_bytes(current, false, false),
                 SubmissionKind::FramedMessage,
+                timing,
             )
         },
     )
