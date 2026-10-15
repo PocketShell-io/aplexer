@@ -3,6 +3,7 @@
 #[cfg(unix)]
 mod cgroup;
 mod config;
+mod delivery_ack;
 mod enter_timing;
 mod history;
 mod paths;

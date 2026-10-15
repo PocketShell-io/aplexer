@@ -1,0 +1,14 @@
+╭──────────────────────────────────────────────────────────╮
+│ >_ ZCode + Codex (v0.0.0)                                │
+│                                                          │
+│ model:       glm-5.3-flash max   /model to change        │
+│ directory:   /tmp/ws │
+│ permissions: YOLO mode                                   │
+╰──────────────────────────────────────────────────────────╯
+
+  Tip: This is a test announcement
+ 
+ 
+› Reply with exactly the single word ACKDONE and nothing else.
+ 
+  glm-5.3-flash max · /tmp/ws

@@ -1,0 +1,15 @@
+ ▐▛███▛█   Claude Code v2.1.289
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/ws
+
+
+❯ Reply with exactly the single word ACKDONE and nothing else.                  
+
+● ACKDONE
+
+✻ Brewed for 2s · done 2:55 PM
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -1,0 +1,24 @@
+  ┃  Line 24: the quick brown fox jumps over the lazy dog, ignore this filler.  
+  ┃  Line 25: the quick brown fox jumps over the lazy dog, ignore this filler.  
+  ┃  Line 26: the quick brown fox jumps over the lazy dog, ignore this filler.  
+  ┃  Line 27: the quick brown fox jumps over the lazy dog, ignore this filler.  
+  ┃  Line 28: the quick brown fox jumps over the lazy dog, ignore this filler.  
+  ┃  Line 29: the quick brown fox jumps over the lazy dog, ignore this filler.  
+  ┃  Reply with exactly ACKLONG.                                                
+  ┃                                                                             
+                                                                                
+     Thought · 507ms                                                            
+                                                                                
+     ACKLONG                                                                    
+                                                                                
+     ▣  Build · Muse Spark 1.3 Free · 6.3s                                      
+                                                                                
+  ┃                                                                             
+  ┃  Reply with exactly the single word ACKDONE and nothing else.               
+  ┃                                                                             
+  ┃  Build auto · Muse Spark 1.3 Free OpenCode · xhigh                          
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+   /tmp/ws  14.8K (1%ctrl+p         
+   /tmp/ws        commands       
+                                                                                
+                                                                                

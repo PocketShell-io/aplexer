@@ -7,6 +7,7 @@ pub mod agent_kind;
 pub mod api;
 pub mod awareness;
 pub mod coordination;
+pub mod delivery_ack;
 pub mod enter_timing;
 pub mod handoff_schedule;
 pub mod hooks;
