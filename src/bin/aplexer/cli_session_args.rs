@@ -232,9 +232,32 @@ pub(crate) struct SendArgs {
     /// Interpret TEXT as hex and send the decoded bytes
     #[arg(long)]
     pub(crate) hex: bool,
-    /// Write text then Enter; PTY acknowledgement does not prove turn consumption
+    /// Write text then Enter, and acknowledge the delivery: wait for the
+    /// agent's input box to be ready, check the text landed and was
+    /// submitted (retrying Enter, or resending text that was dropped), then
+    /// wait for the agent to start working. Exit 0 delivered (or not
+    /// checkable for this engine), 3 delivered but the agent stayed idle,
+    /// 1 failed. `--json` prints the full verdict under `delivery`.
     #[arg(long)]
     pub(crate) enter: bool,
+    /// With --enter: seconds to wait for the agent to start working after
+    /// submission (busy indicator, harness `working` report, or transcript
+    /// activity). 0 skips the working check
+    #[arg(long, value_name = "SECS", default_value_t = 10, requires = "enter")]
+    pub(crate) wait_ack: u64,
+    /// With --enter: seconds to wait for a booting session's input box to
+    /// become ready before pasting (sessions older than 3 minutes get at
+    /// most 3s)
+    #[arg(long, value_name = "SECS", default_value_t = 30, requires = "enter")]
+    pub(crate) ready_timeout: u64,
+    /// With --enter: how many times to resend text the input box visibly
+    /// dropped
+    #[arg(long, value_name = "N", default_value_t = 1, requires = "enter")]
+    pub(crate) resends: u32,
+    /// With --enter: write text and Enter once without reading the screen
+    /// (no readiness wait, retries, or acknowledgement)
+    #[arg(long, requires = "enter", conflicts_with_all = ["wait_ack", "ready_timeout", "resends"])]
+    pub(crate) no_ack: bool,
 }
 #[derive(Args)]
 pub(crate) struct CaptureArgs {

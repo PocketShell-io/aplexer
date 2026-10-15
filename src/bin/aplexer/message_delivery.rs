@@ -62,6 +62,7 @@ pub(crate) fn deliver_pane(
     };
     let timing = submission_timing(paths, &record.engine);
     rpc_send_submitted(record, &input, kind, timing)
+        .map(drop)
         .with_context(|| format!("submit message in session {tag:?}'s PTY"))
 }
 

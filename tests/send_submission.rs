@@ -12,6 +12,8 @@ fn send(engine: &str, flags: &[&str], data: &[u8]) -> (std::process::Output, Vec
     let h = support::Harness::new();
     let mut record = h.record(Phase::Running, Some(std::process::id()), b"");
     record.engine = engine.into();
+    // A settled session: an unrecognized screen gets the short readiness grace.
+    record.created_at_ms = 1;
     atomic_write_json(&h.paths().record(record.id), &record).unwrap();
     let server = worker::Worker::start(&record, false);
     let mut command = h.command();
@@ -101,6 +103,7 @@ fn positional_text_and_piped_text_use_the_same_codex_submission() {
     let h = support::Harness::new();
     let mut record = h.record(Phase::Running, Some(std::process::id()), b"");
     record.engine = "codex".into();
+    record.created_at_ms = 1;
     atomic_write_json(&h.paths().record(record.id), &record).unwrap();
     let server = worker::Worker::start(&record, false);
     let output = h

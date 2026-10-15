@@ -1,4 +1,5 @@
 use super::*;
+use aplexer::delivery_ack::DeliveryStatus;
 
 /// `a <N>` / `a <N> <M>` / `a <N> <tag>` -- attach by position in the same
 /// workspace tree `a list` prints, or by tag within a chosen workspace.
@@ -425,24 +426,55 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
         bail!("no bytes to send");
     }
     let mut sent = 0usize;
+    let mut delivery = None;
     if args.enter {
         let timing = submission_timing(paths, &record.engine);
-        rpc_send_submitted(&record, &data, kind, timing)?;
-        sent = data.len();
+        let mode = if args.no_ack {
+            AckMode::Off
+        } else {
+            AckMode::Verify {
+                ack_timeout_ms: args.wait_ack.saturating_mul(1000),
+                ready_timeout_ms: args.ready_timeout.saturating_mul(1000),
+                max_resends: args.resends,
+            }
+        };
+        let report = deliver_submitted(&record, &data, kind, timing, mode)?;
+        // Bytes written to the PTY: every send of the text plus each Enter.
+        sent = (data.len() - 1) * report.sends as usize + report.enter_presses as usize;
+        delivery = Some(report);
     } else {
         for chunk in data.chunks(MAX_FRAME_BYTES) {
             rpc_send(&record, chunk)?;
             sent += chunk.len();
         }
     }
+    let status = delivery.as_ref().map(|r| r.status);
     if json_output {
-        println!(
-            "{}",
-            json!({"id":record.id,"bytes":sent,"status":"pty_written",
-                   "enter_written":args.enter,"consumed":null})
-        );
+        let mut out = json!({"id":record.id,"bytes":sent,"status":"pty_written",
+                             "enter_written":args.enter,"consumed":null});
+        if let Some(report) = &delivery {
+            out["ack"] = json!(report.status.as_str());
+            out["delivery"] = serde_json::to_value(report)?;
+        }
+        println!("{out}");
+    } else if let Some(report) = delivery.as_ref().filter(|r| {
+        !matches!(
+            r.status,
+            DeliveryStatus::DeliveredWorking | DeliveryStatus::Submitted
+        ) && !args.no_ack
+    }) {
+        if report.status == DeliveryStatus::Failed {
+            bail!("{}", report.summary());
+        }
+        eprintln!("a: {}", report.summary());
     }
-    Ok(())
+    match status.map(DeliveryStatus::exit_code) {
+        Some(code) if code != 0 => {
+            io::stdout().flush().ok();
+            std::process::exit(code)
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Retags a session (and optionally moves it to another workspace) via the

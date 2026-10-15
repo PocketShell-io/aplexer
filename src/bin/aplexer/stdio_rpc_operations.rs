@@ -176,26 +176,30 @@ pub(super) fn execute(
             let submit = call.params["submit"].as_bool().unwrap_or(false);
             *dispatched = true; // Conservatively uncertain from first worker attempt.
             let payload_bytes = data.len() + usize::from(submit);
-            if psc_mode && data.iter().any(|b| matches!(b, b'\n' | b'\r')) {
+            let mut delivery = None;
+            if submit {
+                // Multi-line PSC payloads are always one explicit paste so a
+                // newline can never submit early.
+                let kind = if psc_mode && data.iter().any(|b| matches!(b, b'\n' | b'\r')) {
+                    SubmissionKind::Paste
+                } else {
+                    SubmissionKind::Text
+                };
+                data.push(b'\r');
+                let timing = submission_timing(paths, &record.engine);
+                delivery = Some(rpc_send_submitted(&record, &data, kind, timing)?);
+            } else if psc_mode && data.iter().any(|b| matches!(b, b'\n' | b'\r')) {
                 rpc_send(&record, b"\x1b[200~")?;
                 rpc_send(&record, &data)?;
                 rpc_send(&record, b"\x1b[201~")?;
-                if submit {
-                    wait_before_enter(&record, submission_timing(paths, &record.engine));
-                    submit_enter_and_verify(
-                        &record,
-                        &data,
-                        submission_timing(paths, &record.engine),
-                    )?;
-                }
-            } else if submit {
-                data.push(b'\r');
-                let timing = submission_timing(paths, &record.engine);
-                rpc_send_submitted(&record, &data, SubmissionKind::Text, timing)?;
             } else if !data.is_empty() {
                 rpc_send(&record, &data)?;
             }
-            Ok(json!({"id":record.id,"bytes":payload_bytes}))
+            let mut result = json!({"id":record.id,"bytes":payload_bytes});
+            if let Some(report) = delivery {
+                result["delivery"] = serde_json::to_value(report)?;
+            }
+            Ok(result)
         }
         _ => unreachable!(),
     }?;

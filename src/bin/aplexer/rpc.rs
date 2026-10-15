@@ -1,4 +1,5 @@
 use super::*;
+use aplexer::delivery_ack::{self, AckPolicy, AckTarget, DeliveryReport, DeliveryStatus};
 use aplexer::sys::ipc::Stream;
 
 /// One control round-trip: connect, send `operation` (plus an optional data
@@ -61,6 +62,8 @@ pub(crate) enum SubmissionKind {
     Raw,
     Text,
     FramedMessage,
+    /// Always an explicit bracketed paste (stdio-RPC multi-line payloads).
+    Paste,
 }
 
 pub(crate) fn validate_submission_text(data: &[u8]) -> Result<()> {
@@ -75,27 +78,76 @@ pub(crate) fn validate_submission_text(data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Submit agent input as text, then a distinct Enter event. Codex accepts an
-/// explicit bracketed paste as one event and clears its paste-burst Enter
-/// suppression state; plain text may still be draining through its key-event
-/// queue after our wall-clock delay. OpenCode also needs explicit framing to
-/// keep large bursts from disappearing in its raw key-event path. Framed pane
-/// mail also honors a live
-/// workload's advertised paste mode, even if the session engine is `shell`.
-/// Re-capture the composer after Enter and retry the key once only when the
-/// same payload is visibly pending. This verifies composer submission, not
-/// model consumption; a missing reply never justifies resending the payload.
+/// How much of `aplexer::delivery_ack` a submitted send runs.
+#[derive(Clone, Copy)]
+pub(crate) enum AckMode {
+    /// Paste and Enter once; never read the screen (`a send --no-ack`).
+    Off,
+    /// Wait for ready, verify landing and submission, retry, and wait up to
+    /// this many ms for the agent to start working (0: skip that check).
+    Verify {
+        ack_timeout_ms: u64,
+        ready_timeout_ms: u64,
+        max_resends: u32,
+    },
+}
+
+impl AckMode {
+    /// Pane mail, deferred delivery and stdio RPC: landing and submission
+    /// are verified with retries, without waiting for the turn to start.
+    pub(crate) const SUBMIT: AckMode = AckMode::Verify {
+        ack_timeout_ms: 0,
+        ready_timeout_ms: 30_000,
+        max_resends: 1,
+    };
+}
+
+/// A session once it has been running this long is past its boot: its
+/// screen gets a short readiness grace instead of the full ready timeout,
+/// so an unrecognized layout (a dialog, a new TUI release) costs seconds,
+/// not the boot budget, on every send.
+const BOOT_WINDOW_MS: u64 = 180_000;
+const SETTLED_READY_GRACE_MS: u64 = 3_000;
+
+/// Submit agent input as text, then a distinct Enter event, and acknowledge
+/// the delivery (`aplexer::delivery_ack`). Codex accepts an explicit
+/// bracketed paste as one event and clears its paste-burst Enter
+/// suppression state; plain text may still be draining through its
+/// key-event queue after our wall-clock delay. OpenCode also needs explicit
+/// framing to keep large bursts from disappearing in its raw key-event path.
+/// Framed pane mail also honors a live workload's advertised paste mode,
+/// even if the session engine is `shell`.
+///
+/// A delivery that fails (text never landed, or stayed in the input box
+/// after every Enter) is an error; every other verdict is returned.
 pub(crate) fn rpc_send_submitted(
     record: &SessionRecord,
     data: &[u8],
     kind: SubmissionKind,
     timing: SubmissionTiming,
-) -> Result<()> {
+) -> Result<DeliveryReport> {
+    let report = deliver_submitted(record, data, kind, timing, AckMode::SUBMIT)?;
+    if report.status == DeliveryStatus::Failed {
+        bail!("{}", report.summary());
+    }
+    Ok(report)
+}
+
+/// `rpc_send_submitted` without mapping a failed verdict to an error, for
+/// callers that report the verdict themselves (`a send --json`).
+pub(crate) fn deliver_submitted(
+    record: &SessionRecord,
+    data: &[u8],
+    kind: SubmissionKind,
+    timing: SubmissionTiming,
+    mode: AckMode,
+) -> Result<DeliveryReport> {
     let Some((&b'\r', text)) = data.split_last() else {
         bail!("submitted input must end with carriage return");
     };
     let explicit_paste = match kind {
         SubmissionKind::Raw => false,
+        SubmissionKind::Paste => true,
         SubmissionKind::Text => {
             matches!(aplexer::engine_family(&record.engine), "codex" | "opencode")
         }
@@ -104,72 +156,97 @@ pub(crate) fn rpc_send_submitted(
                 || terminal_accepts_bracketed_paste(record)?
         }
     };
-    if explicit_paste && !text.is_empty() {
-        rpc_send(record, b"\x1b[200~")?;
-    }
-    for chunk in text.chunks(MAX_FRAME_BYTES) {
-        rpc_send(record, chunk)?;
-    }
-    if explicit_paste && !text.is_empty() {
-        rpc_send(record, b"\x1b[201~")?;
-    }
-    if !text.is_empty() {
-        wait_before_enter(record, timing);
-    }
-    submit_enter_and_verify(record, text, timing)
+    let mut target = RpcAckTarget {
+        record,
+        text,
+        explicit_paste,
+        timing,
+    };
+    let payload = String::from_utf8_lossy(text);
+    let AckMode::Verify {
+        ack_timeout_ms,
+        ready_timeout_ms,
+        max_resends,
+    } = mode
+    else {
+        // Engine "" has no screen model: paste once, Enter once.
+        return delivery_ack::deliver(&mut target, "", &payload, AckPolicy::for_engine(""));
+    };
+    let booting = now_ms().saturating_sub(record.created_at_ms) < BOOT_WINDOW_MS;
+    let policy = AckPolicy {
+        ack_timeout_ms,
+        max_resends,
+        ready_timeout_ms: if booting {
+            ready_timeout_ms
+        } else {
+            ready_timeout_ms.min(SETTLED_READY_GRACE_MS)
+        },
+        late_look_ms: if booting {
+            AckPolicy::for_engine(&record.engine).late_look_ms
+        } else {
+            SETTLED_READY_GRACE_MS
+        },
+        ..AckPolicy::for_engine(&record.engine)
+    };
+    delivery_ack::deliver(&mut target, &record.engine, &payload, policy)
 }
 
-/// Submit the key separately from the paste. Screen reads are best effort:
-/// an unavailable/unrecognized composer is not evidence for a retry. Neither
-/// capture errors nor an ambiguous send response ever cause payload replay.
-pub(crate) fn submit_enter_and_verify(
-    record: &SessionRecord,
-    text: &[u8],
+/// `delivery_ack::AckTarget` over the session's control socket.
+struct RpcAckTarget<'a> {
+    record: &'a SessionRecord,
+    text: &'a [u8],
+    explicit_paste: bool,
     timing: SubmissionTiming,
-) -> Result<()> {
-    rpc_send(record, b"\r")?;
-    let Ok(text) = std::str::from_utf8(text) else {
-        return Ok(());
-    };
-    if text.trim().is_empty()
-        || !matches!(
-            aplexer::engine_family(&record.engine),
-            "codex" | "claude" | "opencode"
-        )
-    {
-        return Ok(());
+}
+
+impl AckTarget for RpcAckTarget<'_> {
+    /// Screen reads are best effort: a failed capture is "no evidence".
+    fn capture(&mut self) -> Option<String> {
+        let bytes = rpc_capture_screen(self.record, true).ok()?;
+        String::from_utf8(bytes).ok()
     }
-    // Allow the engine to repaint before trusting a stale pending composer.
-    // OpenCode can lag the PTY by more than one frame under load.
-    let confirmation_ms = if aplexer::engine_family(&record.engine) == "opencode" {
-        1500
-    } else {
-        400
-    };
-    for attempt in 0..2 {
-        thread::sleep(Duration::from_millis(confirmation_ms.max(timing.delay_ms)));
-        let mut previous = None;
-        for _ in 0..SETTLE_STABLE_POLLS {
-            let pending = rpc_capture_screen(record, true).ok().and_then(|bytes| {
-                let screen = std::str::from_utf8(&bytes).ok()?;
-                pending_composer(&record.engine, screen, text)
-            });
-            let Some(pending) = pending else {
-                return Ok(());
-            };
-            if previous.as_ref().is_some_and(|last| last != &pending) {
-                // Changing input could belong to a human/concurrent sender.
-                return Ok(());
-            }
-            previous = Some(pending);
-            thread::sleep(Duration::from_millis(SETTLE_POLL_MS));
+
+    /// Writes the payload in frame-sized chunks, inside one bracketed paste
+    /// when the engine needs it, then waits the engine's floor (and settle)
+    /// before the caller's Enter.
+    fn paste(&mut self) -> Result<()> {
+        if self.text.is_empty() {
+            return Ok(());
         }
-        if attempt == 1 {
-            bail!("input is still pending after one Enter retry; text was not resent");
+        if self.explicit_paste {
+            rpc_send(self.record, b"\x1b[200~")?;
         }
-        rpc_send(record, b"\r")?;
+        for chunk in self.text.chunks(MAX_FRAME_BYTES) {
+            rpc_send(self.record, chunk)?;
+        }
+        if self.explicit_paste {
+            rpc_send(self.record, b"\x1b[201~")?;
+        }
+        wait_before_enter(self.record, self.timing);
+        Ok(())
     }
-    Ok(())
+
+    fn enter(&mut self) -> Result<()> {
+        rpc_send(self.record, b"\r")
+    }
+
+    fn reported_working_since(&mut self, since_ms: u64) -> bool {
+        rpc_simple(self.record, Operation::Status, None)
+            .ok()
+            .and_then(|raw| serde_json::from_value::<SessionRecord>(raw).ok())
+            .is_some_and(|live| {
+                live.reported_state.as_deref() == Some("working")
+                    && live.reported_state_at_ms.is_some_and(|at| at >= since_ms)
+            })
+    }
+
+    fn sleep_ms(&mut self, ms: u64) {
+        thread::sleep(Duration::from_millis(ms));
+    }
+
+    fn now_ms(&mut self) -> u64 {
+        now_ms()
+    }
 }
 
 /// The wall-clock gap between the last pasted byte and Enter: the timing's

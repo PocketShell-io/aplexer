@@ -102,6 +102,7 @@ fn deliver_existing(paths: &Paths, args: MessageDeliverArgs) -> Result<Submissio
                 SubmissionKind::FramedMessage,
                 timing,
             )
+            .map(drop)
         },
     )
 }

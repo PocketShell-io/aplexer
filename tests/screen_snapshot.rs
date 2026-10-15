@@ -1491,9 +1491,14 @@ os.write(1, b"INPUT:" + data.hex().encode() + b"\n")
     let mut client = PtyClient::spawn_no_status(&harness, &id, 24, 80);
     client.wait_for(b"READY", 0, "raw codex-family probe");
 
-    harness.run_ok(&["send", &id, "abc", "--enter"], Duration::from_secs(5));
+    // The stub is not a real Codex screen: skip the acknowledgement, which
+    // would wait out the boot budget; the framing under test is the same.
     harness.run_ok(
-        &["send", &id, "--hex", "616263", "--enter"],
+        &["send", &id, "abc", "--enter", "--no-ack"],
+        Duration::from_secs(5),
+    );
+    harness.run_ok(
+        &["send", &id, "--hex", "616263", "--enter", "--no-ack"],
         Duration::from_secs(5),
     );
     client.wait_for(

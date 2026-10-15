@@ -21,6 +21,8 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
     let h = support::Harness::new();
     let mut record = h.record(Phase::Running, Some(std::process::id()), b"");
     record.engine = engine.into();
+    // A settled session: unrecognized screens get the short readiness grace.
+    record.created_at_ms = 1;
     atomic_write_json(&h.paths().record(record.id), &record).unwrap();
     std::fs::write(&h.paths().config_file, format!("[engines.{engine}]\ncommand = [\"unused\"]\nenter_delay_ms = 0\nenter_settle = false\n")).unwrap();
     #[cfg(unix)]
@@ -146,10 +148,17 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
     } else {
         let result = h
             .command()
-            .args(["send", &record.id.to_string(), payload, "--enter"])
+            .args([
+                "send",
+                &record.id.to_string(),
+                payload,
+                "--enter",
+                "--wait-ack",
+                "0",
+            ])
             .output()
             .unwrap();
-        if accepted_enter > 2 && recognizable {
+        if accepted_enter > 3 && recognizable {
             assert!(String::from_utf8_lossy(&result.stderr).contains("still pending"));
         }
         result.status.success()
@@ -160,11 +169,11 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
         abandoned > 0,
         "empty readiness connection must be tolerated"
     );
-    assert_eq!(success, !recognizable || accepted_enter <= 2);
+    assert_eq!(success, !recognizable || accepted_enter <= 3);
     assert_eq!(
         writes.iter().filter(|b| b.as_slice() == b"\r").count(),
         if recognizable {
-            accepted_enter.min(2)
+            accepted_enter.min(3)
         } else {
             1
         }
@@ -181,9 +190,10 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
 }
 
 #[test]
-fn swallowed_enter_retries_once_for_each_measured_engine() {
+fn swallowed_enter_is_retried_for_each_measured_engine() {
     for engine in ["codex", "claude", "opencode"] {
         exercise(engine, 2, true, false);
+        exercise(engine, 3, true, false);
     }
 }
 #[test]
@@ -193,7 +203,7 @@ fn successful_submission_and_unrecognized_screens_never_get_extra_enter() {
 }
 #[test]
 fn pending_after_retry_returns_error_without_replaying_text() {
-    exercise("claude", 3, true, false);
+    exercise("claude", 4, true, false);
 }
 #[test]
 fn psc_multiline_paste_uses_the_same_confirmation_and_retry() {
