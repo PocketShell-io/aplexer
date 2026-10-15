@@ -31,6 +31,7 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
     let stop = Arc::new(AtomicBool::new(false));
     let signal = stop.clone();
     let worker_record = record.clone();
+    let (accepted, accepted_rx) = std::sync::mpsc::channel();
     let worker = thread::spawn(move || {
         let mut writes = Vec::new();
         let mut captures = 0;
@@ -52,6 +53,7 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
+            let _ = accepted.send(());
             // Named-pipe readiness probes connect and close without an RPC.
             // Production accepts these; the fake worker must do the same.
             let Some(frame) = read_frame(&mut stream).unwrap() else {
@@ -105,7 +107,13 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
     let probe = Stream::connect(&record.socket_path);
     #[cfg(windows)]
     let probe = Stream::connect(&record.socket_path, Duration::from_secs(3));
-    drop(probe.unwrap());
+    let probe = probe.unwrap();
+    // Hold the client until accept completed. Windows legitimately filters
+    // already-disconnected pipe clients before handing them to the server.
+    accepted_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("probe accepted by fake worker");
+    drop(probe);
     let payload = if stdio {
         "retry-probe\nsecond line"
     } else {

@@ -140,6 +140,10 @@ jobs:
         shell: pwsh
         run: cargo test --locked --test windows_attach_tty repeated_startup_identifies_and_reaches_the_exact_worker -- --nocapture
 
+      - name: Exercise optimized send confirmation and readiness probes
+        shell: pwsh
+        run: scripts/check-test-execution.ps1 -Min 4 -- cargo test --locked --release --test send_confirmation -- --nocapture
+
       - name: Run the local gate
         shell: pwsh
         run: scripts/validate.ps1
