@@ -2,7 +2,7 @@
 //! Enter. No engine account/network is needed, and this runs on Windows too.
 #[path = "support/messaging.rs"]
 mod support;
-use aplexer::sys::ipc::Listener;
+use aplexer::sys::ipc::{Listener, Stream};
 use aplexer::{
     atomic_write_json, frame_json, read_frame, write_frame, write_json, FrameKind, Operation,
     Phase, Request, Response,
@@ -34,6 +34,7 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
     let worker = thread::spawn(move || {
         let mut writes = Vec::new();
         let mut captures = 0;
+        let mut abandoned = 0;
         let deadline = Instant::now() + Duration::from_secs(15);
         while !signal.load(Ordering::SeqCst) && Instant::now() < deadline {
             #[cfg(unix)]
@@ -51,7 +52,13 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
-            let request: Request = frame_json(read_frame(&mut stream).unwrap().unwrap()).unwrap();
+            // Named-pipe readiness probes connect and close without an RPC.
+            // Production accepts these; the fake worker must do the same.
+            let Some(frame) = read_frame(&mut stream).unwrap() else {
+                abandoned += 1;
+                continue;
+            };
+            let request: Request = frame_json(frame).unwrap();
             match request.operation {
                 Operation::Status => write_json(
                     &mut stream,
@@ -90,8 +97,15 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
                 other => panic!("{other:?}"),
             }
         }
-        (writes, captures)
+        (writes, captures, abandoned)
     });
+    // Exercise the empty-connection path on every platform, rather than
+    // relying on Windows' real readiness probes to be the only coverage.
+    #[cfg(unix)]
+    let probe = Stream::connect(&record.socket_path);
+    #[cfg(windows)]
+    let probe = Stream::connect(&record.socket_path, Duration::from_secs(3));
+    drop(probe.unwrap());
     let payload = if stdio {
         "retry-probe\nsecond line"
     } else {
@@ -133,7 +147,11 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
         result.status.success()
     };
     stop.store(true, Ordering::SeqCst);
-    let (writes, captures) = worker.join().unwrap();
+    let (writes, captures, abandoned) = worker.join().unwrap();
+    assert!(
+        abandoned > 0,
+        "empty readiness connection must be tolerated"
+    );
     assert_eq!(success, !recognizable || accepted_enter <= 2);
     assert_eq!(
         writes.iter().filter(|b| b.as_slice() == b"\r").count(),
