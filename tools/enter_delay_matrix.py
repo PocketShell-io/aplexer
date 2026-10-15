@@ -41,7 +41,7 @@ ENGINE_DEFS = {
         "skip": '["--dangerously-skip-permissions"]',
     },
     "opencode": {
-        "command": '["/home/alexey/.nvm/versions/node/v24.13.1/bin/opencode"]',
+        "command": '["/home/alexey/.nvm/versions/node/v24.13.1/bin/opencode", "--model", "opencode/muse-spark-1.3-contributor-free"]',
         "skip": '["--auto"]',
     },
     "antigravity": {
@@ -91,6 +91,7 @@ class Engine:
         self.name = name
         self.bin = bin
         self.reps = args.reps
+        self.enter_only = getattr(args, "enter_only", False)
         self.reply_timeout = args.reply_timeout
         self.work = os.path.join(root, "ws-" + name)
         self.state = os.path.join(root, "state-" + name)
@@ -115,7 +116,7 @@ class Engine:
         self.tag = None
 
     def run(self, argv, timeout=60, input=None):
-        return subprocess.run(["a"] + argv, env=self.env, cwd=self.work,
+        return subprocess.run([self.bin] + argv, env=self.env, cwd=self.work,
                               timeout=timeout, capture_output=True, text=True,
                               input=input)
 
@@ -209,7 +210,9 @@ class Engine:
     def trial(self, delay_ms, size, rep, enter_mode=False):
         self.ensure_session()
         marker = f"ETD{self.name[:4].upper()}D{delay_ms:03d}{size[:2].upper()}{rep}-{uuid.uuid4().hex[:4]}"
-        text = payload_for(marker, size)
+        reply = REPLY + marker
+        reply_re = re.compile(r"^\W*" + re.escape(reply) + r"\W*$", re.M)
+        text = "Dry run. Do not use tools or contact external services. " + payload_for(marker, size).replace(REPLY, reply)
         rec = {"engine": self.name, "delay_ms": delay_ms, "size": size,
                "rep": rep, "marker": marker, "mode": enter_mode}
         try:
@@ -231,7 +234,7 @@ class Engine:
                     return rec
             deadline = time.monotonic() + self.reply_timeout
             while time.monotonic() < deadline:
-                if REPLY_RE.search(self.screen()):
+                if reply_re.search(self.screen()):
                     rec["ok"] = True
                     rec["reply_after_s"] = round(time.monotonic() - t0, 2)
                     break
@@ -252,10 +255,10 @@ class Engine:
 
     def run_matrix(self):
         self.start_session()
-        cells = [(d, s, r) for d in DELAYS_MS for s in SIZES for r in range(self.reps)]
+        cells = [(d, s, r) for d in ([0] if self.enter_only else DELAYS_MS) for s in SIZES for r in range(self.reps)]
         random.Random(20261014).shuffle(cells)
         for delay, size, rep in cells:
-            rec = self.trial(delay, size, rep)
+            rec = self.trial(delay, size, rep, enter_mode=self.enter_only)
             with self.lock:
                 self.results.append(rec)
                 print(f"[{self.name}] delay={delay:4d} size={size:6s} rep={rep} "
@@ -299,7 +302,9 @@ def summarize(results):
                 reliable = d
                 break
         grid = {f"{d}ms": {s: f"{sum(per.get((d, s), []))}/{len(per.get((d, s), []))}" for s in SIZES} for d in DELAYS_MS}
-        summary[eng] = {"grid": grid, "min_reliable_delay_ms": reliable}
+        enter = [r for r in rows if r.get("mode") == "enter-path"]
+        summary[eng] = {"grid": grid, "min_reliable_delay_ms": reliable,
+                        "enter_path": {"passed": sum(bool(r.get("ok")) for r in enter), "total": len(enter)}}
     return summary
 
 
@@ -310,6 +315,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--reply-timeout", type=int, default=90)
+    ap.add_argument("--enter-only", action="store_true", help="validate real --enter submissions at configured defaults")
     ap.add_argument("--quick", action="store_true", help="reps=1, subset")
     args = ap.parse_args()
     if args.quick:
@@ -330,6 +336,8 @@ def main():
     with open(args.out + ".json", "w") as f:
         json.dump({"summary": summary, "trials": results}, f, indent=1)
     print(json.dumps(summary, indent=1), flush=True)
+    if args.enter_only and (not results or any(not r.get("ok") for r in results)):
+        raise SystemExit(1)
 
 if __name__ == "__main__":
     main()

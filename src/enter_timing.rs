@@ -156,3 +156,90 @@ impl SettleWatcher {
         self.stable_polls
     }
 }
+
+/// Recognize the submitted payload in the *current composer*, never in the
+/// conversation above it. Unknown layouts fail closed: they cannot justify an
+/// extra keystroke. Plain screen captures retain the actual terminal geometry.
+/// The returned fingerprint ignores wrapping/whitespace, so an Enter swallowed
+/// as a newline still counts as the same pending input.
+pub fn pending_composer(engine: &str, screen: &str, payload: &str) -> Option<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let input = match crate::engine_family(engine) {
+        "codex" | "claude" => {
+            let claude = crate::engine_family(engine) == "claude";
+            let prompt = if claude { '❯' } else { '›' };
+            let start = lines
+                .iter()
+                .rposition(|line| line.trim_start().starts_with(prompt))?;
+            // Claude borders its live composer; transcript prompts have no
+            // surrounding borders. Codex puts its model/context footer below it.
+            if claude {
+                if start == 0 || !lines[start - 1].trim().starts_with('─') {
+                    return None;
+                }
+                let end = (start + 1..lines.len()).find(|&i| lines[i].trim().starts_with('─'))?;
+                lines[start..end].join("\n")
+            } else {
+                let end = (start + 1..lines.len()).find(|&i| {
+                    lines[i].contains("Context ")
+                        || lines[i].contains("context left")
+                        || lines[i].contains("? for shortcuts")
+                })?;
+                lines[start..end].join("\n")
+            }
+        }
+        "opencode" => {
+            // Both the welcome screen and active chat use the last bordered
+            // input box. A submitted turn above it can have the same left bar.
+            let end = lines
+                .iter()
+                .rposition(|line| line.trim_start().starts_with("╹▀"))?;
+            let mut start = end;
+            while start > 0 && lines[start - 1].trim_start().starts_with('┃') {
+                start -= 1;
+            }
+            // The final bar row is the agent/model selector, not editable text.
+            if end < start + 2 {
+                return None;
+            }
+            lines[start..end - 1]
+                .iter()
+                .map(|line| line.trim_start().trim_start_matches('┃').trim())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        _ => return None,
+    };
+    let normalize = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let input = input
+        .trim_start()
+        .trim_start_matches(['›', '❯'])
+        .trim_start();
+    let input = normalize(input);
+    // Placeholder hints occupy the empty composer but are not pending text.
+    if input == "AskCodextodoanything"
+        || input.starts_with("Try\"")
+        || input.starts_with("Askanything…")
+    {
+        return None;
+    }
+    let payload = normalize(payload);
+    if payload.is_empty() {
+        return None;
+    }
+    let prefix: String = payload.chars().take(32).collect();
+    let suffix: String = payload
+        .chars()
+        .rev()
+        .take(32)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let pasted = match crate::engine_family(engine) {
+        "codex" => input.starts_with("[PastedContent"),
+        "claude" => input.starts_with("[Pastedtext#"),
+        _ => false,
+    };
+    (pasted || input.contains(&prefix) || input.contains(&suffix)).then_some(input)
+}

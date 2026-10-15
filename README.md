@@ -342,8 +342,8 @@ enter_settle = true    # extend the wait until the composer stops changing
 ```
 
 `enter_delay_ms` replaces the family default (capped at 10000, validated
-at config load; codex ships 400ms, everything else the measured shipped
-default). `enter_settle` additionally polls the captured screen after the
+at config load; codex ships 400ms, Claude 150ms, and other families
+300ms). `enter_settle` additionally polls the captured screen after the
 floor elapsed and waits -- bounded, at most a couple of seconds -- until
 the composer line has stayed unchanged, so an unusually large paste
 extends the wait instead of racing it. Settle only ever extends the wait;
@@ -351,6 +351,14 @@ it never replaces the floor. Unset keys take the family builtin: codex
 ships settle on (its paste-burst Enter suppression outlives the moment
 the composer renders the paste), every other family off; an explicit
 `enter_settle = false` always wins.
+
+After Enter, aplexer re-captures Codex, Claude, and OpenCode composers. If
+three observations still show the same payload or paste marker, it retries
+Enter once and checks again. A message still visibly pending after that
+returns an error; the text is never resent. Unreadable screens and unknown
+layouts do not trigger retries, and a cleared composer does not prove the
+model processed the message. Empty Enter and other engine families retain
+literal keystroke behavior. The same check covers submitted stdio RPC sends.
 
 ## Resource limits
 

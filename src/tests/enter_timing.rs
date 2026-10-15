@@ -177,3 +177,72 @@ fn composer_snapshot_reads_the_cursor_row_from_a_screen() {
     assert_eq!(moved.cursor_row, 9);
     assert_ne!(snapshot, moved, "cursor movement must change the snapshot");
 }
+
+#[test]
+fn pending_input_recognizes_engine_composers_and_ignores_transcript_echoes() {
+    let payload = "Dry run: reply with PROBEDONE";
+    let codex = "› [Pasted Content 1234 chars]\n\n  GPT-6-Luna low · Context 100% left";
+    assert!(pending_composer("codex", codex, payload).is_some());
+    assert!(pending_composer("zcodex", codex, payload).is_some());
+    let claude = "────────────────────\n❯ [Pasted text #1 +12 lines]\n────────────────────";
+    assert!(pending_composer("claude", claude, payload).is_some());
+    let open = format!("  ┃\n  ┃ {payload}\n  ┃\n  ┃ Build auto · Muse Spark\n  ╹▀▀▀▀▀▀▀");
+    assert!(pending_composer("opencode", &open, payload).is_some());
+    for (engine, screen) in [
+        ("codex", format!("› {payload}\n• PROBEDONE\n› Ask Codex to do anything\n\n  GPT-6-Luna low · Context 99% left")),
+        ("claude", format!("❯ {payload}\n● PROBEDONE\n────────────────────\n❯ \n────────────────────")),
+        ("opencode", format!("  ┃ {payload}\nPROBEDONE\n\n  ┃\n  ┃\n  ┃ Build auto · Muse Spark\n  ╹▀▀▀▀▀▀▀")),
+        ("shell", codex.to_owned()),
+        ("claude", format!("❯ {payload}\n● Busy")),
+    ] {
+        assert_eq!(pending_composer(engine, &screen, payload), None, "{engine}: transcript or unknown layout must not trigger Enter");
+    }
+}
+
+#[test]
+fn pending_input_tracks_wrapped_payload_without_accepting_other_input() {
+    let screen = "› Dry run: reply\n  with PROBEDONE\n\n  GPT-6-Luna low · Context 100% left";
+    let pending = pending_composer("codex", screen, "Dry run: reply with PROBEDONE");
+    assert!(pending.is_some());
+    assert_eq!(
+        pending,
+        pending_composer(
+            "codex",
+            &screen.replace("\n\n", "\n \n\n"),
+            "Dry run: reply with PROBEDONE"
+        )
+    );
+    assert_eq!(
+        pending_composer("codex", screen, "An unrelated payload"),
+        None
+    );
+    assert_eq!(pending_composer("codex", screen, ""), None);
+}
+
+#[test]
+fn empty_composer_hints_cannot_match_short_payloads() {
+    assert_eq!(
+        pending_composer(
+            "codex",
+            "› Ask Codex to do anything\n\n Context 100% left",
+            "anything"
+        ),
+        None
+    );
+    assert_eq!(
+        pending_composer(
+            "claude",
+            "────\n❯ Try \"refactor <filepath>\"\n────",
+            "refactor"
+        ),
+        None
+    );
+    assert_eq!(
+        pending_composer(
+            "opencode",
+            "┃\n┃ Ask anything… \"What is this?\"\n┃\n┃ Build auto · Muse Spark\n╹▀▀▀",
+            "What"
+        ),
+        None
+    );
+}

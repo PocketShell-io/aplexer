@@ -78,11 +78,13 @@ pub(crate) fn validate_submission_text(data: &[u8]) -> Result<()> {
 /// Submit agent input as text, then a distinct Enter event. Codex accepts an
 /// explicit bracketed paste as one event and clears its paste-burst Enter
 /// suppression state; plain text may still be draining through its key-event
-/// queue after our wall-clock delay. Framed pane mail also honors a live
+/// queue after our wall-clock delay. OpenCode also needs explicit framing to
+/// keep large bursts from disappearing in its raw key-event path. Framed pane
+/// mail also honors a live
 /// workload's advertised paste mode, even if the session engine is `shell`.
-/// Success acknowledges PTY writes only. Native transcript/user-turn evidence
-/// or a recipient reply is needed to establish consumption; never retry on
-/// that distinction alone, since the first write may already be consumed.
+/// Re-capture the composer after Enter and retry the key once only when the
+/// same payload is visibly pending. This verifies composer submission, not
+/// model consumption; a missing reply never justifies resending the payload.
 pub(crate) fn rpc_send_submitted(
     record: &SessionRecord,
     data: &[u8],
@@ -94,7 +96,9 @@ pub(crate) fn rpc_send_submitted(
     };
     let explicit_paste = match kind {
         SubmissionKind::Raw => false,
-        SubmissionKind::Text => aplexer::engine_family(&record.engine) == "codex",
+        SubmissionKind::Text => {
+            matches!(aplexer::engine_family(&record.engine), "codex" | "opencode")
+        }
         SubmissionKind::FramedMessage => {
             aplexer::engine_family(&record.engine) == "codex"
                 || terminal_accepts_bracketed_paste(record)?
@@ -112,7 +116,60 @@ pub(crate) fn rpc_send_submitted(
     if !text.is_empty() {
         wait_before_enter(record, timing);
     }
-    rpc_send(record, b"\r")
+    submit_enter_and_verify(record, text, timing)
+}
+
+/// Submit the key separately from the paste. Screen reads are best effort:
+/// an unavailable/unrecognized composer is not evidence for a retry. Neither
+/// capture errors nor an ambiguous send response ever cause payload replay.
+pub(crate) fn submit_enter_and_verify(
+    record: &SessionRecord,
+    text: &[u8],
+    timing: SubmissionTiming,
+) -> Result<()> {
+    rpc_send(record, b"\r")?;
+    let Ok(text) = std::str::from_utf8(text) else {
+        return Ok(());
+    };
+    if text.trim().is_empty()
+        || !matches!(
+            aplexer::engine_family(&record.engine),
+            "codex" | "claude" | "opencode"
+        )
+    {
+        return Ok(());
+    }
+    // Allow the engine to repaint before trusting a stale pending composer.
+    // OpenCode can lag the PTY by more than one frame under load.
+    let confirmation_ms = if aplexer::engine_family(&record.engine) == "opencode" {
+        1500
+    } else {
+        400
+    };
+    for attempt in 0..2 {
+        thread::sleep(Duration::from_millis(confirmation_ms.max(timing.delay_ms)));
+        let mut previous = None;
+        for _ in 0..SETTLE_STABLE_POLLS {
+            let pending = rpc_capture_screen(record, true).ok().and_then(|bytes| {
+                let screen = std::str::from_utf8(&bytes).ok()?;
+                pending_composer(&record.engine, screen, text)
+            });
+            let Some(pending) = pending else {
+                return Ok(());
+            };
+            if previous.as_ref().is_some_and(|last| last != &pending) {
+                // Changing input could belong to a human/concurrent sender.
+                return Ok(());
+            }
+            previous = Some(pending);
+            thread::sleep(Duration::from_millis(SETTLE_POLL_MS));
+        }
+        if attempt == 1 {
+            bail!("input is still pending after one Enter retry; text was not resent");
+        }
+        rpc_send(record, b"\r")?;
+    }
+    Ok(())
 }
 
 /// The wall-clock gap between the last pasted byte and Enter: the timing's

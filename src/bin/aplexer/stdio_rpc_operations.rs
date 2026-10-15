@@ -182,7 +182,11 @@ pub(super) fn execute(
                 rpc_send(&record, b"\x1b[201~")?;
                 if submit {
                     wait_before_enter(&record, submission_timing(paths, &record.engine));
-                    rpc_send(&record, b"\r")?;
+                    submit_enter_and_verify(
+                        &record,
+                        &data,
+                        submission_timing(paths, &record.engine),
+                    )?;
                 }
             } else if submit {
                 data.push(b'\r');

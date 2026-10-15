@@ -28,18 +28,20 @@ fn send(engine: &str, flags: &[&str], data: &[u8]) -> (std::process::Output, Vec
 }
 
 #[test]
-fn piped_long_unicode_multiline_text_is_one_codex_paste_then_enter() {
-    let text = "line αβ\n".repeat(1024);
-    let (output, writes) = send("codex", &["--enter"], text.as_bytes());
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(writes[0], b"\x1b[200~");
-    assert_eq!(writes[writes.len() - 2], b"\x1b[201~");
-    assert_eq!(writes.last().unwrap(), b"\r");
-    assert_eq!(writes[1..writes.len() - 2].concat(), text.as_bytes());
-    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(receipt["status"], "pty_written");
-    assert_eq!(receipt["enter_written"], true);
-    assert!(receipt["consumed"].is_null()); // Fake transport cannot assert a turn.
+fn piped_long_unicode_multiline_text_is_one_agent_paste_then_enter() {
+    for engine in ["codex", "opencode"] {
+        let text = "line αβ\n".repeat(1024);
+        let (output, writes) = send(engine, &["--enter"], text.as_bytes());
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(writes[0], b"\x1b[200~");
+        assert_eq!(writes[writes.len() - 2], b"\x1b[201~");
+        assert_eq!(writes.last().unwrap(), b"\r");
+        assert_eq!(writes[1..writes.len() - 2].concat(), text.as_bytes());
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(receipt["status"], "pty_written");
+        assert_eq!(receipt["enter_written"], true);
+        assert!(receipt["consumed"].is_null()); // Fake transport cannot assert a turn.
+    }
 }
 
 #[test]

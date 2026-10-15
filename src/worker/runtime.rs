@@ -9,6 +9,36 @@
 
 use super::*;
 
+/// A nonblocking PTY can accept a prefix then return EAGAIN. Keep the exact
+/// offset across retries: retrying `write_all(data)` would duplicate that prefix.
+/// Stay inside the control RPC's three-second deadline and never hold the
+/// runtime's PTY/record locks while a workload is slow to drain input.
+fn write_pty_input(mut writer: impl Write, mut data: &[u8], budget: Duration) -> io::Result<()> {
+    let deadline = Instant::now() + budget;
+    while !data.is_empty() {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "PTY input backpressure deadline exceeded; input may be partially written",
+            ));
+        }
+        match writer.write(data) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+            Ok(n) => data = &data[n..],
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 /// The PTY master's write handle. A `File` on Unix; on Windows the ConPTY
 /// master (`sys::windows::pty::PtyMaster`) paired with a duplicated input
 /// handle, which is `Write` for `&PtyWrite` and offers `resize(rows, cols)`.
@@ -233,7 +263,7 @@ impl WorkerRuntime {
             .clone()
             .ok_or_else(|| anyhow!("PTY is closed"))?;
         // Unlocked: see `pty_write`.
-        (&*file).write_all(data).context("write PTY")?;
+        write_pty_input(&*file, data, Duration::from_secs(2)).context("write PTY")?;
         (&*file).flush()?;
         Ok(())
     }
@@ -914,6 +944,72 @@ mod windows_tests {
             let error = windows_signal_action(unsupported).unwrap_err().to_string();
             assert!(error.contains("not supported on Windows"), "{error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod input_write_tests {
+    #[test]
+    fn pty_input_retries_only_the_unwritten_suffix_after_backpressure() {
+        struct Backpressure {
+            calls: usize,
+            received: Vec<u8>,
+        }
+        impl std::io::Write for Backpressure {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                match self.calls {
+                    2 => Err(std::io::ErrorKind::WouldBlock.into()),
+                    3 => Err(std::io::ErrorKind::Interrupted.into()),
+                    _ => {
+                        let n = data.len().min(2);
+                        self.received.extend_from_slice(&data[..n]);
+                        Ok(n)
+                    }
+                }
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = Backpressure {
+            calls: 0,
+            received: Vec::new(),
+        };
+        super::write_pty_input(
+            &mut writer,
+            b"unique paste",
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(writer.received, b"unique paste");
+        assert!(writer.calls > 3);
+    }
+
+    #[test]
+    fn pty_input_backpressure_has_a_deadline_and_permanent_errors_are_not_retried() {
+        struct Blocked(std::io::ErrorKind, usize);
+        impl std::io::Write for Blocked {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                self.1 += 1;
+                Err(self.0.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = Blocked(std::io::ErrorKind::WouldBlock, 0);
+        let error =
+            super::write_pty_input(&mut writer, b"paste", std::time::Duration::from_millis(10))
+                .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(writer.1 > 1);
+        let mut writer = Blocked(std::io::ErrorKind::BrokenPipe, 0);
+        let error =
+            super::write_pty_input(&mut writer, b"paste", std::time::Duration::from_secs(1))
+                .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(writer.1, 1);
     }
 }
 
