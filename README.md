@@ -264,8 +264,17 @@ a send review --stdin < patch.diff
 a status review
 ```
 
-`--enter` appends a carriage return to submit agent prompts. Without it,
-`a send` writes only the bytes supplied (including `--stdin` and `--hex`).
+`--enter` submits agent prompts and acknowledges the delivery (see
+[Delivery acknowledgement](#delivery-acknowledgement-a-send---enter)): it
+waits for a booting agent's input box, checks the text landed and was
+submitted, retries, and waits for the agent to start working. Without
+`--enter`, `a send` writes only the bytes supplied (including `--stdin` and
+`--hex`).
+
+```bash
+a send review "fix the flaky test" --enter          # exit 0 delivered, 3 idle, 1 failed
+a --json send review --stdin --enter < prompt.md    # verdict under "delivery"
+```
 
 ## Session lifecycle
 
@@ -352,13 +361,59 @@ ships settle on (its paste-burst Enter suppression outlives the moment
 the composer renders the paste), every other family off; an explicit
 `enter_settle = false` always wins.
 
-After Enter, aplexer re-captures Codex, Claude, and OpenCode composers. If
-three observations still show the same payload or paste marker, it retries
-Enter once and checks again. A message still visibly pending after that
-returns an error; the text is never resent. Unreadable screens and unknown
-layouts do not trigger retries, and a cleared composer does not prove the
-model processed the message. Empty Enter and other engine families retain
-literal keystroke behavior. The same check covers submitted stdio RPC sends.
+### Delivery acknowledgement (`a send --enter`)
+
+A PTY write only proves the bytes reached the terminal. Agent TUIs lose
+prompts in ways the transport cannot see: a paste sent while the TUI is
+still booting is dropped (OpenCode draws nothing for ~7s; Codex draws its
+input box before the model is loaded), an Enter landing mid-paste is
+swallowed and the text sits unsent in the input box, and a submitted prompt
+can leave the agent idle. For Claude, Codex (and forks such as zcodex), and
+OpenCode, `a send --enter` reads the rendered screen and runs four bounded
+checks:
+
+1. **Ready.** Wait for the input box (Codex: with its model line) before
+   pasting. Sessions younger than 3 minutes wait up to `--ready-timeout`
+   (default 30s); older ones get at most 3s.
+2. **Landed.** After the paste, the input box must show the text or the
+   engine's paste marker (`[Pasted text #1 +30 lines]`, `[Pasted Content
+   2237 chars]`, `[Pasted ~31 lines]`). If the box is positively *empty*,
+   the paste was dropped: aplexer waits for readiness and resends, up to
+   `--resends` times (default 1).
+3. **Submitted.** After Enter, the input box must clear. Text still pending
+   gets another Enter, up to 3 presses in total. It is never resent.
+4. **Working.** Within `--wait-ack` seconds (default 10; 0 skips the check)
+   the agent must show it took the turn. Evidence is a busy indicator
+   (Claude's spinner verb or `esc to interrupt`, Codex's `• Working (…)`,
+   OpenCode's `esc interrupt`), a harness `working` state report newer than
+   the send, or transcript activity after the prompt's echo. If the screen
+   above the input box is exactly as it was before the send (the prompt
+   vanished on Enter), the prompt is resent within the same `--resends`
+   budget.
+
+The verdict, its exit code, and `--json`'s `delivery.status`:
+
+| status | exit | meaning |
+| --- | --- | --- |
+| `delivered_working` | 0 | submitted and the agent started working. `queued: true` means it was already busy and the prompt waits behind its current turn |
+| `unverified` | 0 | the screen could not be read for this engine (shells, unknown layouts, dialogs): text and one Enter were written, as before acknowledgements |
+| `delivered_idle` | 3 | submitted, but no sign of work within `--wait-ack` |
+| `failed` | 1 | the text never appeared in the input box, or stayed there after every Enter |
+
+`delivery` also reports `ready_wait_ms`, `sends`, `enter_presses`,
+`landed`, `submitted`, `echoed`, `working_evidence`, `elapsed_ms`, and a
+one-line `detail`. Text the input box already holds that is *not* this
+payload (someone's unsent draft) is never appended to: the send fails
+without writing. `--no-ack` restores fire-and-forget: paste, one Enter, no
+screen reads.
+
+Long prompts are written in frame-sized chunks inside one bracketed paste
+for Codex and OpenCode; Claude collapses large pastes itself. Each engine's
+screen model is tested against recorded screens in
+`tests/fixtures/screens/<engine>/` (`src/tests/delivery_ack.rs`). Pane mail
+(`a message send --pane`), deferred delivery, and submitted stdio-RPC sends
+run the same ready, landed, and submitted checks without waiting for work.
+Their `delivery` verdict is returned in the stdio `send` result.
 
 ## Resource limits
 
