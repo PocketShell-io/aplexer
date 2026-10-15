@@ -75,7 +75,7 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
                         (_, _, false) => "unrecognized layout".to_owned(),
                         ("claude", true, _) => "────────\n❯ [Pasted text #1 +1 lines]\n────────".into(),
                         ("claude", false, _) => "❯ retry-probe\n────────\n❯ \n────────".into(),
-                        ("opencode", true, _) => "┃ retry-probe\n┃\n┃ Build auto · Muse Spark\n╹▀▀▀▀".into(),
+                        ("opencode", true, _) => "┃ [Pasted ~26 lines]\n┃\n┃ Build auto · Muse Spark\n╹▀▀▀▀".into(),
                         ("opencode", false, _) => "┃ retry-probe\n\n┃\n┃\n┃ Build auto · Muse Spark\n╹▀▀▀▀".into(),
                         (_, true, _) => "› [Pasted Content 123 chars]\n\n GPT-6-Luna · Context 100% left".into(),
                         (_, false, _) => "› retry-probe\n• done\n› Ask Codex to do anything\n\n GPT-6-Luna · Context 99% left".into(),

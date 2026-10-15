@@ -188,6 +188,12 @@ fn pending_input_recognizes_engine_composers_and_ignores_transcript_echoes() {
     assert!(pending_composer("claude", claude, payload).is_some());
     let open = format!("  ┃\n  ┃ {payload}\n  ┃\n  ┃ Build auto · Muse Spark\n  ╹▀▀▀▀▀▀▀");
     assert!(pending_composer("opencode", &open, payload).is_some());
+    assert!(pending_composer(
+        "opencode",
+        &open.replace(payload, "[Pasted ~26 lines]"),
+        payload
+    )
+    .is_some());
     for (engine, screen) in [
         ("codex", format!("› {payload}\n• PROBEDONE\n› Ask Codex to do anything\n\n  GPT-6-Luna low · Context 99% left")),
         ("claude", format!("❯ {payload}\n● PROBEDONE\n────────────────────\n❯ \n────────────────────")),

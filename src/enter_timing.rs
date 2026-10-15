@@ -239,6 +239,7 @@ pub fn pending_composer(engine: &str, screen: &str, payload: &str) -> Option<Str
     let pasted = match crate::engine_family(engine) {
         "codex" => input.starts_with("[PastedContent"),
         "claude" => input.starts_with("[Pastedtext#"),
+        "opencode" => input.starts_with("[Pasted~"),
         _ => false,
     };
     (pasted || input.contains(&prefix) || input.contains(&suffix)).then_some(input)
