@@ -8,7 +8,7 @@ exclude-newer-span = "P7D"
 
 [[package]]
 name = "aplexer"
-version = "0.1.9"
+version = "0.1.14"
 source = { editable = "." }
 dependencies = [
     { name = "aplexer-client" },
@@ -19,5 +19,5 @@ requires-dist = [{ name = "aplexer-client", directory = "../python" }]
 
 [[package]]
 name = "aplexer-client"
-version = "0.1.9"
+version = "0.1.14"
 source = { directory = "../python" }
