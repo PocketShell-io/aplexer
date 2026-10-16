@@ -1,9 +1,10 @@
 use super::*;
 
 /// Byte-level routing of stdin while mouse capture or the pager is active.
-/// Wheel reports page through ordinary output. An alternate-screen workload
-/// that requested mouse reporting gets its wheel reports instead: its own
-/// transcript lives in its repaintable viewport, not in terminal scrollback.
+/// Wheel reports and PgUp page through ordinary output. An alternate-screen
+/// workload that requested mouse reporting gets its wheel reports instead:
+/// its own transcript lives in its repaintable viewport, not in terminal
+/// scrollback -- and being a full-screen application it keeps its PgUp too.
 /// Pager keys never reach the workload.
 ///
 /// Returns the bytes that may still be forwarded. In scroll mode that is
@@ -35,6 +36,13 @@ enum Routed {
     /// A mode change ran and everything after it was typed against the
     /// mode that just ended: drop it, and stop.
     Discard,
+}
+
+/// How the live-screen PgUp matcher read the bytes at the cursor: the whole
+/// sequence, or a tail that could still complete into one.
+enum PageUpMatch {
+    Complete,
+    Incomplete,
 }
 
 impl ScrollInput {
@@ -161,6 +169,8 @@ impl ScrollInput {
 
     /// Route the wheel to the pane for ordinary output, or to a full-screen
     /// workload that requested mouse input. Clicks and motion still reach it.
+    /// PgUp is the keyboard's wheel: same rule, by viewport rather than by
+    /// mouse protocol.
     fn route_live_mouse(
         &mut self,
         ctx: &StatusBarCtx,
@@ -169,6 +179,32 @@ impl ScrollInput {
         client_mouse: bool,
     ) -> Routed {
         let rest = &self.pending[at..];
+        match Self::page_up_match(rest) {
+            Some(PageUpMatch::Complete) => {
+                // The wheel's rule, by viewport rather than by mouse
+                // protocol: a full-screen workload that asked for mouse
+                // input keeps both the wheel and PgUp, because its
+                // transcript lives in its repaintable viewport, not in
+                // terminal scrollback. An alternate-screen state with no
+                // mouse requested -- the bare ConPTY/conhost frame a
+                // headless Windows workload sits in, `less`, vim without
+                // `mouse=a` -- gets the pager, exactly as the wheel does.
+                let workload_scrolls = {
+                    let screen = ctx.screen.lock().unwrap_or_else(PoisonError::into_inner);
+                    screen.alternate_screen() && screen.workload_wants_mouse()
+                };
+                if workload_scrolls {
+                    let consumed = PAGE_UP_SEQUENCE.len();
+                    out.extend_from_slice(&rest[..consumed]);
+                    return Routed::Consumed(consumed);
+                }
+                self.pending.drain(..at + PAGE_UP_SEQUENCE.len());
+                enter_scroll_mode(ctx, ScrollCommand::PageUp);
+                return Routed::Rebased;
+            }
+            Some(PageUpMatch::Incomplete) => return Routed::Wait,
+            None => {}
+        }
         if rest.starts_with(b"\x1b[<") || rest.starts_with(b"\x1b[M") {
             let parsed = if rest.starts_with(b"\x1b[<") {
                 parse_sgr_mouse(rest)
@@ -219,6 +255,31 @@ impl ScrollInput {
         }
         out.push(self.pending[at]);
         Routed::Consumed(1)
+    }
+
+    /// PgUp (`ESC [ 5 ~`) while the pager is down: the keyboard's scroll-back
+    /// gesture, on the key every pager has trained into users. Who gets it is
+    /// the wheel's own rule (see `route_live_mouse`): a full-screen workload
+    /// that asked for mouse input keeps its keys; everything else -- where
+    /// the pager's wheel-up already opens -- opens the pager, one page up.
+    /// Ordinary primary-screen output has no use for PgUp (readline does not
+    /// bind it).
+    ///
+    /// Held incomplete exactly from `ESC [ 5` on -- the shortest form that can
+    /// no longer be the user's Escape, which is never held (see the module
+    /// comment). Modifiers (`ESC [ 5 ; 2 ~`) and other sequences sharing the
+    /// prefix (`ESC [ 5 n`) fall through untouched.
+    fn page_up_match(rest: &[u8]) -> Option<PageUpMatch> {
+        if rest.starts_with(PAGE_UP_SEQUENCE) {
+            return Some(PageUpMatch::Complete);
+        }
+        if rest.len() >= 3
+            && rest.len() < PAGE_UP_SEQUENCE.len()
+            && PAGE_UP_SEQUENCE.starts_with(rest)
+        {
+            return Some(PageUpMatch::Incomplete);
+        }
+        None
     }
 
     fn workload_mouse_uses_utf8(&self, ctx: &StatusBarCtx) -> bool {

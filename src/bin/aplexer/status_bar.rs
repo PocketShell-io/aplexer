@@ -164,7 +164,7 @@ pub(crate) const ATTACH_BINDINGS: &[AttachBinding] = &[
     AttachBinding {
         keys: "[",
         brief: Some("[ scroll"),
-        description: "scroll back through this session's output (i types, q or Esc leaves)",
+        description: "scroll back (PgUp or the wheel open this; i types, q or Esc leaves)",
     },
     AttachBinding {
         keys: "N / P",

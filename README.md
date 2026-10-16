@@ -180,9 +180,9 @@ terminal:
 
 ![attached to a session: the session's shell prompt with its tag indicator, and aplexer's status bar with detach and help hints](docs/screenshots/attach.svg)
 
-The mouse wheel scrolls back through ordinary output. In full-screen apps that
-handle mouse input, such as Codex and OpenCode, the wheel scrolls the app's own
-view instead. Holding `Ctrl-b` briefly puts the whole cheat sheet on screen.
+The mouse wheel - or `PgUp` - scrolls back through ordinary output. In
+full-screen apps that own the screen, such as Codex and OpenCode, the wheel
+and `PgUp` scroll the app's own view instead. Holding `Ctrl-b` briefly puts the whole cheat sheet on screen.
 Pressing `Ctrl-b` twice sends one `Ctrl-b` straight through to the session and raises
 nothing - which is how Claude Code's `Ctrl-b Ctrl-b` run-in-background chord
 works here.
@@ -199,7 +199,7 @@ n             create another session in this workspace and switch to it
 s             list this workspace's sessions; 1-9 attaches, Esc cancels
 w             list every workspace; 1-9 enters it, Esc cancels
 d             detach (the workload keeps running)
-[             scroll back through this session's output (i types, q/Esc leaves)
+[             scroll back (PgUp or the wheel open this; i types, q or Esc leaves)
 N / P         next / previous session across all workspaces
 1-9           jump to the numbered session in the status bar
 l             return to the previously attached session

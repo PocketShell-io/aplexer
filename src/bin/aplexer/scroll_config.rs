@@ -230,6 +230,12 @@ pub(crate) const SCROLL_CANCEL: &[u8] = b"\x18";
 /// Lines a wheel notch moves, matching tmux's own three.
 pub(crate) const WHEEL_LINES: usize = 3;
 
+/// PgUp in its plain form -- the keyboard's scroll-back gesture, bound
+/// (with the wheel) to open the pager on primary-screen output. Modifiers
+/// send `CSI 5 ; modifier ~` instead, and every other `CSI 5 ...` sequence
+/// shares only the prefix; both fall through untouched.
+pub(crate) const PAGE_UP_SEQUENCE: &[u8] = b"\x1b[5~";
+
 /// SGR mouse button numbers for the wheel (xterm: 64 + button index).
 pub(crate) const MOUSE_WHEEL_UP: u32 = 64;
 pub(crate) const MOUSE_WHEEL_DOWN: u32 = 65;

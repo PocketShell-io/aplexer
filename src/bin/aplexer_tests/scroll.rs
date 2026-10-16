@@ -701,6 +701,134 @@ fn a_bare_escape_is_never_held_back_from_the_workload() {
     assert_eq!(input.route(&ctx, b"\x1b["), b"\x1b[".to_vec());
 }
 
+/// PgUp with the pager down is the keyboard's wheel roll: on primary-screen
+/// output it opens the pager, one page up -- with no `Ctrl-b` first, on the
+/// key every pager has trained. Ordinary typing in the same chunk still
+/// passes through ahead of it.
+#[cfg(unix)]
+#[test]
+fn page_up_opens_the_pager_with_no_prefix_and_typing_still_passes() {
+    let ctx = status_ctx_for_test(true);
+    let _null = StdoutToDevNull::new();
+    *ctx.mouse_owned
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(true);
+    // History for the pager to show: the entry gesture pages up, so the
+    // offset has to land somewhere real.
+    let mut lines = String::new();
+    for i in 0..40 {
+        lines.push_str(&format!("history line {i}\r\n"));
+    }
+    feed_test_screen(&ctx.screen, lines.as_bytes());
+    let mut input = ScrollInput::default();
+    assert_eq!(input.route(&ctx, b"ab"), b"ab".to_vec());
+    assert!(!ctx.scroll.is_active());
+    assert!(input.route(&ctx, b"\x1b[5~").is_empty());
+    assert!(ctx.scroll.is_active(), "PgUp must open the pager");
+    assert!(
+        ctx.scroll
+            .view
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .offset
+            > 0,
+        "the gesture that asked to scroll back must have scrolled back"
+    );
+    apply_scroll_command(&ctx, ScrollCommand::Exit);
+    assert!(!ctx.scroll.is_active());
+}
+
+/// A full-screen workload that asked for mouse input keeps its PgUp, the
+/// same TUIs the wheel forwards to: its transcript lives in application
+/// state, and its keys are its own.
+#[test]
+fn alternate_screen_mouse_workload_keeps_its_page_up() {
+    let mut ctx = status_ctx_for_test(true);
+    ctx.mouse_capture = true;
+    ctx.screen
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .feed(b"\x1b[?1049h\x1b[?1000h\x1b[?1006h");
+    *ctx.mouse_owned
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(false);
+    let mut input = ScrollInput::default();
+    assert_eq!(input.route(&ctx, b"\x1b[5~"), b"\x1b[5~".to_vec());
+    assert!(!ctx.scroll.is_active());
+}
+
+/// An alternate-screen state with no mouse requested -- the bare ConPTY
+/// frame a headless Windows workload sits under -- gets the pager, exactly
+/// as the wheel does in that state. (Runs everywhere: unlike its unix-gated
+/// siblings this needs no stdout redirect to hold, and it is the regression
+/// gate for the ConPTY artifact on Windows.)
+#[test]
+fn alternate_screen_without_workload_mouse_opens_the_pager_on_page_up() {
+    let mut ctx = status_ctx_for_test(true);
+    ctx.mouse_capture = true;
+    ctx.screen
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .feed(b"\x1b[?1049h");
+    *ctx.mouse_owned
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(true);
+    assert!(ScrollInput::default().route(&ctx, b"\x1b[5~").is_empty());
+    assert!(ctx.scroll.is_active());
+    apply_scroll_command(&ctx, ScrollCommand::Exit);
+}
+
+/// A PgUp split across two reads is reassembled rather than leaking the
+/// tail into the workload as text.
+#[cfg(unix)]
+#[test]
+fn a_split_page_up_is_buffered_not_leaked_to_the_workload() {
+    let ctx = status_ctx_for_test(true);
+    let _null = StdoutToDevNull::new();
+    *ctx.mouse_owned
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(true);
+    let mut input = ScrollInput::default();
+    assert!(input.route(&ctx, b"\x1b[5").is_empty());
+    assert!(!ctx.scroll.is_active());
+    assert!(input.route(&ctx, b"~").is_empty());
+    assert!(ctx.scroll.is_active());
+}
+
+/// Sequences that share PgUp's prefix are not the gesture: a DSR reply
+/// (`ESC [ 5 n`) and a modified PgUp (`ESC [ 5 ; 2 ~`) forward whole, and
+/// nothing opens.
+#[cfg(unix)]
+#[test]
+fn page_up_prefix_neighbors_forward_untouched() {
+    let ctx = status_ctx_for_test(true);
+    let _null = StdoutToDevNull::new();
+    *ctx.mouse_owned
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(true);
+    let mut input = ScrollInput::default();
+    assert_eq!(input.route(&ctx, b"\x1b[5n"), b"\x1b[5n".to_vec());
+    assert!(!ctx.scroll.is_active());
+    assert_eq!(input.route(&ctx, b"\x1b[5;2~"), b"\x1b[5;2~".to_vec());
+    assert!(!ctx.scroll.is_active());
+}
+
+/// In type-through the keyboard belongs to the workload, PgUp included.
+#[cfg(unix)]
+#[test]
+fn page_up_during_type_through_reaches_the_workload() {
+    let ctx = status_ctx_for_test(true);
+    let _null = StdoutToDevNull::new();
+    enter_scroll_mode(&ctx, ScrollCommand::Stay);
+    let mut input = ScrollInput::default();
+    assert!(input.route(&ctx, b"i").is_empty());
+    assert!(ctx.scroll.is_typing());
+    assert_eq!(input.route(&ctx, b"\x1b[5~"), b"\x1b[5~".to_vec());
+    assert!(ctx.scroll.is_typing(), "PgUp must not close type-through");
+    exit_typing(&ctx);
+    apply_scroll_command(&ctx, ScrollCommand::Exit);
+}
+
 // -- parse_sgr_mouse (docs/clickable-status-bar-design.md section 2) --
 
 #[test]
