@@ -294,7 +294,7 @@ pub(crate) fn status_bar_text(ctx: &StatusBarCtx, cols: usize) -> String {
     // (`LiveStatus`).
     let live = cached_live_status(ctx, record.id);
     let home = env::var_os("HOME").map(PathBuf::from);
-    let ws = display_workspace(&record.workspace, home.as_deref());
+    let ws = display_session_workspace(&record.workspace, home.as_deref(), &record.command);
     let raw = live.raw;
     // One engine/agent label, the same `engine_label` every other human
     // surface renders: a shell session with an agent inside is named by

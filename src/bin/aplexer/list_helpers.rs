@@ -352,20 +352,93 @@ pub(crate) fn print_warning_banner(warnings: &[aplexer::warnings::SessionWarning
     }
 }
 
-/// Shortens a workspace path under $HOME to `~/...`, matching spec.md's own
-/// display examples (e.g. section 2's `~/git/pocketshell` tree).
+/// Formats a workspace path for the shell that invoked aplexer. Bash uses
+/// forward slashes (and `~/...` when the path is under home); Windows shells
+/// get the full native path so it can be copied directly into PowerShell.
 pub(crate) fn display_workspace(path: &Path, home: Option<&Path>) -> String {
-    if let Some(home) = home {
+    display_workspace_with_style(path, home, bash_path_style())
+}
+
+/// Workspace label for a session whose command is a shell executable. Agent
+/// sessions use the invoking shell's style because their command need not be
+/// a shell itself.
+pub(crate) fn display_session_workspace(
+    path: &Path,
+    home: Option<&Path>,
+    command: &[String],
+) -> String {
+    let bash_paths = command
+        .first()
+        .and_then(|program| shell_path_style(program))
+        .unwrap_or_else(bash_path_style);
+    display_workspace_with_style(path, home, bash_paths)
+}
+
+fn display_workspace_with_style(path: &Path, home: Option<&Path>, bash_paths: bool) -> String {
+    if cfg!(windows) && !bash_paths {
+        return path.display().to_string();
+    }
+
+    // Git Bash may expose HOME in MSYS form (`/c/Users/...`) while workspace
+    // records use native Windows paths. Try USERPROFILE too, so home
+    // shortening still works when HOME uses the MSYS form.
+    let mut homes = home.map(Path::to_path_buf).into_iter().collect::<Vec<_>>();
+    if cfg!(windows) && bash_paths {
+        if let Some(user_profile) = env::var_os("USERPROFILE").map(PathBuf::from) {
+            homes.push(user_profile);
+        }
+    }
+    for home in &homes {
         if let Ok(rest) = path.strip_prefix(home) {
             return if rest.as_os_str().is_empty() {
                 "~".to_string()
             } else {
-                // Native separator after `~` so Windows reads `~\git\x`, not `~/git\x`.
-                format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display())
+                format!("~/{}", slash_path(rest))
             };
         }
     }
-    path.display().to_string()
+    if bash_paths {
+        slash_path(path)
+    } else {
+        path.display().to_string()
+    }
+}
+
+/// On Windows, distinguish Git Bash from PowerShell (or cmd) using the
+/// markers those shells put in their child processes' environments.
+fn bash_path_style() -> bool {
+    #[cfg(windows)]
+    {
+        env::var_os("MSYSTEM").is_some()
+            || env::var_os("SHELL").is_some_and(|shell| {
+                Path::new(&shell)
+                    .file_stem()
+                    .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("bash"))
+            })
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+/// `Some(true)` for Bash, `Some(false)` for PowerShell, and `None` when the
+/// command does not identify a shell whose path style aplexer should choose.
+fn shell_path_style(program: &str) -> Option<bool> {
+    let name = program.rsplit(['/', '\\']).next()?;
+    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+    match stem.to_ascii_lowercase().as_str() {
+        "bash" => Some(true),
+        "pwsh" | "powershell" => Some(false),
+        _ => None,
+    }
+}
+
+/// `Path::display()` uses backslashes on Windows. Bash accepts the drive
+/// form with forward slashes (`C:/...`), which works in both Git Bash and
+/// other MSYS-style shells.
+fn slash_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 pub(crate) fn running_count(
@@ -526,26 +599,28 @@ pub(crate) fn resolve_list_sort(paths: &Paths, requested: Option<ListSort>) -> R
 
 #[cfg(test)]
 mod display_workspace_tests {
-    use super::display_workspace;
+    use super::{bash_path_style, display_workspace};
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn home_abbreviation_uses_native_separator() {
+    fn home_display_matches_the_invoking_shell() {
         let home = PathBuf::from(if cfg!(windows) {
             r"C:\Users\u"
         } else {
             "/home/u"
         });
-        let sep = std::path::MAIN_SEPARATOR;
         let ws = home.join("git").join("aplexer");
         let got = display_workspace(&ws, Some(&home));
-        assert_eq!(got, format!("~{sep}git{sep}aplexer"));
-        if cfg!(windows) {
-            assert_eq!(got, r"~\git\aplexer");
+        if cfg!(windows) && !bash_path_style() {
+            assert_eq!(got, ws.display().to_string());
+            assert_eq!(
+                display_workspace(&home, Some(&home)),
+                home.display().to_string()
+            );
         } else {
             assert_eq!(got, "~/git/aplexer");
+            assert_eq!(display_workspace(&home, Some(&home)), "~");
         }
-        assert_eq!(display_workspace(&home, Some(&home)), "~");
         assert_eq!(
             display_workspace(Path::new("elsewhere"), Some(&home)),
             "elsewhere"
