@@ -142,7 +142,7 @@ mod form_tests {
         );
         assert!(reports_context(&command, "codex"));
         let report = state_report_command(r"C:\bin\a.exe", "idle");
-        assert_eq!(report, "C:/bin/a.exe state-report idle");
+        assert_eq!(report, "powershell.exe -NoProfile -NonInteractive -Command \"& 'C:/bin/a.exe' state-report idle; exit 0\"");
         assert!(!report.contains("||"));
         assert!(codex_notify_line(r"C:\bin\a.exe")
             .starts_with(r#"notify = ["C:/bin/a.exe", "state-report", "idle"]"#));

@@ -224,7 +224,7 @@ fn merge_accepts_a_foreign_state_report_hook_as_installed() {
     });
     let mut doc = start;
     let changed = merge_nested_hooks(&mut doc, &[("Stop", "idle")], A_BIN).unwrap();
-    assert_eq!(changed, 0);
+    assert_eq!(changed, usize::from(cfg!(windows)));
     assert!(missing_nested_hooks(&doc, &[("Stop", "idle")]).is_empty());
 }
 

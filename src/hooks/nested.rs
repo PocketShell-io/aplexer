@@ -67,11 +67,14 @@ fn wiring_timeout(state: &str) -> Option<i64> {
 /// Returns 1 when the document changed.
 fn refresh_managed_entry(group: &mut Value, state: &str, a_bin: &str) -> usize {
     let timeout = wiring_timeout(state);
-    // State-report commands are not converged: `|| true` makes a stale
-    // path harmless, and rewriting them is not this wiring's business.
-    let current_command = state
+    // Windows state-report entries must also migrate from legacy bare
+    // commands, which fail outside an aplexer session.
+    let mut current_command = state
         .strip_prefix("awareness:")
         .map(|engine| context_command(a_bin, engine));
+    if cfg!(windows) && current_command.is_none() {
+        current_command = Some(state_report_command(a_bin, state));
+    }
     let Some(inner) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
         return 0;
     };
@@ -86,14 +89,16 @@ fn refresh_managed_entry(group: &mut Value, state: &str, a_bin: &str) -> usize {
             continue;
         }
         let mut stale = false;
-        if let (Some(timeout), Some(want)) = (timeout, current_command.as_deref()) {
+        if let Some(want) = current_command.as_deref() {
             if hook.get("command").and_then(Value::as_str) != Some(want) {
                 hook["command"] = serde_json::json!(want);
                 stale = true;
             }
-            if hook.get("timeout").and_then(Value::as_i64) != Some(timeout) {
-                hook["timeout"] = serde_json::json!(timeout);
-                stale = true;
+            if let Some(timeout) = timeout {
+                if hook.get("timeout").and_then(Value::as_i64) != Some(timeout) {
+                    hook["timeout"] = serde_json::json!(timeout);
+                    stale = true;
+                }
             }
         }
         if stale {

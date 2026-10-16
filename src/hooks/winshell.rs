@@ -14,13 +14,9 @@
 //!
 //! `HookShell::Auto` (the default, override with `APLEXER_HOOK_SHELL` =
 //! `bash|cmd|powershell|auto`) emits a line that parses and runs under all
-//! three: the binary's 8.3 short path when it needs quoting and one exists
-//! (no quoting, no tail), otherwise a `powershell.exe -Command "& '..' ..;
-//! exit 0"` wrapper, whose outer double quotes every shell reads as one word.
-//! Paths use forward slashes: a bare `C:\x\a.exe` loses its backslashes
-//! under bash, while Windows APIs accept `/`.
-
-use std::path::Path;
+//! three using a `powershell.exe -Command` wrapper that preserves stdin
+//! and stdout and always exits successfully, including outside a session.
+//! Paths use forward slashes because Windows APIs accept them.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookShell {
@@ -57,25 +53,6 @@ fn forward(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-/// The 8.3 form of an existing path, when the volume has one.
-fn short_path(path: &str) -> Option<String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
-    if !Path::new(path).exists() {
-        return None;
-    }
-    let wide: Vec<u16> = std::ffi::OsStr::new(path)
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let mut buf = vec![0u16; 1024];
-    let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
-    if n == 0 || n as usize >= buf.len() {
-        return None;
-    }
-    Some(String::from_utf16_lossy(&buf[..n as usize]))
-}
-
 /// Render `<a_bin> <args>` (args are plain words, no quoting needed) for
 /// `shell`.
 pub fn command_line(shell: HookShell, a_bin: &str, args: &str) -> String {
@@ -105,17 +82,7 @@ pub fn command_line(shell: HookShell, a_bin: &str, args: &str) -> String {
                 format!("& {} {args}; exit 0", quoted())
             }
         }
-        HookShell::Auto => {
-            if is_plain(&path) {
-                return format!("{path} {args}");
-            }
-            if let Some(short) = short_path(a_bin).map(|s| forward(&s)) {
-                if is_plain(&short) {
-                    return format!("{short} {args}");
-                }
-            }
-            powershell_wrapper(a_bin, args)
-        }
+        HookShell::Auto => powershell_wrapper(a_bin, args),
     }
 }
 

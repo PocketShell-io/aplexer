@@ -130,6 +130,28 @@ fn assert_runs(runner: Runner, line: &str, log: &Path, tolerant: bool, want_args
 const DIRS: [&str; 3] = ["plain", "Program Files x", "it's (x86) dir"];
 
 #[test]
+fn init_migrates_bare_windows_state_hooks() {
+    let bin = r"C:\tools\a.exe";
+    let mut doc = json!({"hooks": {"Stop": [{"hooks": [
+        {"type": "command", "command": "C:/old/a.exe state-report idle"},
+        {"type": "command", "command": "my-linter"}
+    ]}]}});
+    assert_eq!(
+        merge_nested_hooks(&mut doc, &[("Stop", "idle")], bin).unwrap(),
+        1
+    );
+    assert_eq!(
+        doc["hooks"]["Stop"][0]["hooks"][0]["command"],
+        state_report_command(bin, "idle")
+    );
+    assert_eq!(doc["hooks"]["Stop"][0]["hooks"][1]["command"], "my-linter");
+    assert_eq!(
+        merge_nested_hooks(&mut doc, &[("Stop", "idle")], bin).unwrap(),
+        0
+    );
+}
+
+#[test]
 fn bash_dialect_runs_under_bash_with_spaced_paths() {
     for dir in DIRS {
         let (exe, log, _g) = fake_a(dir);
@@ -181,10 +203,8 @@ fn auto_dialect_runs_everywhere() {
     for dir in DIRS {
         let (exe, log, _g) = fake_a(dir);
         let line = command_line(HookShell::Auto, exe.to_str().unwrap(), "state-report idle");
-        // Tail-less when the path needs no quoting (or has an 8.3 name).
-        let tolerant = line.contains("exit 0");
         for runner in [Runner::Cmd, Runner::PowerShell, Runner::Bash] {
-            assert_runs(runner, &line, &log, tolerant, "state-report idle");
+            assert_runs(runner, &line, &log, true, "state-report idle");
         }
     }
 }
