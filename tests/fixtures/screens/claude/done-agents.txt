@@ -1,0 +1,34 @@
+  - Union.ai and micro1 are already marked "ignored", and a correct micro1 lead exists. Nothing
+    urgent.
+  - Collibra is still "new", and that matters. Its link goes through AlphaSignal's click
+    tracking. Converting it would create a second "Collibra" company under alphasignal.ai, and it
+    can't be linked to the existing Collibra.
+  - DataOps has no way to edit a lead's link or delete a lead. For now the only fix is to mark it
+    ignored.
+
+  My recommendation:
+  1. Mark Collibra as ignored now.
+  2. Ask the dapier session to clean the file before importing:
+     - remove the tracking parameters and the duplicate leads;
+     - fix the Ben's Bites spelling;
+     - merge the three AlphaSignal emails.
+
+     Then import only the 13 new emails and the 5 genuinely new mentions, and don't let this old
+     data change the newsletters' "last received" dates.
+
+  Should I do step 1 and send these findings to the dapier session?
+
+✻ Baked for 3m 49s · done 10:24 AM · 10 shells still running
+
+─────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 10 shells · ← for agents · ↓ to manage
+
+  ● main
+  ◯ general-purpose  Checking Browser E2E CI status                1h 18m 58s · ↓ 432.9k tokens
+  ◯ general-purpose  Reading CI failures in dakit-shell-device.sp…  1h 49m 2s · ↓ 245.9k tokens
+  ◯ general-purpose  Confirming apply-log entries for newsletter …    43m 20s · ↓ 180.3k tokens
+  ◯ general-purpose  Checking cards-board-tile.spec.js CI logs      1h 2m 59s · ↓ 128.9k tokens
+  ◯ general-purpose  Reviewing bookkeeping-detail.png screenshot   1h 32m 59s · ↓ 410.5k tokens
+  ↓ 1 more

@@ -21,6 +21,11 @@
 //! never justifies a keystroke or a resend: it degrades to `unverified`, the
 //! pre-acknowledgement behavior (paste, one Enter).
 //!
+//! A record that does not name a screen-model engine (`shell` wrapping
+//! Claude Code, a wrapper script) is still verified: one capture is sniffed
+//! for a known composer, and a match upgrades the delivery from
+//! `unverified` to the full state machine under that family's model.
+//!
 //! The detectors are pure functions over a plain screen capture
 //! (`a capture --screen --plain`) and are tested against recorded screens in
 //! `tests/fixtures/screens/<engine>/`.
@@ -139,6 +144,29 @@ pub fn parse_screen(engine: &str, screen: &str) -> Option<ScreenView> {
             .map(|s| s.to_string())
             .collect(),
     })
+}
+
+/// The engine families with a screen model, most distinctive first.
+const SCREEN_FAMILIES: [&str; 3] = ["claude", "codex", "opencode"];
+
+/// The screen model that verifies an engine's own deliveries: `None` when
+/// its family has none (`shell`, a private wrapper) and sniffing decides.
+pub(crate) fn known_family(engine: &str) -> Option<&'static str> {
+    let family = crate::engine_family(engine);
+    SCREEN_FAMILIES
+        .iter()
+        .copied()
+        .find(|known| *known == family)
+}
+
+/// Which known family's TUI a screen draws. The composers are distinctive
+/// (a bordered claude prompt, a codex chevron, opencode bars), so a drawn
+/// input box matches exactly one family.
+pub(crate) fn sniff_family(screen: &str) -> Option<&'static str> {
+    SCREEN_FAMILIES
+        .iter()
+        .copied()
+        .find(|family| parse_screen(family, screen).is_some())
 }
 
 /// Whether composer text is the submitted payload: an engine paste marker
@@ -409,10 +437,18 @@ pub fn deliver(
         elapsed_ms: 0,
         detail: String::new(),
     };
-    let known = matches!(
-        crate::engine_family(engine),
-        "codex" | "claude" | "opencode"
-    );
+    let mut verify_engine = engine.to_owned();
+    let mut known = known_family(engine).is_some();
+    if !known && !engine.is_empty() {
+        // A record without its own screen model may still be showing a known
+        // agent TUI (`shell` wrapping Claude Code): sniff one capture and
+        // verify against that family. The empty engine is the --no-ack
+        // sentinel, which opted out of screen reads entirely.
+        if let Some(family) = target.capture().as_deref().and_then(|s| sniff_family(s)) {
+            verify_engine = family.to_owned();
+            known = true;
+        }
+    }
     if !known || strip(payload).is_empty() {
         target.paste()?;
         target.enter()?;
@@ -422,6 +458,8 @@ pub fn deliver(
         report.elapsed_ms = target.now_ms() - started;
         return Ok(report);
     }
+    // From here the (possibly sniffed) family's screen model verifies.
+    let engine: &str = &verify_engine;
 
     // 1. ready
     let mut screen = wait_until(target, policy.ready_timeout_ms, policy.poll_ms, |s| {

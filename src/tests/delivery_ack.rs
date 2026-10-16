@@ -152,6 +152,8 @@ struct FakeTui {
     hook_works: bool,
     busy: bool,
     busy_since: u64,
+    /// Render a claude layout (bordered composer) instead of the codex one.
+    claude_render: bool,
     composer: String,
     transcript: Vec<String>,
     pastes: u32,
@@ -172,6 +174,27 @@ impl AckTarget for FakeTui {
     fn capture(&mut self) -> Option<String> {
         if self.now < self.blank_until {
             return Some("\n\n\n".into());
+        }
+        if self.claude_render {
+            let mut lines = self.transcript.clone();
+            if self.busy {
+                let secs = (self.now - self.busy_since) / 1000;
+                lines.push(format!(
+                    "\u{b7} Stewing\u{2026} ({secs}s \u{b7} \u{2193} 1.2k tokens)"
+                ));
+            }
+            let rule = "\u{2500}".repeat(48);
+            lines.push(rule.clone());
+            let input = if self.composer.is_empty() {
+                "Try \"refactor <filepath>\"".to_owned()
+            } else {
+                self.composer.clone()
+            };
+            lines.push(format!("\u{276f} {input}"));
+            lines.push(rule);
+            lines
+                .push("  \u{23ed}\u{23ed} bypass permissions on \u{b7} \u{2190} for agents".into());
+            return Some(lines.join("\n"));
         }
         let mut lines = self.transcript.clone();
         if self.busy {
@@ -414,12 +437,65 @@ fn without_an_ack_window_submission_is_reported_promptly() {
     assert_eq!(r.status, DeliveryStatus::Failed, "{r:?}");
 }
 
+/// A record that says `shell` while the screen shows a Codex TUI (a shell
+/// wrapping an agent CLI) is verified with the sniffed family's full state
+/// machine: a swallowed Enter is pressed again.
 #[test]
-fn unknown_engines_and_layouts_are_unverified_single_sends() {
-    let mut tui = FakeTui::ready();
+fn a_shell_record_showing_a_known_tui_is_verified() {
+    let mut tui = FakeTui {
+        swallow_enters: 2,
+        ..FakeTui::ready()
+    };
     let r = deliver(&mut tui, "shell", PAYLOAD, AckPolicy::for_engine("shell")).unwrap();
-    assert_eq!(r.status, DeliveryStatus::Unverified);
+    assert_eq!(r.status, DeliveryStatus::DeliveredWorking, "{r:?}");
+    assert_eq!((r.sends, r.enter_presses), (1, 3));
+}
+
+/// Nothing recognizable (a plain prompt, a boot that has not drawn) keeps
+/// the unverified single send.
+#[test]
+fn a_shell_record_with_no_readable_tui_stays_unverified() {
+    let mut tui = FakeTui {
+        blank_until: u64::MAX,
+        ..FakeTui::ready()
+    };
+    let r = deliver(&mut tui, "shell", PAYLOAD, AckPolicy::for_engine("shell")).unwrap();
+    assert_eq!(r.status, DeliveryStatus::Unverified, "{r:?}");
     assert_eq!((tui.pastes, tui.enters), (1, 1));
+}
+
+/// The reported incident: a probe pasted into Claude Code running inside a
+/// `shell`-recorded session while it was busy. The Enter was swallowed and
+/// the text sat in the composer; the sniffed claude screen model sees the
+/// pending payload and presses Enter again.
+#[test]
+fn a_swallowed_enter_into_a_shell_recorded_claude_is_retried() {
+    let mut tui = FakeTui {
+        claude_render: true,
+        busy: true,
+        busy_since: 0,
+        swallow_enters: 1,
+        ..FakeTui::ready()
+    };
+    let r = deliver(&mut tui, "shell", PAYLOAD, AckPolicy::for_engine("shell")).unwrap();
+    assert_eq!(r.status, DeliveryStatus::DeliveredWorking, "{r:?}");
+    assert!(r.queued);
+    assert_eq!((r.sends, r.enter_presses), (1, 2));
+    assert_eq!(tui.transcript.len(), 1, "exactly one submitted prompt");
+}
+
+/// Recorded on the incident box: Claude Code inside a `shell`-record
+/// session, a finished turn above the composer, background agents below.
+#[test]
+fn the_recorded_incident_screen_sniffs_as_claude() {
+    let screen = fixture("claude", "done-agents");
+    assert_eq!(sniff_family(&screen), Some("claude"));
+    assert!(is_ready("claude", &screen), "{screen}");
+    assert!(!is_busy("claude", &screen), "{screen}");
+    assert_eq!(
+        parse_screen("claude", &screen).unwrap().composer,
+        Composer::Empty
+    );
 }
 
 /// The handoff race with the readiness wait disabled: text and Enter go into
