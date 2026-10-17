@@ -290,7 +290,11 @@ mod model_arg_tests {
 
     #[test]
     fn model_is_one_argument_before_later_flags() {
-        let mut command = vec!["codex".into(), "-c".into(), "check_for_update_on_startup=false".into()];
+        let mut command = vec![
+            "codex".into(),
+            "-c".into(),
+            "check_for_update_on_startup=false".into(),
+        ];
         push_model_arg(&mut command, "gpt-5.4").unwrap();
         command.push("--dangerously-bypass-approvals-and-sandbox".into());
         assert_eq!(
