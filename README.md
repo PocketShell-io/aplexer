@@ -333,6 +333,42 @@ pids = 256
 
 Then use it: `a start --profile large`.
 
+A profile is also how one engine runs as a **second account** of the same
+agent. Discovery picks up any top-level `~/.codex-<name>` dir holding a
+`config.toml` or `auth.json` as a codex profile automatically
+(`~/.codex-orin` is offered as `--profile codex-orin`), or pin it
+explicitly:
+
+```toml
+[profiles.codex-orin]
+engine = "codex"
+
+[profiles.codex-orin.env]
+CODEX_HOME = "/home/alexey/.codex-orin"
+```
+
+The profile only swaps the account: the engine's argv is unchanged, and
+session detection reports the profile id the same way it does for any
+other variant.
+
+A profile is also how one engine runs as a **second account** of the same
+agent. Discovery picks up any top-level `~/.codex-<name>` dir holding a
+`config.toml` or `auth.json` as a codex profile automatically
+(`~/.codex-orin` is offered as `--profile codex-orin`), or pin it
+explicitly:
+
+```toml
+[profiles.codex-orin]
+engine = "codex"
+
+[profiles.codex-orin.env]
+CODEX_HOME = "/home/alexey/.codex-orin"
+```
+
+The profile only swaps the account: the engine's argv is unchanged, and
+session detection reports the profile id the same way it does for any
+other variant.
+
 ### Submit timing (`enter_delay_ms`, `enter_settle`)
 
 When aplexer submits agent input (`a send --enter`, `a message send
