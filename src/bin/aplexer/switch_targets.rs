@@ -285,6 +285,7 @@ pub(crate) fn create_sibling_session(
         workspace: current.workspace.clone(),
         tag: DEFAULT_HUMAN_TAG.to_string(),
         engine: None,
+        model: None,
         profile: None,
         cwd: None,
         env: BTreeMap::new(),

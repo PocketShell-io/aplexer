@@ -101,6 +101,7 @@ fn embedded_api_rejects_usize_max_before_worker_spawn() {
         workspace: workspace.path().to_path_buf(),
         tag: "oversized".into(),
         engine: None,
+        model: None,
         profile: None,
         cwd: None,
         env: BTreeMap::new(),

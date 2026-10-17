@@ -635,7 +635,9 @@ pub fn deliver(
             DeliveryStatus::DeliveredWorking
         } else if vanished {
             DeliveryStatus::Failed
-        } else if policy.ack_timeout_ms == 0 {
+        } else if policy.ack_timeout_ms == 0 || report.queued {
+            // Already busy: the prompt is sitting behind the current turn.
+            // No new work inside the ack window is the queue, not a miss.
             DeliveryStatus::Submitted
         } else {
             DeliveryStatus::DeliveredIdle
@@ -649,6 +651,9 @@ pub fn deliver(
                 "submitted; agent started working ({})",
                 report.working_evidence.unwrap_or_default()
             ),
+            DeliveryStatus::Submitted if report.queued => {
+                "submitted while the agent was busy; queued behind its current turn".into()
+            }
             DeliveryStatus::Submitted => "submitted; working check skipped".into(),
             DeliveryStatus::Failed => format!(
                 "the input box cleared but the prompt never reached the transcript after {} send(s)",

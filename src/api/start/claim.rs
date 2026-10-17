@@ -42,10 +42,17 @@ pub(super) fn resolve_launch(
         &limits,
         req.history_bytes,
     )?;
-    if req.command.is_empty() && !req.no_skip_permissions {
-        launch
-            .command
-            .extend(launch.skip_permissions_argv.iter().cloned());
+    if req.command.is_empty() {
+        if let Some(model) = req.model.as_deref() {
+            push_model_arg(&mut launch.command, model)?;
+        }
+        if !req.no_skip_permissions {
+            launch
+                .command
+                .extend(launch.skip_permissions_argv.iter().cloned());
+        }
+    } else if req.model.is_some() {
+        bail!("--model applies to an engine launch, not a literal command");
     }
     if !command_exists(&launch.command) {
         // Not on PATH: it may be a `~/.bashrc` alias or function, which only
@@ -64,6 +71,22 @@ pub(super) fn resolve_launch(
         );
     }
     Ok((workspace, launch))
+}
+
+/// Append `--model <model>` as one engine argument.
+///
+/// The value is a single model id: empty, whitespace, controls, and a
+/// leading dash are rejected so the flag cannot become a second option.
+pub(crate) fn push_model_arg(command: &mut Vec<String>, model: &str) -> Result<()> {
+    if model.is_empty()
+        || model.starts_with('-')
+        || model.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        bail!("--model must be one model id, with no spaces or leading dash");
+    }
+    command.push("--model".to_owned());
+    command.push(model.to_owned());
+    Ok(())
 }
 
 /// Rewrite `command` to run through an interactive bash when its first word
@@ -259,6 +282,38 @@ pub(crate) fn retire_reclaimed_holder(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod model_arg_tests {
+    use super::push_model_arg;
+
+    #[test]
+    fn model_is_one_argument_before_later_flags() {
+        let mut command = vec!["codex".into(), "-c".into(), "check_for_update_on_startup=false".into()];
+        push_model_arg(&mut command, "gpt-5.4").unwrap();
+        command.push("--dangerously-bypass-approvals-and-sandbox".into());
+        assert_eq!(
+            command,
+            vec![
+                "codex".to_string(),
+                "-c".into(),
+                "check_for_update_on_startup=false".into(),
+                "--model".into(),
+                "gpt-5.4".into(),
+                "--dangerously-bypass-approvals-and-sandbox".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn model_rejects_empty_space_and_a_leading_dash() {
+        let mut command = vec!["claude".into()];
+        for bad in ["", "gpt 5", "gpt\n5", "--fast"] {
+            assert!(push_model_arg(&mut command, bad).is_err(), "{bad}");
+        }
+        assert_eq!(command, vec!["claude".to_string()]);
+    }
 }
 
 #[cfg(test)]

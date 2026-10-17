@@ -73,6 +73,9 @@ pub(crate) struct StartArgs {
     /// Engine id from `a engines`; defaults to the configured default engine, else shell
     #[arg(long, add = engine_completions())]
     pub(crate) engine: Option<String>,
+    /// Append `--model <MODEL>` to the engine command, before its skip-permissions flags
+    #[arg(long, value_name = "MODEL")]
+    pub(crate) model: Option<String>,
     /// Profile id from `a profiles` -- an engine variant (e.g. another account)
     #[arg(long, add = profile_completions())]
     pub(crate) profile: Option<String>,

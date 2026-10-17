@@ -150,6 +150,7 @@ fn start(
         workspace: PathBuf::from(workspace),
         tag: tag.to_string(),
         engine: engine.map(str::to_string),
+        model: None,
         profile: profile.map(str::to_string),
         cwd: cwd.map(PathBuf::from),
         env: env.unwrap_or_default(),

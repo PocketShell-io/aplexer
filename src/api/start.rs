@@ -29,6 +29,10 @@ pub struct StartRequest {
     pub workspace: PathBuf,
     pub tag: String,
     pub engine: Option<String>,
+    /// Append `--model <value>` to the engine argv, before skip-permissions
+    /// flags. `None` leaves the engine command unchanged. A literal `--`
+    /// command cannot be combined with this.
+    pub model: Option<String>,
     pub profile: Option<String>,
     pub cwd: Option<PathBuf>,
     pub env: BTreeMap<String, String>,

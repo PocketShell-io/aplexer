@@ -386,6 +386,7 @@ pub(crate) fn cmd_start(paths: &Paths, args: StartArgs, json_output: bool) -> Re
         workspace: args.workspace,
         tag: args.tag,
         engine: args.engine,
+        model: args.model,
         profile: args.profile,
         cwd: args.cwd,
         env,

@@ -114,6 +114,7 @@ pub(crate) fn cmd_quick_launch(paths: &Paths, args: QuickLaunchArgs) -> Result<(
             workspace: PathBuf::from("."),
             tag,
             engine,
+            model: None,
             profile,
             cwd: None,
             env: vec![],

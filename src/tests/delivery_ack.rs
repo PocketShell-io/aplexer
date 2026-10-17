@@ -152,6 +152,8 @@ struct FakeTui {
     hook_works: bool,
     busy: bool,
     busy_since: u64,
+    /// Keep the busy line identical across polls (no ticking seconds).
+    stable_busy: bool,
     /// Render a claude layout (bordered composer) instead of the codex one.
     claude_render: bool,
     composer: String,
@@ -198,10 +200,14 @@ impl AckTarget for FakeTui {
         }
         let mut lines = self.transcript.clone();
         if self.busy {
-            lines.push(format!(
-                "• Working ({}s • esc to interrupt)",
-                (self.now - self.busy_since) / 1000
-            ));
+            if self.stable_busy {
+                lines.push("• Working (esc to interrupt)".into());
+            } else {
+                lines.push(format!(
+                    "• Working ({}s • esc to interrupt)",
+                    (self.now - self.busy_since) / 1000
+                ));
+            }
         }
         let input = if self.composer.is_empty() {
             "Ask Codex to do anything".to_owned()
@@ -389,6 +395,31 @@ fn a_prompt_that_vanishes_on_enter_is_resent_once() {
     let r = run(&mut tui);
     assert_eq!(r.status, DeliveryStatus::Failed, "{r:?}");
     assert_eq!(tui.pastes, 2);
+}
+
+/// The reported false error: the agent was already busy, the prompt echoed
+/// into the queue, and the busy line did not change within the ack window.
+/// That is a queued submit, not "delivered idle: no sign of work".
+#[test]
+fn a_prompt_queued_behind_a_stable_busy_turn_is_submitted() {
+    let mut tui = FakeTui {
+        busy: true,
+        works: false,
+        stable_busy: true,
+        ..FakeTui::ready()
+    };
+    let r = run(&mut tui);
+    assert!(r.queued);
+    assert!(r.echoed);
+    assert_eq!(r.working_evidence, None);
+    assert_eq!(r.status, DeliveryStatus::Submitted, "{r:?}");
+    assert_eq!(r.status.exit_code(), 0);
+    assert!(
+        r.detail.contains("queued behind its current turn"),
+        "{}",
+        r.detail
+    );
+    assert!(!r.detail.contains("no sign of work"), "{}", r.detail);
 }
 
 #[test]
