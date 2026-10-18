@@ -1,3 +1,13 @@
+#[test]
+fn opencode_plugin_exports_v2_default_definition() {
+    // opencode 2.x refuses plugins without a default export
+    // (PluginModule.LoadError: Plugin must export a default definition...).
+    let source = opencode_plugin_source(A_BIN);
+    assert!(source.contains("export default {"));
+    assert!(source.contains(r#"id: "aplexer-state-report""#));
+    assert!(source.contains("setup: AplexerStateReport"));
+}
+
 use super::*;
 
 #[test]

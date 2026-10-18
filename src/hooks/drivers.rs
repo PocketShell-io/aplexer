@@ -170,6 +170,13 @@ export const AplexerStateReport = async () => {{
     }},
   }};
 }};
+
+// opencode v2 loads plugins through a default definition: {{ id, setup }}.
+// (kept alongside the v1 named export so one file serves both cli generations)
+export default {{
+  id: "aplexer-state-report",
+  setup: AplexerStateReport,
+}};
 "#
     )
 }
