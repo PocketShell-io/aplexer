@@ -87,7 +87,12 @@ fn status_ctx_for_test(reserved: bool) -> StatusBarCtx {
         flash: Arc::new(Mutex::new(None)),
         last_drawn: Arc::new(Mutex::new(None)),
         screen: Arc::new(Mutex::new(
-            aplexer::screen::ClientScreen::try_new(23, 80).unwrap(),
+            aplexer::screen::ClientScreen::try_new_with_scrollback(
+                23,
+                80,
+                aplexer::screen::DEFAULT_SCROLLBACK_LINES,
+            )
+            .unwrap(),
         )),
         pending: Arc::new(AtomicBool::new(false)),
         pending_refresh: Arc::new(AtomicBool::new(false)),
