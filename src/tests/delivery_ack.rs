@@ -156,6 +156,13 @@ struct FakeTui {
     stable_busy: bool,
     /// Render a claude layout (bordered composer) instead of the codex one.
     claude_render: bool,
+    /// Idle suggestion text shown (as plain text) when the composer is
+    /// empty: Claude's grey ghost hint. Styled evidence for it comes from
+    /// `ghost_styled`; without that, it reads as a foreign draft.
+    ghost: String,
+    /// Raw styled snapshot bytes (`CaptureScreen { plain: false }`)
+    /// returned by `capture_styled`.
+    ghost_styled: Option<Vec<u8>>,
     composer: String,
     transcript: Vec<String>,
     pastes: u32,
@@ -187,10 +194,12 @@ impl AckTarget for FakeTui {
             }
             let rule = "\u{2500}".repeat(48);
             lines.push(rule.clone());
-            let input = if self.composer.is_empty() {
-                "Try \"refactor <filepath>\"".to_owned()
-            } else {
+            let input = if !self.composer.is_empty() {
                 self.composer.clone()
+            } else if !self.ghost.is_empty() {
+                self.ghost.clone()
+            } else {
+                "Try \"refactor <filepath>\"".to_owned()
             };
             lines.push(format!("\u{276f} {input}"));
             lines.push(rule);
@@ -222,6 +231,9 @@ impl AckTarget for FakeTui {
             lines.push("  GPT-6-Luna low · Context 100% left".into());
         }
         Some(lines.join("\n"))
+    }
+    fn capture_styled(&mut self) -> Option<Vec<u8>> {
+        self.ghost_styled.clone()
     }
     fn paste(&mut self) -> anyhow::Result<()> {
         self.pastes += 1;
@@ -556,4 +568,131 @@ fn a_screen_that_never_becomes_readable_is_unverified() {
     let r = run(&mut tui);
     assert_eq!(r.status, DeliveryStatus::Unverified, "{r:?}");
     assert_eq!((tui.pastes, tui.enters), (1, 1));
+}
+
+/// The reported incident (Oct 17): an idle Claude Code session shows its
+/// grey ghost prompt suggestion in the input box. A plain capture cannot
+/// tell it from typed text, which is exactly what made `a send --enter`
+/// refuse with "the input box already holds other unsent text".
+#[test]
+fn claude_ghost_suggestion_reads_as_text_in_plain_captures() {
+    let screen = fixture("claude", "ghost");
+    assert!(is_ready("claude", &screen), "{screen}");
+    assert!(!is_busy("claude", &screen), "{screen}");
+    assert!(
+        matches!(
+            parse_screen("claude", &screen).unwrap().composer,
+            Composer::Holds(_)
+        ),
+        "plain text alone cannot tell the suggestion from typed input"
+    );
+}
+
+/// Addressed writes into a parser, dumped as `state_formatted`: the same
+/// bytes the worker's `CaptureScreen { plain: false }` sends.
+fn styled_snapshot(rows: u16, cols: u16, writes: &[(u16, u16, &str)]) -> Vec<u8> {
+    let mut parser = vt100::Parser::new(rows, cols, 0);
+    let mut bytes = Vec::new();
+    for (row, col, text) in writes {
+        bytes.extend_from_slice(format!("\x1b[{row};{col}H").as_bytes());
+        bytes.extend_from_slice(text.as_bytes());
+    }
+    parser.process(&bytes);
+    parser.screen().state_formatted()
+}
+
+/// A claude composer holding `text` drawn with `sgr` (e.g. faint, grey)
+/// between its borders, as `screen_from_snapshot` replays it.
+fn styled_claude_composer(text: &str, sgr: &str) -> Vec<u8> {
+    let rule = "\u{2500}".repeat(48);
+    let composer = format!("\u{276f} \x1b[{sgr}m{text}\x1b[0m");
+    styled_snapshot(24, 80, &[(6, 1, &rule), (7, 1, &composer), (8, 1, &rule)])
+}
+
+fn ghost_bytes() -> Vec<u8> {
+    styled_claude_composer("Fill in the TODO link in the intro", "2")
+}
+
+#[test]
+fn faint_or_grey_composer_text_is_ghost_but_real_text_is_not() {
+    // Faint (SGR 2): the incident's rendering.
+    let parser = screen_from_snapshot(&ghost_bytes());
+    assert!(styled_composer_is_ghost("claude", parser.screen()));
+    // Bright-black foreground (SGR 90).
+    let parser = screen_from_snapshot(&styled_claude_composer("a suggestion", "90"));
+    assert!(styled_composer_is_ghost("claude", parser.screen()));
+    // A 256-color grey.
+    let parser = screen_from_snapshot(&styled_claude_composer("a suggestion", "38;5;244"));
+    assert!(styled_composer_is_ghost("claude", parser.screen()));
+    // Real typed text in the default pen is not a ghost.
+    let parser = screen_from_snapshot(&styled_claude_composer("a human draft", "0"));
+    assert!(!styled_composer_is_ghost("claude", parser.screen()));
+    // Unknown layout and empty box are not ghosts either.
+    let mut parser = vt100::Parser::new(24, 80, 0);
+    parser.process(b"\x1b[5;1Hplain shell prompt$ ");
+    assert!(!styled_composer_is_ghost(
+        "claude",
+        screen_from_snapshot(&parser.screen().state_formatted()).screen()
+    ));
+    let rule = "\u{2500}".repeat(48);
+    let bytes = styled_snapshot(24, 80, &[(6, 1, &rule), (7, 1, "\u{276f} "), (8, 1, &rule)]);
+    let parser = screen_from_snapshot(&bytes);
+    assert!(!styled_composer_is_ghost("claude", parser.screen()));
+}
+
+/// A typed prefix in the default pen plus a grey autocomplete tail is real
+/// unsent text, not a ghost: fail closed.
+#[test]
+fn mixed_typed_and_ghost_text_is_not_a_ghost() {
+    let rule = "\u{2500}".repeat(48);
+    let composer = "\u{276f} Fill\x1b[2m in the TODO link\x1b[0m";
+    let bytes = styled_snapshot(24, 80, &[(6, 1, &rule), (7, 1, composer), (8, 1, &rule)]);
+    let parser = screen_from_snapshot(&bytes);
+    assert!(!styled_composer_is_ghost("claude", parser.screen()));
+}
+
+/// The real thing: a `CaptureScreen { plain: false }` snapshot taken from a
+/// live idle Claude Code session showing its context-aware suggestion
+/// (`read article.md`, drawn faint). The plain capture of the same screen
+/// reads as typed text; the styled one must read as a ghost.
+#[test]
+fn a_real_idle_claude_snapshot_with_a_suggestion_is_a_ghost() {
+    let path = format!(
+        "{}/tests/fixtures/screens/claude/ghost-styled.bin",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let parser = screen_from_snapshot(&bytes);
+    assert!(styled_composer_is_ghost("claude", parser.screen()));
+}
+
+/// The incident's delivery: the ghost suggestion no longer blocks the send.
+#[test]
+fn a_claude_ghost_suggestion_does_not_block_delivery() {
+    let mut tui = FakeTui {
+        claude_render: true,
+        ghost: "Fill in the TODO link in the intro".into(),
+        ghost_styled: Some(ghost_bytes()),
+        ..FakeTui::ready()
+    };
+    let r = deliver(&mut tui, "claude", PAYLOAD, AckPolicy::for_engine("claude")).unwrap();
+    assert_eq!(r.status, DeliveryStatus::DeliveredWorking, "{r:?}");
+    assert_eq!((tui.pastes, tui.enters), (1, 1));
+    assert_eq!(tui.transcript.len(), 1, "exactly one submitted prompt");
+}
+
+/// Fail closed: the same ghost text with no styled evidence still refuses,
+///
+/// exactly the old behavior.
+#[test]
+fn ghost_text_without_styled_evidence_still_refuses() {
+    let mut tui = FakeTui {
+        claude_render: true,
+        ghost: "Fill in the TODO link in the intro".into(),
+        ..FakeTui::ready()
+    };
+    let r = deliver(&mut tui, "claude", PAYLOAD, AckPolicy::for_engine("claude")).unwrap();
+    assert_eq!(r.status, DeliveryStatus::Failed, "{r:?}");
+    assert_eq!((tui.pastes, tui.enters), (0, 0));
+    assert!(r.detail.contains("refusing to append"), "{}", r.detail);
 }

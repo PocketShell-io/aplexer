@@ -206,6 +206,12 @@ impl AckTarget for RpcAckTarget<'_> {
         String::from_utf8(bytes).ok()
     }
 
+    /// Styled bytes for ghost-suggestion detection, best effort like
+    /// `capture`: same snapshot the SVG renderer replays client-side.
+    fn capture_styled(&mut self) -> Option<Vec<u8>> {
+        rpc_capture_screen(self.record, false).ok()
+    }
+
     /// Writes the payload in frame-sized chunks, inside one bracketed paste
     /// when the engine needs it, then waits the engine's floor (and settle)
     /// before the caller's Enter.

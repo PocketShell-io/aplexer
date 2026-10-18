@@ -28,7 +28,11 @@
 //!
 //! The detectors are pure functions over a plain screen capture
 //! (`a capture --screen --plain`) and are tested against recorded screens in
-//! `tests/fixtures/screens/<engine>/`.
+//! `tests/fixtures/screens/<engine>/`. One case needs more than plain text:
+//! Claude's idle prompt suggestion (grey ghost text in the input box) reads
+//! as typed input once attributes are stripped, so the composer checks take
+//! an optional styled snapshot (`CaptureScreen { plain: false }`) and treat
+//! an all-faint-or-grey composer as empty (see `styled_composer_is_ghost`).
 
 use serde::Serialize;
 
@@ -69,13 +73,13 @@ fn is_placeholder(engine_family: &str, input: &str) -> bool {
 /// Codex and its forks (zcodex) put a model line under the composer, after
 /// a blank row: `GPT-6-Luna low · Context 100% left` or, on Z.ai builds,
 /// `glm-5.3-flash max · ~/repo`. While booting only `? for shortcuts` shows.
-fn codex_footer_at(lines: &[&str], i: usize) -> bool {
-    let line = lines[i];
+fn codex_footer_at<T: AsRef<str>>(lines: &[T], i: usize) -> bool {
+    let line = lines[i].as_ref();
     line.contains("Context ")
         || line.contains("context left")
         || line.contains("? for shortcuts")
         || (i > 0
-            && lines[i - 1].trim().is_empty()
+            && lines[i - 1].as_ref().trim().is_empty()
             && line.starts_with(' ')
             && line.contains(" · "))
 }
@@ -202,6 +206,138 @@ pub fn pending_payload(engine: &str, screen: &str, payload: &str) -> Option<Stri
         Composer::Holds(input) if holds_payload(engine, &input, payload) => Some(input),
         _ => None,
     }
+}
+
+/// Parse bounds for a client-side styled snapshot (the same bounds
+/// `capture --screen --svg` uses): generous against every grid the worker's
+/// own cell budget permits. Absolute addressing lands rows where the worker
+/// put them; the extra columns only add trailing blanks, which the composer
+/// search ignores.
+const STYLED_PARSE_ROWS: u16 = 256;
+const STYLED_PARSE_COLS: u16 = 512;
+
+/// Replay a `CaptureScreen { plain: false }` snapshot into a parser, so the
+/// composer's cell attributes (faint, foreground color) can be read without
+/// any worker or protocol change.
+pub fn screen_from_snapshot(bytes: &[u8]) -> vt100::Parser {
+    let mut parser = vt100::Parser::new(STYLED_PARSE_ROWS, STYLED_PARSE_COLS, 0);
+    parser.process(bytes);
+    parser
+}
+
+/// Whether a foreground color reads as a TUI's dim suggestion grey rather
+/// than real typed text: bright-black and the xterm grayscale ramp, or a
+/// mid-luminance truecolor grey. Plain white (index 7) and near-white /
+/// near-black truecolors count as real: fail closed.
+fn is_grey_fg(color: vt100::Color) -> bool {
+    match color {
+        vt100::Color::Default => false,
+        vt100::Color::Idx(i) => i == 8 || (232..=255).contains(&i),
+        vt100::Color::Rgb(r, g, b) => {
+            let spread = r.max(g).max(b) - r.min(g).min(b);
+            let lum = u16::from(r) + u16::from(g) + u16::from(b);
+            spread <= 12 && (90..=660).contains(&lum)
+        }
+    }
+}
+
+/// One composer cell counts as ghost suggestion text when the TUI drew it
+/// faint (SGR 2) or in a grey pen: Claude's idle prompt suggestion.
+fn cell_is_ghost(cell: &vt100::Cell) -> bool {
+    cell.dim() || is_grey_fg(cell.fgcolor())
+}
+
+/// Whether the styled screen's composer holds only ghost suggestion text.
+/// Every visible glyph in the editable input area must be faint or grey;
+/// real typed text (default pen) reads as real, and so does a mix (a typed
+/// prefix plus a grey autocomplete tail): fail closed. `false` for an
+/// unknown layout or a truly empty box (no glyphs at all).
+pub fn styled_composer_is_ghost(engine: &str, screen: &vt100::Screen) -> bool {
+    let (_, cols) = screen.size();
+    let rows: Vec<String> = screen.rows(0, cols).collect();
+    let family = crate::engine_family(engine);
+    let (first, last) = match family {
+        "codex" => {
+            let Some(start) = rows
+                .iter()
+                .rposition(|line| line.trim_start().starts_with('›'))
+            else {
+                return false;
+            };
+            let Some(end) = (start + 1..rows.len()).find(|&i| codex_footer_at(&rows, i)) else {
+                return false;
+            };
+            (start, end)
+        }
+        "claude" => {
+            // Same bordered-composer shape `parse_screen` matches, so the
+            // two cannot disagree about which rows are editable.
+            let Some(start) = rows
+                .iter()
+                .rposition(|line| line.trim_start().starts_with('❯'))
+            else {
+                return false;
+            };
+            if start == 0 || !rows[start - 1].trim().starts_with('─') {
+                return false;
+            }
+            let Some(end) = (start + 1..rows.len()).find(|&i| rows[i].trim().starts_with('─'))
+            else {
+                return false;
+            };
+            (start, end)
+        }
+        "opencode" => {
+            let Some(bottom) = rows
+                .iter()
+                .rposition(|line| line.trim_start().starts_with("╹▀"))
+            else {
+                return false;
+            };
+            let mut start = bottom;
+            while start > 0 && rows[start - 1].trim_start().starts_with('┃') {
+                start -= 1;
+            }
+            if bottom < start + 2 {
+                return false;
+            }
+            (start, bottom - 1)
+        }
+        _ => return false,
+    };
+    let mut content_cells = 0u32;
+    for r in first..last {
+        let r = r as u16;
+        let mut in_content = false;
+        let mut c: u16 = 0;
+        while c < cols {
+            let Some(cell) = screen.cell(r, c) else {
+                c += 1;
+                continue;
+            };
+            let wide = cell.is_wide();
+            if !cell.is_wide_continuation() {
+                let text = cell.contents();
+                if !in_content {
+                    // Leading chrome: blanks and one prompt marker or bar.
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() || matches!(trimmed, "❯" | "›" | "┃" | "│") {
+                        // Still chrome; the first other glyph starts content.
+                    } else {
+                        in_content = true;
+                    }
+                }
+                if in_content && !text.trim().is_empty() {
+                    content_cells += 1;
+                    if !cell_is_ghost(cell) {
+                        return false;
+                    }
+                }
+            }
+            c += if wide { 2 } else { 1 };
+        }
+    }
+    content_cells > 0
 }
 
 /// The engine has drawn a usable input box. Codex-family TUIs draw the
@@ -370,12 +506,37 @@ const RESEND_READY_TIMEOUT_MS: u64 = 10_000;
 /// (framing included) and waits the engine's floor before Enter.
 pub trait AckTarget {
     fn capture(&mut self) -> Option<String>;
+    /// Raw `CaptureScreen { plain: false }` bytes, for ghost-suggestion
+    /// styling. Best effort like `capture`: `None` (the default) means "no
+    /// evidence", and composer text reads as real input.
+    fn capture_styled(&mut self) -> Option<Vec<u8>> {
+        None
+    }
     fn paste(&mut self) -> anyhow::Result<()>;
     fn enter(&mut self) -> anyhow::Result<()>;
     /// The harness reported `working` at or after `since_ms` (wall clock).
     fn reported_working_since(&mut self, since_ms: u64) -> bool;
     fn sleep_ms(&mut self, ms: u64);
     fn now_ms(&mut self) -> u64;
+}
+
+/// Whether `plain`'s composer text is only a ghost suggestion: the plain
+/// capture shows text, but the styled snapshot draws it all faint or grey.
+/// Fails closed (`false`) without styled evidence or on an unknown layout,
+/// preserving the old refusal. The two captures are separate RPCs, so a
+/// screen that changes between them can misread one poll; the state machine
+/// re-polls, and every outcome stays bounded.
+fn composer_is_ghost(target: &mut dyn AckTarget, engine: &str, plain: &str) -> bool {
+    if !matches!(
+        parse_screen(engine, plain).map(|view| view.composer),
+        Some(Composer::Holds(_))
+    ) {
+        return false;
+    }
+    let Some(bytes) = target.capture_styled() else {
+        return false;
+    };
+    styled_composer_is_ghost(engine, screen_from_snapshot(&bytes).screen())
 }
 
 /// Machine-readable outcome, printed by `a send --json` under `delivery`.
@@ -478,7 +639,7 @@ pub fn deliver(
     report.queued = is_busy(engine, &baseline);
     let baseline_view = parse_screen(engine, &baseline);
     if let Some(Composer::Holds(other)) = baseline_view.as_ref().map(|v| &v.composer) {
-        if !holds_payload(engine, other, payload) {
+        if !holds_payload(engine, other, payload) && !composer_is_ghost(target, engine, &baseline) {
             report.status = DeliveryStatus::Failed;
             report.detail =
                 "the input box already holds other unsent text; refusing to append to it".into();
@@ -509,11 +670,20 @@ pub fn deliver(
             .unwrap_or_default();
         let view = parse_screen(engine, &after_paste);
         let fingerprint = pending_payload(engine, &after_paste, payload);
-        report.landed = match (&fingerprint, &view) {
-            (Some(_), _) => Some(true),
-            (None, Some(v)) if v.composer == Composer::Empty => Some(false),
-            // Other text or an unknown layout: no evidence either way.
-            _ => None,
+        report.landed = if fingerprint.is_some() {
+            Some(true)
+        } else if let Some(v) = &view {
+            if v.composer == Composer::Empty
+                || (matches!(v.composer, Composer::Holds(_))
+                    && composer_is_ghost(target, engine, &after_paste))
+            {
+                Some(false)
+            } else {
+                // Other text or an unknown layout: no evidence either way.
+                None
+            }
+        } else {
+            None
         };
         if report.landed == Some(false) {
             // The composer is visibly empty: the paste was dropped (typically
@@ -584,7 +754,11 @@ pub fn deliver(
         let arrival_ms = 3_000;
         let deadline = target.now_ms() + policy.ack_timeout_ms.max(arrival_ms);
         let mut echo_screen: Option<Vec<String>> = None;
-        let mut last = String::new();
+        // Whether the latest capture is untouched since the baseline (empty
+        // composer, ghost suggestion included, and identical transcript
+        // above it), computed with each capture so the styled ghost check
+        // runs once per poll instead of twice.
+        let mut last_untouched = false;
         loop {
             if target.reported_working_since(since_wall) {
                 report.working_evidence = Some("harness_working");
@@ -605,12 +779,10 @@ pub fn deliver(
                         _ => {}
                     }
                 }
-                last = s;
+                last_untouched = untouched(target, engine, &s, &baseline_above);
             }
             let now = target.now_ms();
-            let quiet = !report.echoed
-                && report.working_evidence.is_none()
-                && untouched(engine, &last, &baseline_above);
+            let quiet = !report.echoed && report.working_evidence.is_none() && last_untouched;
             if report.working_evidence.is_some()
                 || (policy.ack_timeout_ms == 0 && report.echoed)
                 || (quiet && now >= since_wall + arrival_ms && report.sends <= policy.max_resends)
@@ -623,9 +795,7 @@ pub fn deliver(
         // Nothing arrived at all: the input box is empty and the screen
         // above it is exactly as it was before the send. A moved transcript
         // is never resent into.
-        let vanished = !report.echoed
-            && report.working_evidence.is_none()
-            && untouched(engine, &last, &baseline_above);
+        let vanished = !report.echoed && report.working_evidence.is_none() && last_untouched;
         if vanished && report.sends <= policy.max_resends {
             report.submitted = None;
             report.landed = None;
@@ -670,16 +840,25 @@ pub fn deliver(
     }
 }
 
-/// The input box is empty and everything above it matches the pre-send
-/// screen (when that screen was readable at all; the caller also requires
-/// that no echo showed).
-fn untouched(engine: &str, screen: &str, baseline_above: &Option<Vec<String>>) -> bool {
-    parse_screen(engine, screen).is_some_and(|view| {
-        view.composer == Composer::Empty
-            && baseline_above
-                .as_ref()
-                .is_none_or(|baseline| *baseline == view.above)
-    })
+/// The input box is empty (a ghost suggestion counts as empty) and
+/// everything above it matches the pre-send screen (when that screen was
+/// readable at all; the caller also requires that no echo showed).
+fn untouched(
+    target: &mut dyn AckTarget,
+    engine: &str,
+    screen: &str,
+    baseline_above: &Option<Vec<String>>,
+) -> bool {
+    let Some(view) = parse_screen(engine, screen) else {
+        return false;
+    };
+    let empty = view.composer == Composer::Empty
+        || (matches!(view.composer, Composer::Holds(_))
+            && composer_is_ghost(target, engine, screen));
+    empty
+        && baseline_above
+            .as_ref()
+            .is_none_or(|baseline| *baseline == view.above)
 }
 
 /// Poll `capture` until `done` holds or `timeout_ms` passes; returns the

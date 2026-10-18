@@ -440,8 +440,9 @@ The verdict, its exit code, and `--json`'s `delivery.status`:
 `landed`, `submitted`, `echoed`, `working_evidence`, `elapsed_ms`, and a
 one-line `detail`. Text the input box already holds that is *not* this
 payload (someone's unsent draft) is never appended to: the send fails
-without writing. `--no-ack` restores fire-and-forget: paste, one Enter, no
-screen reads.
+without writing. Claude's idle prompt suggestion (grey ghost text) is not
+a draft: a composer holding only faint-or-grey text counts as empty.
+`--no-ack` restores fire-and-forget: paste, one Enter, no screen reads.
 
 Long prompts are written in frame-sized chunks inside one bracketed paste
 for Codex and OpenCode; Claude collapses large pastes itself. Each engine's
