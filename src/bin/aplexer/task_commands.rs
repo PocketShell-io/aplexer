@@ -86,7 +86,13 @@ pub(crate) fn cmd_task(paths: &Paths, args: TaskRunArgs, json_output: bool) -> R
     // child's copy -- the START/RESULT records carry the prompt-free argv
     // plus its size/digest fingerprint.
     let mut argv = launch.command.clone();
-    argv.extend(task_argv);
+    if aplexer::engine_family(&engine) == "opencode" {
+        // OpenCode parses model/profile flags as run options, not root options.
+        // Keep the executable first, then the task subcommand, then its flags.
+        argv.splice(1..1, task_argv);
+    } else {
+        argv.extend(task_argv);
+    }
     if !args.no_skip_permissions {
         if let Err(error) =
             aplexer::api::prepare_workspace_trust(&launch.cwd, &launch.cwd, &engine, &launch.env)

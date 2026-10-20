@@ -800,3 +800,56 @@ fn task_record_round_trips_through_atomic_writer() {
     // PATHS harness kept alive for its temp cleanup ordering.
     let _ = atomic_write_json(&harness.paths().config_file, &record);
 }
+
+#[test]
+fn opencode_run_precedes_model_and_profile_args() {
+    let (harness, _engine_dir, cwd) = harness_with_fake_engine(&workload::fake_engine_script(true));
+    let config_path = harness.paths().config_file;
+    let existing = fs::read_to_string(&config_path).unwrap();
+    let executable = existing
+        .lines()
+        .find(|line| line.starts_with("command = "))
+        .unwrap();
+    fs::write(
+        &config_path,
+        format!(
+            r#"{existing}
+[engines.opencode]
+{executable}
+[profiles.muse-test]
+engine = "opencode"
+args = ["--model", "opencode-go/muse-spark-1.3-contributor"]
+"#
+        ),
+    )
+    .unwrap();
+    let prompt_path = write_prompt(cwd.path(), "argv regression");
+    let out = cwd.path().join("opencode-result");
+    let run = task_run(&harness)
+        .args([
+            "task",
+            "run",
+            "--profile",
+            "muse-test",
+            "--prompt-file",
+            &prompt_path,
+            "--cwd",
+            cwd.path().to_str().unwrap(),
+            "--output-dir",
+            out.to_str().unwrap(),
+            "--no-skip-permissions",
+            "--no-notify",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let result = read_result(&out);
+    let argv = result["argv"].as_array().unwrap();
+    assert_eq!(argv[1], "run");
+    assert_eq!(argv[2], "--model");
+    assert_eq!(argv[3], "opencode-go/muse-spark-1.3-contributor");
+}
