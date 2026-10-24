@@ -101,9 +101,12 @@ fn retaining_stop_escalates_and_keeps_native_record_history_and_workspace() {
     fs::write(&record_path, serde_json::to_vec(&stale).unwrap()).unwrap();
     fs::remove_dir_all(&workspace).unwrap();
     let reconciled = run(&["kill", id, "--keep-record", "--signal", "TERM", "--json"]);
-    assert!(reconciled.status.success(), "{}", String::from_utf8_lossy(&reconciled.stderr));
+    assert!(
+        reconciled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reconciled.stderr)
+    );
     let reconciled: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
     assert_eq!(reconciled["phase"], "exited");
     assert_eq!(reconciled["containment_empty"], true);
-
 }
