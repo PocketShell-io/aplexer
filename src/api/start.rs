@@ -50,6 +50,10 @@ pub struct StartRequest {
     /// (Python bindings). Otherwise re-exec this same binary as
     /// `<worker> worker --id …` -- one executable is both CLI and worker.
     pub python: Option<PathBuf>,
+    /// Client-supplied binding labels, persisted verbatim on the record
+    /// (F5 Hub binding: `hub.managed`, `hub.session`, `hub.task`).
+    /// Never interpreted by aplexer; clients read them from list/snapshot.
+    pub labels: BTreeMap<String, String>,
     /// Never fail because the requested `workspace+tag` is live: when that
     /// pair is held by a session `start_session` would refuse to supersede,
     /// claim the next free `<tag>-2`, `<tag>-3`, … suffix instead. This is
@@ -93,8 +97,14 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
     let claim = claim_pair(paths, req, &workspace)?;
     let mut startup = LaunchGuard::new(paths, id);
     let result = (|| -> Result<SessionRecord> {
-        let (record, _launch_environment_guard) =
-            write_initial_record(paths, id, &workspace, claim.tag.clone(), launch)?;
+        let (record, _launch_environment_guard) = write_initial_record(
+            paths,
+            id,
+            &workspace,
+            claim.tag.clone(),
+            launch,
+            req.labels.clone(),
+        )?;
         spawn_worker_process(paths, req, id, command, &mut startup)?;
         await_worker_ready(paths, req, id, record, &mut startup)
     })();

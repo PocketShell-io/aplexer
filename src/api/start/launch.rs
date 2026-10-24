@@ -20,6 +20,7 @@ pub(super) fn write_initial_record(
     workspace: &Path,
     tag: String,
     launch: ResolvedLaunch,
+    labels: BTreeMap<String, String>,
 ) -> Result<(SessionRecord, LaunchEnvironmentGuard)> {
     ensure_private_dir(&paths.state_session(id))?;
     ensure_private_dir(&paths.runtime_session(id))?;
@@ -87,6 +88,7 @@ pub(super) fn write_initial_record(
         containment_cgroup: None,
         containment_cgroup_identity: None,
         containment_empty: Some(false),
+        labels,
         socket_path: paths.socket(id),
         history_path: paths.history(id),
         exit: None,

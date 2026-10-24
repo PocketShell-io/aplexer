@@ -127,6 +127,7 @@ pub(crate) fn cmd_quick_launch(paths: &Paths, args: QuickLaunchArgs) -> Result<(
             startup_timeout_ms: DEFAULT_STARTUP_TIMEOUT_MS,
             no_skip_permissions: false,
             fresh: false,
+            label: vec![],
             command,
         },
         false,

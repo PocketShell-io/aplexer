@@ -59,6 +59,7 @@ fn status_cli_bounds_connect_to_a_saturated_control_backlog() {
         containment_cgroup: None,
         containment_cgroup_identity: None,
         containment_empty: None,
+        labels: Default::default(),
         socket_path,
         history_path: paths.history(id),
         exit: None,

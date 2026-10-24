@@ -279,6 +279,7 @@ fn seed_starting_stub(harness: &Harness, workspace: &TempDir, tag: &str) -> Sess
         worker_cgroup: None,
         workload_cgroup: None,
         containment_empty: Some(false),
+        labels: Default::default(),
         socket_path: paths.socket(id),
         history_path: paths.history(id),
         exit: None,

@@ -300,6 +300,7 @@ pub(crate) fn create_sibling_session(
         worker_rows: geometry.map(|(rows, _)| rows),
         worker_cols: geometry.map(|(_, cols)| cols),
         python: None,
+        labels: BTreeMap::new(),
         // The whole point: never fail because this workspace already has a
         // `main`, take `main-2` instead.
         fresh: true,

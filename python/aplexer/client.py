@@ -130,6 +130,7 @@ class Client:
         pids: int | None = None,
         no_skip_permissions: bool = False,
         fresh: bool = False,
+        labels: dict[str, str] | None = None,
     ) -> Session:
         """Start one session and return its record.
 
@@ -137,6 +138,9 @@ class Client:
         ``workspace``+``tag`` pair is already held by a live session, the
         next free ``<tag>-2``, ``<tag>-3`` … suffix is claimed instead of
         raising, and the returned record carries the tag actually used.
+
+        ``labels`` are opaque binding labels persisted on the record
+        (Hub: ``hub.managed``, ``hub.session``, ``hub.task``).
         """
         raw = json.loads(
             _call_native(
@@ -155,6 +159,7 @@ class Client:
                 10_000,
                 *self._path_args(),
                 fresh,
+                labels,
             )
         )
         return Session.from_dict(raw)

@@ -557,6 +557,7 @@ mod tests {
             containment_cgroup: None,
             containment_cgroup_identity: None,
             containment_empty: Some(false),
+            labels: Default::default(),
             socket_path: "/tmp/s".into(),
             history_path: "/tmp/h".into(),
             exit: None,

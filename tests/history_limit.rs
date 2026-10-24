@@ -116,6 +116,7 @@ fn embedded_api_rejects_usize_max_before_worker_spawn() {
         worker_rows: None,
         worker_cols: None,
         python: None,
+        labels: Default::default(),
         fresh: false,
     };
 
@@ -171,6 +172,7 @@ fn terminal_legacy_oversized_record_remains_recoverable() {
         containment_cgroup: None,
         containment_cgroup_identity: None,
         containment_empty: Some(true),
+        labels: Default::default(),
         socket_path: paths.socket(id),
         history_path: paths.history(id),
         exit: Some(ExitInfo {

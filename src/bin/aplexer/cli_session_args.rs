@@ -117,6 +117,12 @@ pub(crate) struct StartArgs {
     /// create-by-exact-tag contract.
     #[arg(long)]
     pub(crate) fresh: bool,
+    /// Binding label KEY=VALUE, persisted on the session record and surfaced
+    /// in list/snapshot/status (repeatable, max 16). Hub marks managed
+    /// sessions with `--label hub.managed=true --label hub.session=<id>`
+    /// so PocketShell can render "Open in Hub" without calling Hub.
+    #[arg(long = "label", value_name = "KEY=VALUE")]
+    pub(crate) label: Vec<String>,
     /// With `--`, run this command instead of an engine
     #[arg(last = true, value_name = "COMMAND")]
     pub(crate) command: Vec<OsString>,

@@ -704,6 +704,7 @@ fn a_terminal_record_never_reports_an_agent_from_a_recycled_pid() {
             containment_cgroup: None,
             containment_cgroup_identity: None,
             containment_empty: None,
+            labels: Default::default(),
             socket_path: paths.socket(id),
             history_path: paths.history(id),
             exit: None,

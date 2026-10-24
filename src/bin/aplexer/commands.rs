@@ -368,6 +368,7 @@ pub(crate) fn cmd_start(paths: &Paths, args: StartArgs, json_output: bool) -> Re
         );
     }
     let env = parse_env(&args.env)?;
+    let labels = aplexer::parse_labels(&args.label)?;
     let command = args
         .command
         .iter()
@@ -401,6 +402,7 @@ pub(crate) fn cmd_start(paths: &Paths, args: StartArgs, json_output: bool) -> Re
         worker_rows,
         worker_cols,
         python: None,
+        labels,
         fresh: args.fresh,
     };
     let ready = aplexer::api::start_session(paths, &req)?;

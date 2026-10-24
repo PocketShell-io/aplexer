@@ -190,6 +190,19 @@
         "number",
         "null"
       ]
+    },
+    "labels": {
+      "description": "Client-supplied binding labels (F5). Hub marks managed sessions with hub.managed=true, hub.session=<id>, hub.task=<id>; PocketShell reads them to render Open-in-Hub without calling Hub.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]{1,64}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16
     }
   },
   "additionalProperties": false

@@ -113,6 +113,7 @@ def test_client_paths_are_instance_local_including_start(monkeypatch, tmp_path):
             runtime_dir,
             config,
             fresh=False,
+            labels=None,
         ):
             calls.append(("start", state_dir, runtime_dir, config))
             return json.dumps(

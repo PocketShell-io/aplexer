@@ -484,6 +484,7 @@ mod tests {
             containment_cgroup: None,
             containment_cgroup_identity: None,
             containment_empty: Some(false),
+            labels: Default::default(),
             socket_path: PathBuf::from("/nonexistent"),
             history_path: PathBuf::from("/nonexistent"),
             exit: None,

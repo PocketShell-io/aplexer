@@ -31,6 +31,7 @@ fn mk_record(workspace: &str, tag: &str, phase: Phase) -> SessionRecord {
         containment_cgroup: None,
         containment_cgroup_identity: None,
         containment_empty: Some(false),
+        labels: Default::default(),
         // Must exist on disk: check_attachable now checks socket_path
         // (this test binary's own executable is a convenient stand-in
         // for "some file that's there"; only .exists() is probed, never

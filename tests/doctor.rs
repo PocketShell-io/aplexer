@@ -54,6 +54,7 @@ fn stale_running_record(paths: &Paths) -> SessionRecord {
         containment_cgroup: None,
         containment_cgroup_identity: None,
         containment_empty: None,
+        labels: Default::default(),
         socket_path: paths.socket(id),
         history_path: paths.history(id),
         exit: None,

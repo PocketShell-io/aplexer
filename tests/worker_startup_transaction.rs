@@ -109,6 +109,7 @@ impl Harness {
             containment_cgroup: None,
             containment_cgroup_identity: None,
             containment_empty: Some(false),
+            labels: Default::default(),
             socket_path: self.paths.socket(id),
             history_path: self.paths.history(id),
             exit: None,

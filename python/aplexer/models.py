@@ -61,6 +61,7 @@ class Session:
     containment_empty: bool = False
     exit: ExitInfo | None = None
     error: str | None = None
+    labels: dict[str, str] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
@@ -88,5 +89,6 @@ class Session:
                 if "containment_empty" in value
                 else bool(exit_info)
             ),
-            exit=exit_info, error=value.get("error"), raw=value,
+            exit=exit_info, error=value.get("error"),
+            labels=dict(value.get("labels", {}) or {}), raw=value,
         )

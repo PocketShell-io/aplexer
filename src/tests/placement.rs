@@ -201,6 +201,7 @@ fn start_warning_fires_only_for_the_user_manager_subtree() {
             containment_cgroup: None,
             containment_cgroup_identity: None,
             containment_empty: Some(false),
+            labels: Default::default(),
             socket_path: format!("/tmp/{id}.sock").into(),
             history_path: format!("/tmp/{id}.history").into(),
             exit: None,

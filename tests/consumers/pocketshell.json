@@ -1,0 +1,85 @@
+{
+  "consumer": "pocketshell",
+  "version": 1,
+  "source": "audit hub-pocketshell-separation-2026-10-24 §4.5 + code audit pocketshell-cli/src/pocketshell/{sessions/create.py:66-131,sessions/kill.py:98,sessions/rename.py:116,sessions/attach.py:110,runtime/sessions.py:305,engines/registry.py:233,profiles/resolve.py:49,agents/launch/spec.py:29,sessions/warnings.py:42} 2026-10-24",
+  "cases": [
+    {
+      "id": "psh-snapshot",
+      "command": "snapshot",
+      "flags": ["--json"],
+      "source": "sessions/create.py:66 + runtime/sessions.py:305 (snapshot, fallback to list)"
+    },
+    {
+      "id": "psh-list",
+      "command": "list",
+      "flags": ["--json"],
+      "source": "sessions/create.py:68 + runtime/sessions.py:309 (list fallback)"
+    },
+    {
+      "id": "psh-start",
+      "command": "start",
+      "flags": ["--workspace", "--tag", "--engine", "--profile", "--json"],
+      "source": "sessions/create.py:131 (start --workspace --tag [--engine] [--profile]) + audit §4.5"
+    },
+    {
+      "id": "psh-kill",
+      "command": "kill",
+      "flags": ["--workspace", "--tag", "--json"],
+      "source": "sessions/kill.py:98 (kill <id> --json) + audit §4.5 (kill --workspace --tag)"
+    },
+    {
+      "id": "psh-rename",
+      "command": "rename",
+      "flags": ["--workspace", "--tag", "--json"],
+      "source": "sessions/rename.py:116 (rename <id> --tag <new> --json) + tests/test_aplexer_contract.py rename pin"
+    },
+    {
+      "id": "psh-attach",
+      "command": "attach",
+      "flags": ["--workspace", "--tag", "--no-status", "--json"],
+      "source": "sessions/attach.py:110 (attach --no-status <id>) + audit §4.5 (attach --no-status)"
+    },
+    {
+      "id": "psh-engines",
+      "command": "engines",
+      "flags": ["--json"],
+      "source": "engines/registry.py:233 (engines) + audit §4.5"
+    },
+    {
+      "id": "psh-profiles",
+      "command": "profiles",
+      "flags": ["--json"],
+      "source": "profiles/resolve.py:49 + profiles/discovery.py:88 (profiles) + audit §4.5"
+    },
+    {
+      "id": "psh-launch-spec",
+      "command": "launch-spec",
+      "flags": ["--engine", "--cwd", "--profile", "--no-skip-permissions", "--json"],
+      "source": "agents/launch/spec.py:29 (launch-spec --engine --cwd [--profile] [--no-skip-permissions]) + audit §4.5"
+    },
+    {
+      "id": "psh-send",
+      "command": "send",
+      "flags": ["--workspace", "--tag", "--stdin", "--json", "--enter"],
+      "source": "audit §4.5 (send --stdin --json --enter); human-input path (kept: drop only after F6 lands)"
+    },
+    {
+      "id": "psh-warnings",
+      "command": "warnings",
+      "flags": ["--json"],
+      "source": "sessions/warnings.py:42 (warnings [--json]) — real usage beyond audit, pinned by contract test"
+    },
+    {
+      "id": "psh-ack",
+      "command": "ack",
+      "flags": ["--json"],
+      "source": "sessions/warnings.py:61 (ack [SELECTOR]) — real usage beyond audit"
+    },
+    {
+      "id": "psh-version",
+      "command": "--version",
+      "flags": [],
+      "source": "F5 AC3: PATH vs venv version equality check (a --version)"
+    }
+  ]
+}

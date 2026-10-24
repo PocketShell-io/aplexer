@@ -309,6 +309,7 @@ pub(crate) fn dummy_record(engine: &str) -> SessionRecord {
         containment_cgroup: None,
         containment_cgroup_identity: None,
         containment_empty: Some(false),
+        labels: Default::default(),
         socket_path: PathBuf::from("/"),
         history_path: PathBuf::from("/"),
         exit: None,

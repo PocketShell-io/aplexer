@@ -86,6 +86,47 @@ pub fn validate_reported_state(state: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate one `--label KEY=VALUE` binding label (F5).
+/// Keys are dotted names (`hub.session`, `hub.managed`); values are opaque
+/// short strings. Both bounds keep the record small and the JSON greppable.
+pub fn validate_label(key: &str, value: &str) -> Result<()> {
+    if key.is_empty() || key.len() > 64 {
+        bail!("label key must contain 1..64 bytes");
+    }
+    if !key
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    {
+        bail!("label key may contain only ASCII letters, digits, '.', '_' and '-'");
+    }
+    if value.len() > 256 {
+        bail!("label value must be at most 256 bytes");
+    }
+    if !value.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+        bail!("label value must be printable ASCII");
+    }
+    Ok(())
+}
+
+/// Parse `KEY=VALUE` label args into a map; duplicate keys are refused so a
+/// typo cannot silently shadow a Hub binding.
+pub fn parse_labels(raw: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut labels = BTreeMap::new();
+    for item in raw {
+        let (key, value) = item
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("label {item:?} must be KEY=VALUE"))?;
+        validate_label(key, value)?;
+        if labels.insert(key.to_string(), value.to_string()).is_some() {
+            anyhow::bail!("duplicate label key {key:?}");
+        }
+    }
+    if labels.len() > 16 {
+        anyhow::bail!("at most 16 labels per session");
+    }
+    Ok(labels)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
@@ -378,6 +419,14 @@ pub struct SessionRecord {
     /// both the original process group and the worker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub containment_empty: Option<bool>,
+    /// Client-supplied binding labels (F5 Hub/PocketShell separation).
+    /// Hub marks managed sessions with `hub.managed=true` plus
+    /// `hub.session=<hub-session-id>` and optionally `hub.task=<task-id>`;
+    /// PocketShell reads them to render "Open in Hub" without calling Hub.
+    /// Generic key=value map so future consumers need no schema bump;
+    /// empty on records created before the field existed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
     pub socket_path: PathBuf,
     pub history_path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -425,6 +474,7 @@ impl SessionRecord {
             containment_cgroup: None,
             containment_cgroup_identity: None,
             containment_empty: Some(false),
+            labels: BTreeMap::new(),
             socket_path: PathBuf::from("/nonexistent"),
             history_path: PathBuf::from("/nonexistent"),
             exit: None,

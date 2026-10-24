@@ -1,0 +1,92 @@
+{
+  "consumer": "hub",
+  "version": 1,
+  "source": "audit hub-pocketshell-separation-2026-10-24 §4.5 + code audit agent-hub/host/agent_hub_host/{fleet.py:1308,bridge.py:509-879,native_sessions.py,aplexer_client.py,provisioning.py:170} 2026-10-24",
+  "cases": [
+    {
+      "id": "hub-start-managed",
+      "command": "start",
+      "flags": ["--workspace", "--tag", "--engine", "--profile", "--cwd", "--memory", "--pids", "--json", "--label"],
+      "source": "host/agent_hub_host/fleet.py:1308 (start --workspace --tag hub-<offer> --engine --memory 1500M --pids 256 --json) + aplexer_client.py supported set + F5 --label hub.managed/hub.session",
+      "note": "--label is the F5 Hub binding (hub.managed=true, hub.session=<id>, hub.task=<id>)"
+    },
+    {
+      "id": "hub-list",
+      "command": "list",
+      "flags": ["--json", "--all"],
+      "source": "host/agent_hub_host/fleet.py:1218,1589 + native_sessions.py:list_sessions (list --json, list --all --json)"
+    },
+    {
+      "id": "hub-status",
+      "command": "status",
+      "flags": ["--workspace", "--tag", "--json"],
+      "source": "host/agent_hub_host/bridge.py:509 (status <tag> --workspace --json) + native_sessions.py:status_of + host_health_monitor.py:253"
+    },
+    {
+      "id": "hub-capture",
+      "command": "capture",
+      "flags": ["--workspace", "--tag", "--screen", "--plain", "--bytes", "--json"],
+      "source": "host/agent_hub_host/bridge.py:527 (capture <tag> --workspace --screen --plain) + native_sessions.py:capture_output (--screen/--plain and --bytes tail)"
+    },
+    {
+      "id": "hub-kill",
+      "command": "kill",
+      "flags": ["--workspace", "--tag", "--signal", "--grace-ms", "--json"],
+      "source": "host/agent_hub_host/native_sessions.py:stop_session (kill --workspace --tag --signal HUP|TERM --grace-ms --json) via aplexer_client.py"
+    },
+    {
+      "id": "hub-whoami",
+      "command": "whoami",
+      "flags": ["--json"],
+      "source": "host/agent_hub_host/native_sessions.py:459 (whoami --json for sender binding)"
+    },
+    {
+      "id": "hub-message-send",
+      "command": "message send",
+      "flags": ["--workspace", "--to", "--kind", "--data", "--json", "--queue"],
+      "source": "host/agent_hub_host/bridge.py:620 (message send --queue --to <tag> --kind <kind> --json <body>) + native_sessions.py:send_inbox (--workspace --to --kind --data --json)"
+    },
+    {
+      "id": "hub-message-deliver",
+      "command": "message deliver",
+      "flags": ["--workspace", "--json"],
+      "source": "host/agent_hub_host/bridge.py:786 (message deliver <id> --workspace) + native_sessions.py:deliver_recorded"
+    },
+    {
+      "id": "hub-message-log",
+      "command": "message log",
+      "flags": ["--workspace", "--json"],
+      "source": "host/agent_hub_host/bridge.py:879 (message log --json --workspace) + native_sessions.py:fetch_message_log"
+    },
+    {
+      "id": "hub-message-ack",
+      "command": "message ack",
+      "flags": ["--json"],
+      "source": "host/agent_hub_host/native_sessions.py:retract_inbox_envelope (message ack <id>)"
+    },
+    {
+      "id": "hub-message-reply",
+      "command": "message reply",
+      "flags": ["--json", "--kind", "--data"],
+      "source": "audit §4.5 message * + native reply_target contract (native_bridge.py fake covers reply); Hub verifies replies from log"
+    },
+    {
+      "id": "hub-context-hook",
+      "command": "context hook",
+      "flags": ["--engine", "--json"],
+      "source": "host/agent_hub_host/provisioning.py:170,189,218 (context hook --engine codex)"
+    },
+    {
+      "id": "hub-task-run",
+      "command": "task run",
+      "flags": ["--prompt-file", "--engine", "--profile", "--cwd", "--output-dir", "--timeout-secs", "--engine-arg", "--env", "--no-skip-permissions", "--notify-to", "--notify-workspace", "--no-notify", "--json"],
+      "source": "audit §4.5 (task run) — delegated-task primitive Hub hosts sessions around"
+    },
+    {
+      "id": "hub-version",
+      "command": "--version",
+      "flags": [],
+      "source": "F5 AC3: PATH vs venv version equality check (a --version)"
+    }
+  ]
+}

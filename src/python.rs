@@ -127,6 +127,7 @@ fn snapshot(
     // Last so the positional call shapes of older clients (which stop at
     // `startup_timeout_ms` or pass the three path overrides) keep mapping.
     fresh=false,
+    labels=None,
 ))]
 fn start(
     workspace: &str,
@@ -145,7 +146,16 @@ fn start(
     runtime_dir: Option<&str>,
     config: Option<&str>,
     fresh: bool,
+    labels: Option<BTreeMap<String, String>>,
 ) -> PyResult<String> {
+    if let Some(ref map) = labels {
+        for (k, v) in map {
+            crate::validate_label(k, v).map_err(py_err)?;
+        }
+        if map.len() > 16 {
+            return Err(PyRuntimeError::new_err("at most 16 labels per session"));
+        }
+    }
     let req = StartRequest {
         workspace: PathBuf::from(workspace),
         tag: tag.to_string(),
@@ -165,6 +175,7 @@ fn start(
         worker_rows: None,
         worker_cols: None,
         python: python.map(PathBuf::from),
+        labels: labels.unwrap_or_default(),
         fresh,
     };
     let record = api::start_session(

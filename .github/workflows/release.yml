@@ -126,6 +126,17 @@ jobs:
           --test startup_rollback --test worker_startup_transaction
           --test lifecycle_failure --verbose
 
+      # F5 consumer contract (Hub + PocketShell): runs the exact
+      # tests/consumers/{hub,pocketshell}.json surface against the built
+      # release binary, plus the Hub binding-label and session-isolation
+      # pins. A failure here blocks the release below (needs: test).
+      - name: Run consumer contract (Hub + PocketShell)
+        run: >-
+          scripts/check-test-execution.sh --min 6 --
+          cargo test --locked --release
+          --test consumer_contract --test hub_labels --test session_isolation
+          --verbose
+
       - name: Install pinned uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
