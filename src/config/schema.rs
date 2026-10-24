@@ -33,7 +33,10 @@ pub struct EngineConfig {
     /// Argv that turns this engine into a noninteractive one-prompt run for
     /// `a task run` (appended after the engine/profile command, before the
     /// prompt text as the final argv element): `["exec", "--json"]` for a
-    /// codex-style CLI, `["-p"]` for a print-mode CLI. Absent/empty falls
+    /// codex-style CLI, `["-p"]` for a print-mode CLI. For agy commands,
+    /// these follow skip-permissions and caller engine args so `-p` stays
+    /// adjacent to its prompt (keep `-p` last in custom agy task argv).
+    /// Absent/empty falls
     /// back to the built-in per-family defaults in `crate::task`; an engine
     /// with neither refuses task runs rather than guessing its flags.
     #[serde(default)]

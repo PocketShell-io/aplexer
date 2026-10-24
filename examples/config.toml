@@ -4,6 +4,13 @@ default_engine = "shell"
 [engines.shell]
 command = ["/bin/bash", "-l"]
 
+# Agy consumes the next argument as the -p prompt. Task runs place these
+# permission options and any engine/profile args before task_argv and prompt.
+[engines.antigravity]
+command = ["agy"]
+skip_permissions_argv = ["--dangerously-skip-permissions"]
+task_argv = ["-p"]
+
 [profiles.large]
 engine = "shell"
 history_bytes = 8388608

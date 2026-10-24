@@ -45,6 +45,22 @@ pub(crate) fn cmd_task(paths: &Paths, args: TaskRunArgs, json_output: bool) -> R
         resolve_launch(Some(&engine))?
     };
 
+    // Agy engines may have arbitrary user-defined names (argon, flash, ...),
+    // and profiles may replace the executable. Recognize both commands.
+    let agy_command = |command: &[String]| {
+        command
+            .first()
+            .and_then(|program| Path::new(program).file_stem())
+            .is_some_and(|stem| stem == "agy")
+    };
+    let is_agy = engine == "antigravity"
+        || agy_command(&launch.command)
+        || config
+            .engines
+            .get(&engine)
+            .is_some_and(|entry| agy_command(&entry.command));
+    let task_engine = if is_agy { "antigravity" } else { &engine };
+
     // The noninteractive mode argv: engine config wins, built-in family
     // table otherwise, and a refusal when neither knows the engine's
     // noninteractive flags -- guessing would be the shell-glue mistake again.
@@ -53,7 +69,7 @@ pub(crate) fn cmd_task(paths: &Paths, args: TaskRunArgs, json_output: bool) -> R
         .get(&engine)
         .map(|engine_config| {
             aplexer::task::noninteractive_argv(
-                &engine,
+                task_engine,
                 if engine_config.task_argv.is_empty() {
                     None
                 } else {
@@ -61,7 +77,7 @@ pub(crate) fn cmd_task(paths: &Paths, args: TaskRunArgs, json_output: bool) -> R
                 },
             )
         })
-        .unwrap_or_else(|| aplexer::task::noninteractive_argv(&engine, None))
+        .unwrap_or_else(|| aplexer::task::noninteractive_argv(task_engine, None))
         .ok_or_else(|| {
             anyhow!(
                 "engine {engine:?} declares no noninteractive task argv; set \
@@ -82,16 +98,18 @@ pub(crate) fn cmd_task(paths: &Paths, args: TaskRunArgs, json_output: bool) -> R
 
     // Child argv: engine command (+ profile), the noninteractive mode argv,
     // skip-permissions argv unless opted out, and the caller's engine args.
+    // Agy's print mode consumes the argument immediately after -p, so its
+    // task argv must follow all options and directly precede the prompt.
     // The prompt text is appended verbatim as the final element only on the
     // child's copy -- the START/RESULT records carry the prompt-free argv
     // plus its size/digest fingerprint.
     let mut argv = launch.command.clone();
-    if aplexer::engine_family(&engine) == "opencode" {
+    if !is_agy && aplexer::engine_family(&engine) == "opencode" {
         // OpenCode parses model/profile flags as run options, not root options.
         // Keep the executable first, then the task subcommand, then its flags.
-        argv.splice(1..1, task_argv);
-    } else {
-        argv.extend(task_argv);
+        argv.splice(1..1, task_argv.iter().cloned());
+    } else if !is_agy {
+        argv.extend(task_argv.iter().cloned());
     }
     if !args.no_skip_permissions {
         if let Err(error) =
@@ -102,6 +120,9 @@ pub(crate) fn cmd_task(paths: &Paths, args: TaskRunArgs, json_output: bool) -> R
         argv.extend(launch.skip_permissions_argv.clone());
     }
     argv.extend(args.engine_args.iter().cloned());
+    if is_agy {
+        argv.extend(task_argv);
+    }
     let mut child_argv = argv.clone();
     child_argv.push(prompt);
     let record_argv = || aplexer::task::record_argv(argv.clone(), prompt_bytes, &digest);

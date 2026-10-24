@@ -853,3 +853,185 @@ args = ["--model", "opencode-go/muse-spark-1.3-contributor"]
     assert_eq!(argv[2], "--model");
     assert_eq!(argv[3], "opencode-go/muse-spark-1.3-contributor");
 }
+
+#[cfg(unix)]
+#[test]
+fn agy_print_prompt_follows_all_engine_and_permission_options() {
+    let harness = Harness::new();
+    let engine_dir = TempDir::new().unwrap();
+    // Model agy's parser: -p consumes the very next argument, even a flag.
+    let fake = workload::toml_path(&workload::write_executable(
+        engine_dir.path(),
+        "agy",
+        r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-p" ]; then
+        shift
+        [ "$#" -eq 1 ] && [ "$1" = 'tiny prompt with spaces' ] || exit 42
+        printf 'received=%s\n' "$1"
+        exit 0
+    fi
+    printf 'option=%s\n' "$1"
+    shift
+done
+exit 43
+"#,
+    ));
+    fs::write(
+        harness.paths().config_file,
+        format!(
+            r#"
+[engines.antigravity]
+command = ["{fake}"]
+skip_permissions_argv = ["--dangerously-skip-permissions"]
+
+# Existing workaround: skip flag embedded in command.
+[engines.argon]
+command = ["{fake}", "--model", "argon", "--dangerously-skip-permissions"]
+task_argv = ["-p"]
+
+# An arbitrary agy engine can inherit print mode from its executable.
+[engines.flash]
+command = ["{fake}", "--model", "flash"]
+skip_permissions_argv = ["--dangerously-skip-permissions"]
+
+[profiles.agy-account]
+engine = "antigravity"
+args = ["--model", "profile-model"]
+"#
+        ),
+    )
+    .unwrap();
+    let cwd = TempDir::new().unwrap();
+    let prompt_path = write_prompt(cwd.path(), "tiny prompt with spaces");
+    for (engine, profile) in [
+        ("antigravity", None),
+        ("argon", None),
+        ("flash", None),
+        ("antigravity", Some("agy-account")),
+    ] {
+        for skip in [true, false] {
+            let output_dir = cwd.path().join(format!("{engine}-{profile:?}-{skip}"));
+            let mut command = task_run(&harness);
+            command.args([
+                "task",
+                "run",
+                "--engine",
+                engine,
+                "--prompt-file",
+                &prompt_path,
+                "--cwd",
+                cwd.path().to_str().unwrap(),
+                "--output-dir",
+                output_dir.to_str().unwrap(),
+                "--engine-arg=--output-format",
+                "--engine-arg=text",
+                "--no-notify",
+            ]);
+            if let Some(profile) = profile {
+                command.args(["--profile", profile]);
+            }
+            if !skip {
+                command.arg("--no-skip-permissions");
+            }
+            let run = command.output().unwrap();
+            assert!(
+                run.status.success(),
+                "{engine}/{profile:?}/{skip}: {}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            let result = read_result(&output_dir);
+            assert_eq!(result["exit_code"], 0);
+            let argv = result["argv"].as_array().unwrap();
+            assert_eq!(argv[argv.len() - 2], "-p");
+            let log = stdout_log(&output_dir);
+            assert!(log.ends_with("received=tiny prompt with spaces\n"), "{log}");
+            assert!(
+                log.contains("option=--output-format\noption=text\n"),
+                "{log}"
+            );
+            assert_eq!(
+                log.contains("option=--dangerously-skip-permissions"),
+                skip || engine == "argon"
+            );
+        }
+    }
+}
+
+#[test]
+fn non_agy_task_argv_order_is_preserved() {
+    for (engine, mode, skip_flag) in [
+        (
+            "codex",
+            vec!["exec", "--json", "--skip-git-repo-check"],
+            Some("--dangerously-bypass-approvals-and-sandbox"),
+        ),
+        ("claude", vec!["-p"], Some("--dangerously-skip-permissions")),
+        ("gemini", vec!["-p"], None),
+        ("opencode", vec!["run"], Some("--auto")),
+    ] {
+        let (harness, engine_dir, cwd) =
+            harness_with_fake_engine(&workload::fake_engine_script(true));
+        let fake = workload::toml_path(&workload::write_executable(
+            engine_dir.path(),
+            "argv-engine",
+            &workload::fake_engine_script(true),
+        ));
+        let skip_args: Vec<_> = skip_flag.into_iter().collect();
+        let skip_args = format!("{skip_args:?}");
+        fs::write(
+            harness.paths().config_file,
+            format!(
+                r#"
+[engines.{engine}]
+command = ["{fake}", "--model", "configured-model"]
+skip_permissions_argv = {skip_args}
+"#
+            ),
+        )
+        .unwrap();
+        let prompt_path = write_prompt(cwd.path(), "unchanged prompt");
+        let output_dir = cwd.path().join("result");
+        let run = task_run(&harness)
+            .args([
+                "task",
+                "run",
+                "--engine",
+                engine,
+                "--prompt-file",
+                &prompt_path,
+                "--cwd",
+                cwd.path().to_str().unwrap(),
+                "--output-dir",
+                output_dir.to_str().unwrap(),
+                "--engine-arg=--extra",
+                "--no-notify",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{engine}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let mut expected = vec!["--model", "configured-model"];
+        if engine == "opencode" {
+            expected.splice(0..0, mode);
+        } else {
+            expected.extend(mode);
+        }
+        expected.extend(skip_flag);
+        expected.extend(["--extra", "unchanged prompt"]);
+        let expected = expected
+            .iter()
+            .enumerate()
+            .map(|(i, arg)| format!("argv[{i}]={arg}"))
+            .collect::<Vec<_>>();
+        let log = stdout_log(&output_dir);
+        let actual = log
+            .lines()
+            .filter(|line| line.starts_with("argv["))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{engine}");
+    }
+}

@@ -26,9 +26,14 @@ a [--json] task run --prompt-file FILE [--engine E] [--profile P] [--cwd D]
 - **Noninteractive argv**: per engine, either the engine's `task_argv` in
   the config file or the built-in per-family default — codex family
   (`codex`, a configured `zcodex` fork) → `exec --json --skip-git-repo-check`;
-  `antigravity` → `-p`; `claude`/`gemini` → `-p`; `opencode` → `run`.
+  `antigravity` (also custom engines/profiles whose executable is `agy`) → `-p`;
+  `claude`/`gemini` → `-p`; `opencode` → `run`.
   An engine with neither refuses instead of guessing (set
   `[engines.<id>] task_argv = ["-p"]` in the aplexer config to teach it).
+  Agy runs place permission flags and all engine/profile/caller options
+  before `-p <prompt>`: `agy --dangerously-skip-permissions --model MODEL -p PROMPT`.
+  Keep `-p` last in custom agy `task_argv`; permission flags belong in
+  `skip_permissions_argv`, so `--no-skip-permissions` can suppress them.
 - **Evidence** in `--output-dir` (default
   `<cwd>/.aplexer-tasks/<UTC-stamp>-<engine>-<id8>`): `START.json` written
   before the child spawns, `stdout.log`/`stderr.log`, and `RESULT.json`
