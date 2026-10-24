@@ -223,6 +223,9 @@ pub(crate) fn cmd_kill(paths: &Paths, args: KillArgs, json_output: bool) -> Resu
         Ok(record) => record,
         Err(error) => return kill_already_finished(paths, &args.target, error, json_output),
     };
+    if args.keep_record {
+        return stop_retaining_record(paths, record, args, json_output);
+    }
     let signal = parse_signal(&args.signal)?;
     let grace = kill_grace_duration(args.grace_ms)?;
     let rpc = rpc_call_within(
@@ -392,4 +395,94 @@ pub(crate) fn recover_broken_containment(
         grace,
     )
     .context("recover recorded cgroup containment")
+}
+
+/// Compatibility with already-running workers: they finalize clean exits by
+/// deleting durable state. Snapshot native evidence before requesting their
+/// existing containment kill, then retain a terminal record only AFTER the
+/// worker has exited and the containment kill has succeeded. No workspace
+/// operations occur here. The retention marker also prevents list's sweep.
+fn stop_retaining_record(
+    paths: &Paths,
+    mut record: SessionRecord,
+    args: KillArgs,
+    json_output: bool,
+) -> Result<()> {
+    let stopped_signal = parse_signal(&args.signal)?;
+    let marker = paths
+        .state_root
+        .join("retained-stops")
+        .join(record.id.to_string());
+    atomic_write_json(
+        &marker,
+        &json!({"id":record.id,"created_at_ms":record.created_at_ms}),
+    )?;
+    let history = rpc_capture(&record, Some(record.history_bytes))
+        .ok()
+        .or_else(|| fs::read(&record.history_path).ok());
+    let screen_path = paths.state_session(record.id).join("screen.txt");
+    let screen = fs::read(&screen_path).ok();
+    let grace = kill_grace_duration(args.grace_ms)?;
+    match rpc_call_within(
+        &record,
+        Operation::Kill {
+            signal: stopped_signal,
+            grace_ms: args.grace_ms,
+        },
+        None,
+        aplexer::api::kill_response_timeout(grace),
+    ) {
+        Ok((_, result)) => {
+            if result.get("signalled").and_then(serde_json::Value::as_bool) != Some(true) {
+                bail!("stop_exit_unverified: native kill omitted containment confirmation");
+            }
+        }
+        Err(error) => {
+            handle_failed_kill_rpc(paths, &record, error, stopped_signal, args.grace_ms, false)?
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while record.worker_alive() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if record.worker_alive() || record.workload_leader_alive() {
+        bail!("stop_exit_unverified: native process survives; record not marked exited");
+    }
+    let _registry = FileLock::exclusive(&paths.registry_lock(), false)?;
+    if let Ok(current) = read_record(&paths.record(record.id)) {
+        if current.created_at_ms != record.created_at_ms {
+            bail!("stop_generation_changed: record retention refused");
+        }
+        record = current;
+    }
+    record.phase = Phase::Exited;
+    record.containment_empty = Some(true);
+    record.updated_at_ms = now_ms();
+    if record.exit.is_none() {
+        record.exit = Some(ExitInfo {
+            code: None,
+            signal: Some(stopped_signal),
+            oom_killed: false,
+            exited_at_ms: now_ms(),
+        });
+    }
+    atomic_write_json(&paths.record(record.id), &record)?;
+    if let Some(bytes) = history {
+        if !paths.history(record.id).exists() {
+            atomic_write_bytes(&paths.history(record.id), &bytes)?;
+        }
+    }
+    if let Some(bytes) = screen {
+        if !screen_path.exists() {
+            atomic_write_bytes(&screen_path, &bytes)?;
+        }
+    }
+    if json_output {
+        println!(
+            "{}",
+            json!({"id":record.id,"state":"exited","record_removed":false,
+            "containment_empty":true})
+        );
+    }
+    Ok(())
 }

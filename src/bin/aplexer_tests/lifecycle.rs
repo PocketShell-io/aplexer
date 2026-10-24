@@ -215,6 +215,7 @@ fn cmd_kill_preserves_stale_socket_record_without_containment_proof() {
     .unwrap();
 
     let args = KillArgs {
+        keep_record: false,
         target: TargetArgs {
             selector: Some(record.id.to_string()),
             workspace: None,
@@ -345,6 +346,7 @@ fn cmd_kill_still_refuses_live_reachable_worker() {
     atomic_write_json(&paths.record(record.id), &record).unwrap();
 
     let args = KillArgs {
+        keep_record: false,
         target: TargetArgs {
             selector: Some(record.id.to_string()),
             workspace: None,
@@ -390,6 +392,7 @@ fn kill_on_a_finished_session_tombstone_succeeds() {
     );
 
     let args = KillArgs {
+        keep_record: false,
         target: TargetArgs {
             selector: None,
             workspace: Some(PathBuf::from("/ws/i2665")),
@@ -416,6 +419,7 @@ fn kill_on_a_selector_that_never_matched_still_fails() {
     fs::create_dir_all(&workspace).unwrap();
 
     let args = KillArgs {
+        keep_record: false,
         target: TargetArgs {
             selector: None,
             workspace: Some(workspace),
@@ -564,6 +568,7 @@ fn kill_in_an_existing_workspace_without_a_tombstone_keeps_failing_loudly() {
     fs::create_dir_all(&workspace).unwrap();
 
     let args = KillArgs {
+        keep_record: false,
         target: TargetArgs {
             selector: None,
             workspace: Some(workspace),

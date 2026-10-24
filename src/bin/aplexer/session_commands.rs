@@ -210,6 +210,14 @@ pub(crate) fn reap_session_state(paths: &Paths, id: Uuid) -> Result<ReapResult> 
         Err(_) if !paths.record(id).exists() => return Ok(ReapResult::Vanished),
         Err(error) => return Err(error).with_context(|| format!("re-read session {id}")),
     };
+    if paths
+        .state_root
+        .join("retained-stops")
+        .join(id.to_string())
+        .exists()
+    {
+        return Ok(ReapResult::Retained);
+    }
     let Some(verdict) = reap_verdict(&current) else {
         return Ok(ReapResult::Retained);
     };

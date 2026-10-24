@@ -316,6 +316,9 @@ pub(crate) struct KillArgs {
     /// How long to wait after --signal before escalating to SIGKILL
     #[arg(long, default_value_t = 2_000)]
     pub(crate) grace_ms: u64,
+    /// Retain the exited session record and history after verified shutdown.
+    #[arg(long)]
+    pub(crate) keep_record: bool,
 }
 #[derive(Args)]
 pub(crate) struct ForgetArgs {

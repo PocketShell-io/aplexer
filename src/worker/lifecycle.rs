@@ -489,7 +489,13 @@ fn finalize_session(runtime: &WorkerRuntime, state: &mut LoopState) {
         oom_killed: oom,
         exited_at_ms: now_ms(),
     };
-    let keep_exited = crate::config_keep_exited(&runtime.paths);
+    let keep_exited = crate::config_keep_exited(&runtime.paths)
+        || runtime
+            .paths
+            .state_root
+            .join("retained-stops")
+            .join(runtime.id.to_string())
+            .exists();
     let will_remove = state.fatal.is_none() && state.containment_empty && !oom && !keep_exited;
     if will_remove {
         runtime.output.finish_killed(exit.clone());
