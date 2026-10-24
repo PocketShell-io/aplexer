@@ -20,6 +20,8 @@ addressable by *project* and *name* from any terminal.
 
 </div>
 
+See [SCOPE.md](SCOPE.md) for ownership and product boundaries.
+
 aplexer is a Linux-native, agent-aware alternative to tmux. Instead of
 numbered panes on one server, you get one lightweight worker per session,
 each with its own PTY, socket, and scrollback history. Sessions are grouped
