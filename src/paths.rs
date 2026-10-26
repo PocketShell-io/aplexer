@@ -410,8 +410,7 @@ fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
 fn fd_directory_path(fd: RawFd) -> Result<PathBuf> {
     #[cfg(target_os = "linux")]
     {
-        let link = fs::read_link(format!("/proc/self/fd/{fd}"))?;
-        Ok(PathBuf::from(link))
+        Ok(fs::read_link(format!("/proc/self/fd/{fd}"))?)
     }
     #[cfg(target_os = "macos")]
     {

@@ -194,7 +194,7 @@ pub fn signal_recorded_worker(record: &SessionRecord, signal: i32) -> Result<()>
         verify_signal_identity(record, &identity, pid)?;
         crate::pidfd::send_signal(&pidfd, signal)
             .with_context(|| format!("signal worker pid {pid} through pidfd"))?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(target_os = "macos")]
@@ -210,8 +210,7 @@ pub fn signal_recorded_worker(record: &SessionRecord, signal: i32) -> Result<()>
         verify_signal_identity(record, &identity, pid)?;
         handle
             .signal(signal)
-            .with_context(|| format!("signal worker pid {pid}"))?;
-        return Ok(());
+            .with_context(|| format!("signal worker pid {pid}"))
     }
 }
 
