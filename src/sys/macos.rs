@@ -112,7 +112,11 @@ pub fn proc_state_char(pid: u32) -> Option<char> {
 /// clock ticks: records never cross operating systems.
 pub fn proc_start_time_us(pid: u32) -> Option<u64> {
     let info = bsdinfo(pid)?;
-    Some(info.pbi_start_tvsec.saturating_mul(1_000_000).saturating_add(info.pbi_start_tvusec))
+    Some(
+        info.pbi_start_tvsec
+            .saturating_mul(1_000_000)
+            .saturating_add(info.pbi_start_tvusec),
+    )
 }
 
 /// Short executable name (`pbi_name`, up to 2*MAXCOMLEN), for the
@@ -135,7 +139,9 @@ pub fn proc_name_of(pid: u32) -> Option<String> {
         .take(read as usize)
         .map(|c| *c as u8)
         .collect();
-    String::from_utf8(bytes).ok().filter(|name| !name.is_empty())
+    String::from_utf8(bytes)
+        .ok()
+        .filter(|name| !name.is_empty())
 }
 
 /// Executable path via `proc_pidpath`, for workspace derivation.
@@ -152,7 +158,11 @@ pub fn proc_path_of(pid: u32) -> Option<PathBuf> {
     if read <= 0 {
         return None;
     }
-    let bytes: Vec<u8> = buffer.iter().take(read as usize).map(|c| *c as u8).collect();
+    let bytes: Vec<u8> = buffer
+        .iter()
+        .take(read as usize)
+        .map(|c| *c as u8)
+        .collect();
     Some(PathBuf::from(OsString::from_vec(bytes)))
 }
 

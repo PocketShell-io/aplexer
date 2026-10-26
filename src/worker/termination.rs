@@ -631,11 +631,7 @@ pub(super) fn wait_for_event_fd(fd: RawFd, context: &'static str) -> Result<()> 
             loop {
                 let mut bytes = [0u8; 64];
                 let read = unsafe {
-                    libc::read(
-                        fd,
-                        bytes.as_mut_ptr().cast::<libc::c_void>(),
-                        bytes.len(),
-                    )
+                    libc::read(fd, bytes.as_mut_ptr().cast::<libc::c_void>(), bytes.len())
                 };
                 if read > 0 {
                     drained = true;

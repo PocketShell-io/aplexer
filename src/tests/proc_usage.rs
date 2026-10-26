@@ -3,9 +3,7 @@
 use super::*;
 use crate::proc_usage::{bracket_session_proc_usage, cpu_percent, SessionProcUsage};
 #[cfg(target_os = "linux")]
-use crate::proc_usage::{
-    cached_session_proc_usage, clock_ticks_hz, mono_ms, scan_session_procs,
-};
+use crate::proc_usage::{cached_session_proc_usage, clock_ticks_hz, mono_ms, scan_session_procs};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;

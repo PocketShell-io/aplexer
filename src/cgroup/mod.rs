@@ -1,4 +1,4 @@
-﻿//! cgroup-v2 containment: identity of the kernel domain a session was
+//! cgroup-v2 containment: identity of the kernel domain a session was
 //! created in, trusted-helper system-scope escape, scope creation whose
 //! initial process is the workload itself, live probing, and bounded
 //! cleanup/kill/reap recovery of
@@ -10,6 +10,8 @@
 
 #[cfg(target_os = "linux")]
 mod identity;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(target_os = "linux")]
 mod recovery;
 #[cfg(target_os = "linux")]
@@ -18,11 +20,11 @@ mod scope;
 mod systemd;
 #[cfg(windows)]
 mod windows;
-#[cfg(target_os = "macos")]
-mod macos;
 
 #[cfg(target_os = "linux")]
 pub use identity::*;
+#[cfg(target_os = "macos")]
+pub use macos::*;
 #[cfg(target_os = "linux")]
 pub use recovery::*;
 #[cfg(target_os = "linux")]
@@ -31,8 +33,6 @@ pub use scope::*;
 pub use systemd::*;
 #[cfg(windows)]
 pub use windows::*;
-#[cfg(target_os = "macos")]
-pub use macos::*;
 
 #[cfg(target_os = "linux")]
 pub(crate) const MAX_CGROUP_RECOVERY_MEMBERS: usize = 4096;

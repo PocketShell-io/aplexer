@@ -139,7 +139,10 @@ fn capped_launch_fails_closed() {
         ])
         .output()
         .expect("run a");
-    assert!(!output.status.success(), "capped launch must fail: {output:?}");
+    assert!(
+        !output.status.success(),
+        "capped launch must fail: {output:?}"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("Linux") || stderr.contains("cgroup"),

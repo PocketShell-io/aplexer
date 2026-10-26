@@ -605,8 +605,7 @@ mod macos_impl {
             check(deadline, "opening process handle")?;
             // Existence probe, then re-read the identity: only a process
             // that survived both with the same start time is pinned.
-            let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
-                || io_error_is_eperm();
+            let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 || io_error_is_eperm();
             if !alive {
                 return Ok(None);
             }
@@ -725,7 +724,9 @@ mod macos_impl {
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut found = false;
             while !found && Instant::now() < deadline {
-                found = descendant_pids(std::process::id()).unwrap().contains(&child.id());
+                found = descendant_pids(std::process::id())
+                    .unwrap()
+                    .contains(&child.id());
                 std::thread::sleep(Duration::from_millis(10));
             }
             child.kill().unwrap();

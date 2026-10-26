@@ -256,8 +256,7 @@ pub fn process_state(pid: u32) -> Result<char> {
 /// unreadable) is an error, matching the Linux "could not tell" contract.
 #[cfg(target_os = "macos")]
 pub fn process_state(pid: u32) -> Result<char> {
-    crate::sys::macos::proc_state_char(pid)
-        .ok_or_else(|| anyhow!("no such process: {pid}"))
+    crate::sys::macos::proc_state_char(pid).ok_or_else(|| anyhow!("no such process: {pid}"))
 }
 
 #[cfg(target_os = "linux")]

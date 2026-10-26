@@ -1065,8 +1065,7 @@ mod tests {
         // No /proc on macOS: same poll through the libproc cwd read the
         // product itself uses.
         #[cfg(target_os = "macos")]
-        while crate::sys::macos::proc_cwd_of(shell.id()).as_deref() != Some(destination.as_path())
-        {
+        while crate::sys::macos::proc_cwd_of(shell.id()).as_deref() != Some(destination.as_path()) {
             assert!(Instant::now() < deadline, "shell did not change directory");
             thread::sleep(Duration::from_millis(10));
         }

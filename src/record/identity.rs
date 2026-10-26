@@ -4,9 +4,9 @@
 
 use super::SessionRecord;
 use crate::persist::TEMP_COUNTER;
-use crate::{io_kind, linux_boot_id, process_start_time_ticks};
 #[cfg(target_os = "linux")]
 use crate::pidfd_open;
+use crate::{io_kind, linux_boot_id, process_start_time_ticks};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -65,7 +65,9 @@ impl Cgroup {
     /// macOS meaning and are zero.
     pub fn identity(&self) -> CgroupIdentity {
         CgroupIdentity {
-            boot_id: macos::boot_time_us().map(|us| us.to_string()).unwrap_or_default(),
+            boot_id: macos::boot_time_us()
+                .map(|us| us.to_string())
+                .unwrap_or_default(),
             cgroup_namespace_device: self.pgid as u64,
             cgroup_namespace_inode: 0,
             mount_namespace_device: 0,
@@ -171,8 +173,9 @@ impl ScopePlan {
     /// membership is on Linux.
     pub fn finish_startup(&self, supervisor: &mut std::process::Child) -> Result<(Cgroup, u32)> {
         let leader = supervisor.id();
-        let cgroup = Cgroup::for_leader(leader)
-            .ok_or_else(|| anyhow::anyhow!("workload leader {leader} exited before containment was recorded"))?;
+        let cgroup = Cgroup::for_leader(leader).ok_or_else(|| {
+            anyhow::anyhow!("workload leader {leader} exited before containment was recorded")
+        })?;
         Ok((cgroup, leader))
     }
 
@@ -250,10 +253,15 @@ pub fn cleanup_recorded_cgroup_until(
         bail!("timed out cleaning recorded pgid for session {id}");
     }
     let Some(pgid) = Cgroup::parse_locator(locator) else {
-        bail!("session {id} has an unparseable pgid locator {}", locator.display());
+        bail!(
+            "session {id} has an unparseable pgid locator {}",
+            locator.display()
+        );
     };
     if let Some(identity) = identity {
-        let boot = macos::boot_time_us().map(|us| us.to_string()).unwrap_or_default();
+        let boot = macos::boot_time_us()
+            .map(|us| us.to_string())
+            .unwrap_or_default();
         if !identity.boot_id.is_empty() && identity.boot_id != boot {
             return Ok(());
         }
@@ -262,8 +270,7 @@ pub fn cleanup_recorded_cgroup_until(
         // Graceful signal first, mirroring the Linux recovery shape: only
         // the overall deadline (checked by the loops below) can fail here,
         // and expiry escalates to SIGKILL rather than erroring.
-        macos::kill_pgid(pgid, signal)
-            .with_context(|| format!("signal recorded pgid {pgid}"))?;
+        macos::kill_pgid(pgid, signal).with_context(|| format!("signal recorded pgid {pgid}"))?;
         let grace_deadline = Instant::now()
             .checked_add(grace)
             .unwrap_or(deadline)
@@ -310,7 +317,9 @@ pub fn validate_recorded_cgroup_locator(
         );
     };
     if let Some(identity) = identity {
-        let boot = macos::boot_time_us().map(|us| us.to_string()).unwrap_or_default();
+        let boot = macos::boot_time_us()
+            .map(|us| us.to_string())
+            .unwrap_or_default();
         if !identity.boot_id.is_empty() && identity.boot_id != boot {
             anyhow::bail!("session {id} recorded pgid {pgid} under a different boot");
         }
@@ -327,10 +336,15 @@ pub(crate) fn recorded_pgroup_observed_empty(
     identity: Option<&CgroupIdentity>,
 ) -> Result<bool> {
     let Some(pgid) = Cgroup::parse_locator(locator) else {
-        bail!("session {id} has an unparseable pgid locator {}", locator.display());
+        bail!(
+            "session {id} has an unparseable pgid locator {}",
+            locator.display()
+        );
     };
     if let Some(identity) = identity {
-        let boot = macos::boot_time_us().map(|us| us.to_string()).unwrap_or_default();
+        let boot = macos::boot_time_us()
+            .map(|us| us.to_string())
+            .unwrap_or_default();
         if !identity.boot_id.is_empty() && identity.boot_id != boot {
             return Ok(true);
         }

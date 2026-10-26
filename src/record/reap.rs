@@ -2,10 +2,10 @@
 //! destroys a record's durable state answers.
 
 use super::{CgroupIdentity, SessionRecord};
-#[cfg(target_os = "linux")]
-use crate::{cgroup_path_populated, linux_boot_id, validate_recorded_cgroup};
 #[cfg(target_os = "macos")]
 use crate::recorded_pgroup_observed_empty;
+#[cfg(target_os = "linux")]
+use crate::{cgroup_path_populated, linux_boot_id, validate_recorded_cgroup};
 use anyhow::Result;
 use std::path::Path;
 use uuid::Uuid;

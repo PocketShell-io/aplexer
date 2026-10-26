@@ -141,8 +141,7 @@ fn exercise_successful_worker_reaping() {
     #[cfg(target_os = "linux")]
     let threads_before = std::fs::read_dir("/proc/self/task").unwrap().count();
     #[cfg(target_os = "macos")]
-    let threads_before =
-        aplexer::sys::macos::proc_thread_count(std::process::id()).unwrap_or(-1);
+    let threads_before = aplexer::sys::macos::proc_thread_count(std::process::id()).unwrap_or(-1);
     let mut sessions = Vec::new();
     let mut kill_guard = ReapKillGuard {
         runtime_root: runtime.path().to_path_buf(),
@@ -162,8 +161,7 @@ fn exercise_successful_worker_reaping() {
     #[cfg(target_os = "linux")]
     let threads_after = std::fs::read_dir("/proc/self/task").unwrap().count();
     #[cfg(target_os = "macos")]
-    let threads_after =
-        aplexer::sys::macos::proc_thread_count(std::process::id()).unwrap_or(-1);
+    let threads_after = aplexer::sys::macos::proc_thread_count(std::process::id()).unwrap_or(-1);
     assert!(
         threads_after <= threads_before + 1,
         "shared worker reaper created {} threads for 8 sessions",
@@ -179,8 +177,7 @@ fn exercise_successful_worker_reaping() {
             // No /proc on macOS: libproc lists nothing (not even a zombie)
             // once the child is reaped.
             #[cfg(target_os = "macos")]
-            let worker_reaped =
-                aplexer::sys::macos::proc_state_char(worker_pid).is_none();
+            let worker_reaped = aplexer::sys::macos::proc_state_char(worker_pid).is_none();
             let record_gone = !paths.record(ready.id).exists();
             if record_gone && worker_reaped {
                 break;

@@ -361,10 +361,7 @@ fn reject_non_root_symlinks(path: &Path) -> Result<()> {
         let metadata = match fs::symlink_metadata(&prefix) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("inspect {}", path.display()))
-            }
+            Err(error) => return Err(error).with_context(|| format!("inspect {}", path.display())),
         };
         if metadata.file_type().is_symlink() && metadata.uid() != 0 {
             bail!(

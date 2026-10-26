@@ -24,7 +24,10 @@ fn process_alive_reports_an_unreaped_zombie_as_dead() {
     #[cfg(target_os = "linux")]
     let mut child = Command::new("/bin/true").spawn().unwrap();
     #[cfg(target_os = "macos")]
-    let mut child = Command::new("/bin/sh").args(["-c", "exit 3"]).spawn().unwrap();
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "exit 3"])
+        .spawn()
+        .unwrap();
     let pid = child.id();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !process_is_zombie(pid) {

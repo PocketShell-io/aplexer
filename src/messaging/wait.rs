@@ -273,10 +273,7 @@ impl MailboxWatch {
             ident: dir.as_raw_fd() as libc::uintptr_t,
             filter: libc::EVFILT_VNODE,
             flags: libc::EV_ADD | libc::EV_CLEAR,
-            fflags: libc::NOTE_WRITE
-                | libc::NOTE_EXTEND
-                | libc::NOTE_DELETE
-                | libc::NOTE_REVOKE,
+            fflags: libc::NOTE_WRITE | libc::NOTE_EXTEND | libc::NOTE_DELETE | libc::NOTE_REVOKE,
             data: 0,
             udata: std::ptr::null_mut(),
         };
