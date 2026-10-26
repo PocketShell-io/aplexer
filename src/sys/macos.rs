@@ -322,6 +322,10 @@ fn proc_args(pid: u32) -> Option<ProcArgs> {
         Some(bytes)
     };
     take_cstring(&mut cursor)?;
+    // Skip padding NULs between the exec path and argv.
+    while cursor < buffer.len() && buffer[cursor] == 0 {
+        cursor += 1;
+    }
     let argc = u32::from_ne_bytes(buffer[0..4].try_into().ok()?) as usize;
     let mut argv = Vec::with_capacity(argc.min(1024));
     for _ in 0..argc {
