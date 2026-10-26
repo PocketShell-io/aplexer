@@ -397,7 +397,7 @@ fn kill_proves_empty_pgid_domain_for_dead_worker_with_daemonized_descendant() {
         "--",
         "/bin/sh",
         "-c",
-        "python3 \"$1\" \"$2\"",
+        "python3 \"$1\" \"$2\" \"$3\"",
         "aplexer-leader",
         daemon.to_str().expect("UTF-8 daemon path"),
         marker.to_str().expect("UTF-8 marker path"),
