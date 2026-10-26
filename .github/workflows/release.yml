@@ -22,6 +22,8 @@ jobs:
   check-versions:
     name: Verify release identities and versions
     runs-on: ubuntu-24.04
+    # Guard so a hung step can never burn the org's Actions quota.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -96,6 +98,8 @@ jobs:
     name: Test release inputs
     needs: check-versions
     runs-on: ubuntu-24.04
+    # Guard so a hung step can never burn the org's Actions quota.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -154,6 +158,8 @@ jobs:
     name: Test release inputs (Windows)
     needs: check-versions
     runs-on: windows-2025
+    # Guard so a hung step can never burn the org's Actions quota.
+    timeout-minutes: 90
     continue-on-error: true
     defaults:
       run:
@@ -197,6 +203,8 @@ jobs:
     name: Build ${{ matrix.platform }}
     needs: test
     runs-on: ${{ matrix.runner }}
+    # Guard so a hung step can never burn the org's Actions quota.
+    timeout-minutes: 60
     container:
       # Dated PyPA images make the glibc baseline and bundled compilers/audit
       # policy reproducible. The aarch64 job is native, not a cross build.
@@ -349,6 +357,8 @@ jobs:
     # because test-windows is continue-on-error (non-blocking for Linux).
     if: ${{ !cancelled() && needs.test-windows.result == 'success' }}
     runs-on: windows-2025
+    # Guard so a hung step can never burn the org's Actions quota.
+    timeout-minutes: 90
     continue-on-error: true
     defaults:
       run:
@@ -472,6 +482,8 @@ jobs:
     # if the Windows jobs failed or were skipped.
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
+    # Guard so a hung step can never burn the org's Actions quota.
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
@@ -536,6 +548,8 @@ jobs:
     needs: [build, build-windows]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
+    # Guard so a hung step can never burn the org's Actions quota.
+    timeout-minutes: 20
     steps:
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
@@ -610,6 +624,8 @@ jobs:
     needs: [build, build-windows, publish-testpypi]
     if: ${{ !cancelled() && needs.build.result == 'success' && needs.publish-testpypi.result == 'success' }}
     runs-on: ubuntu-24.04
+    # Guard so a hung step can never burn the org's Actions quota.
+    timeout-minutes: 20
     steps:
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
