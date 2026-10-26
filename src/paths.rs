@@ -7,7 +7,7 @@ use anyhow::bail;
 use anyhow::{anyhow, Context, Result};
 use std::env;
 #[cfg(unix)]
-use std::ffi::{CString, OsStr};
+use std::ffi::{CString, OsStr, OsString};
 use std::fs;
 #[cfg(unix)]
 use std::fs::File;
@@ -17,6 +17,8 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
 use std::path::Component;
 use std::path::{Path, PathBuf};
@@ -250,10 +252,20 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
     // every component pinned by a directory fd, and refusing symlinks at each
     // `openat`, makes both creation and the eventual chmod refer to the inode
     // we actually inspected.
-    let base = if path.is_absolute() { "/" } else { "." };
+    //
+    // The walk starts from the canonicalized path: system prefixes like
+    // macOS's `/var -> /private/var` and `/tmp -> /private/tmp` (and any
+    // user mount symlink) would otherwise fail the strict no-follow walk
+    // even though no attacker controls them. Only the longest EXISTING
+    // prefix is resolved; missing trailing components are still created
+    // under pinned fds below, and the final pinned fd is verified against
+    // the canonical path so a mid-walk substitution cannot redirect the
+    // chmod.
+    let canonical = canonicalize_existing_prefix(path);
+    let base = if canonical.is_absolute() { "/" } else { "." };
     let mut directory = open_directory_at(libc::AT_FDCWD, OsStr::new(base))
         .with_context(|| format!("open directory base for {}", path.display()))?;
-    for component in path.components() {
+    for component in canonical.components() {
         let name = match component {
             Component::RootDir | Component::CurDir => continue,
             Component::ParentDir => OsStr::new(".."),
@@ -304,7 +316,74 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
         return Err(io::Error::last_os_error())
             .with_context(|| format!("chmod 0700 {}", path.display()));
     }
+    // The walk above pins every component by fd, but the path it started
+    // from was resolved up front: prove the pinned directory IS that
+    // resolved path, so a symlink planted between the resolution and the
+    // walk cannot redirect this chmod. `canonicalize_existing_prefix`
+    // never touches the final components, so on a stable filesystem this
+    // always matches.
+    let pinned = fd_directory_path(directory.as_raw_fd())
+        .with_context(|| format!("verify {}", path.display()))?;
+    if pinned != canonical {
+        bail!(
+            "{} resolved to {} during creation; refusing to chmod a moved directory",
+            path.display(),
+            pinned.display()
+        );
+    }
     Ok(())
+}
+
+/// Resolve the longest existing prefix of `path`, re-appending the missing
+/// trailing components verbatim. Never resolves the (possibly not yet
+/// created) tail, so the strict walk still governs every component the
+/// caller asked to be created.
+#[cfg(unix)]
+fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
+    let mut missing: Vec<OsString> = Vec::new();
+    let mut ancestor: &Path = path;
+    loop {
+        match fs::canonicalize(ancestor) {
+            Ok(mut base) => {
+                for component in missing.iter().rev() {
+                    base.push(component);
+                }
+                return base;
+            }
+            Err(_) => match ancestor.file_name() {
+                Some(name) => {
+                    missing.push(name.to_os_string());
+                    match ancestor.parent() {
+                        Some(parent) => ancestor = parent,
+                        None => return path.to_path_buf(),
+                    }
+                }
+                None => return path.to_path_buf(),
+            },
+        }
+    }
+}
+
+/// The filesystem path of an open directory fd: `/proc/self/fd` on Linux,
+/// `fcntl(F_GETPATH)` on macOS. Used to verify a pinned directory against
+/// the path it was opened from.
+#[cfg(unix)]
+fn fd_directory_path(fd: RawFd) -> Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let link = fs::read_link(format!("/proc/self/fd/{fd}"))?;
+        Ok(PathBuf::from(link))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut buffer = vec![0 as libc::c_char; libc::PATH_MAX as usize];
+        if unsafe { libc::fcntl(fd, libc::F_GETPATH, buffer.as_mut_ptr()) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let end = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
+        let bytes: Vec<u8> = buffer[..end].iter().map(|c| *c as u8).collect();
+        Ok(PathBuf::from(OsString::from_vec(bytes)))
+    }
 }
 
 #[cfg(unix)]
