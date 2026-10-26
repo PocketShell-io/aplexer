@@ -54,17 +54,21 @@ fn control_deadline_bounds_a_silent_worker_and_streaming_can_clear_it() {
     assert_eq!(client.write_timeout().unwrap(), None);
 }
 
+/// Linux permits one queued connection for backlog zero, so the second
+/// connect hits a saturated backlog and the deadline fires. Darwin accepts
+/// the connection instead (different backlog accounting), so this exact
+/// saturation shape is Linux-only; the deadline machinery itself is covered
+/// by `control_deadline_bounds_a_silent_worker_and_streaming_can_clear_it`.
 #[test]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn connect_deadline_bounds_a_saturated_unix_listener_backlog() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("saturated.sock");
     let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
     assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
 
-    // Linux permits one queued connection for backlog zero. Leave it
-    // unaccepted so the next real AF_UNIX connect hits the saturated
-    // backlog rather than a synthetic silent-response fixture.
+    // Leave it unaccepted so the next real AF_UNIX connect hits the
+    // saturated backlog rather than a synthetic silent-response fixture.
     let _queued = connect_with_timeout(&path, Duration::from_millis(100)).unwrap();
     let started = Instant::now();
     let error = connect_with_timeout(&path, Duration::from_millis(100)).unwrap_err();

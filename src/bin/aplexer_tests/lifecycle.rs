@@ -203,8 +203,7 @@ fn cmd_kill_preserves_stale_socket_record_without_containment_proof() {
     fs::create_dir_all(paths.runtime_session(record.id)).unwrap();
     atomic_write_json(&paths.record(record.id), &record).unwrap();
     let start_time = process_start_time_ticks(child.id()).unwrap();
-    let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
-    let boot_id = boot_id.trim();
+    let boot_id = aplexer::linux_boot_id().unwrap();
     fs::write(
         paths.state_session(record.id).join("worker.identity.json"),
         format!(
@@ -300,8 +299,7 @@ fn force_kill_stale_worker_refuses_start_time_mismatch() {
     fs::create_dir_all(paths.state_session(record.id)).unwrap();
     atomic_write_json(&paths.record(record.id), &record).unwrap();
     let wrong_start = process_start_time_ticks(pid).unwrap().saturating_add(1);
-    let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
-    let boot_id = boot_id.trim();
+    let boot_id = aplexer::linux_boot_id().unwrap();
     fs::write(
         paths.state_session(record.id).join("worker.identity.json"),
         format!("{{\"pid\":{pid},\"start_time_ticks\":{wrong_start},\"boot_id\":\"{boot_id}\"}}\n"),

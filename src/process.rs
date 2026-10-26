@@ -373,8 +373,12 @@ pub(crate) fn process_start_time_ticks_in(proc_root: &Path, pid: u32) -> Result<
         .with_context(|| format!("parse process start time from {}", stat_path.display()))
 }
 
+/// Machine boot identity for worker-identity pinning: the Linux boot id
+/// (`/proc/sys/kernel/random/boot_id`), the macOS boot time
+/// (`kern.boottime`), the Windows boot time. A boot that changed proves a
+/// recorded pid identity stale, wherever the record was written.
 #[cfg(target_os = "linux")]
-pub(crate) fn linux_boot_id() -> Result<String> {
+pub fn linux_boot_id() -> Result<String> {
     // Cached: the boot id cannot change without a reboot, and every
     // `worker_alive` probe (i.e. every `a list` row, twice per row in the old
     // plain rendering) read it from disk. Benchmark PLAN P1.1: `a list` with
@@ -401,7 +405,7 @@ pub(crate) fn linux_boot_id() -> Result<String> {
 /// stale); only the source differs, since macOS has no
 /// `/proc/sys/kernel/random/boot_id`.
 #[cfg(target_os = "macos")]
-pub(crate) fn linux_boot_id() -> Result<String> {
+pub fn linux_boot_id() -> Result<String> {
     static CACHED_BOOT_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     if let Some(cached) = CACHED_BOOT_ID.get() {
         return Ok(cached.clone());
