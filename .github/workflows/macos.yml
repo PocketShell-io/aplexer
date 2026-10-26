@@ -51,7 +51,11 @@ jobs:
           key: ${{ matrix.arch }}-macos-port
 
       - name: Run Rust tests
-        run: cargo test --locked --no-fail-fast --verbose
+        # Serial binaries, bounded threads: the suite spawns real sessions
+        # (workers, PTYs, qemu-free), and parallel binaries oversubscribe
+        # the runners into timing flakes. Slower, but the gate must be
+        # deterministic.
+        run: cargo test --locked --no-fail-fast -j1 -- --test-threads=4
 
       - name: Smoke start/list/stop on the real binary
         run: |
