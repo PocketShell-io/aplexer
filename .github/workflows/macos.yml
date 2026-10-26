@@ -61,6 +61,9 @@ jobs:
           # macOS and lands under the long /var/folders path, blowing the
           # 104-byte sockaddr_un budget for control sockets.
           export APLEXER_STATE_DIR="$(mktemp -d /tmp/aplexer-state-XXXXXX)" APLEXER_RUNTIME_DIR="$(mktemp -d /tmp/aplexer-runtime-XXXXXX)"
+          # Bare-tag `kill` resolves the workspace from the environment, not
+          # the cwd, so pin it to the smoke workspace like build-all.sh does.
+          export APLEXER_WORKSPACE="$RUNNER_TEMP"
           ./target/debug/aplexer start --workspace "$RUNNER_TEMP" --tag "smoke-${{ matrix.arch }}" -- sleep 60
           ./target/debug/aplexer list | grep "smoke-${{ matrix.arch }}"
           ./target/debug/aplexer kill "smoke-${{ matrix.arch }}"
