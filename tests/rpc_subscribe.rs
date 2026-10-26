@@ -475,8 +475,15 @@ fn dropped_frames_resume_with_gap_and_latest_state() {
         .filter(|f| f.get("event") == Some(&Value::String("ended".to_owned())))
         .collect();
     // The sessions final is the latest state and carries the gap: its
-    // predecessors coalesced while nobody drained.
-    let final_snapshot = snapshots.last().expect("no sessions snapshot");
+    // predecessors coalesced while nobody drained. Take the first snapshot
+    // carrying the final tag (a post-resume fresh snapshot may follow it,
+    // with nothing dropped since and therefore no gap of its own).
+    let final_snapshot = snapshots
+        .iter()
+        .find(|snapshot| {
+            snapshot["data"].as_array().unwrap().iter().any(|row| row["tag"] == "final-tag")
+        })
+        .expect("no sessions snapshot carries the final tag");
     assert!(final_snapshot["data"]
         .as_array()
         .unwrap()
