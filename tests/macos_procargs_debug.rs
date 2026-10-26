@@ -21,7 +21,8 @@ fn dump_procargs_layout() {
         "unexpected argv layout"
     );
     let name = aplexer::sys::macos::proc_name_of(pid).expect("name must be readable");
-    assert!(name.contains("sh"), "unexpected process name: {name}");
+    // `sh -c` with a single command execs it directly (verified above).
+    assert_eq!(name, "sleep", "unexpected process name");
     assert!(
         aplexer::sys::macos::direct_children_of(std::process::id()).contains(&pid),
         "child must be listed as ours"

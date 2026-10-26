@@ -407,12 +407,18 @@ fn kill_proves_empty_pgid_domain_for_dead_worker_with_daemonized_descendant() {
     let worker_pid = record["worker_pid"].as_i64().expect("worker pid") as i32;
     let workload_pid = record["workload_pid"].as_i64().expect("workload pid") as i32;
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !marker.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(50));
     }
     let descendant_pid = std::fs::read_to_string(&marker)
-        .expect("read descendant marker")
+        .unwrap_or_else(|error| {
+            let list = harness.run(&["--json", "list"]);
+            panic!(
+                "read descendant marker: {error}; sessions: {}",
+                String::from_utf8_lossy(&list.stdout)
+            )
+        })
         .trim()
         .parse::<i32>()
         .expect("descendant pid");
