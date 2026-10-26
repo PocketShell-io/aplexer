@@ -141,7 +141,7 @@ pub(super) fn wait_for_lifecycle_wake(
 /// it fails: the record left behind still says the worker was running, its
 /// pid is about to be gone, and `a prune` reaps that shape -- but the
 /// operator should be able to see why a session they ended is still listed.
-fn remove_finished_state(runtime: &WorkerRuntime) {
+fn remove_finished_state(runtime: &WorkerRuntime, exit: &crate::record::ExitInfo) {
     if let Err(error) = runtime.mark_finalized() {
         log_best_effort(&format!(
             "aplexer worker: fence writes before removing finished session: {error:#}"
@@ -152,7 +152,10 @@ fn remove_finished_state(runtime: &WorkerRuntime) {
     // that resolves its target after this point must learn "already
     // finished" instead of "no matching session" (issue #2665). The
     // workload ended before finalization either way -- by exiting or by an
-    // accepted kill -- so Finished is the honest cause from here.
+    // accepted kill -- so Finished is the honest cause from here. The exact
+    // native ExitInfo rides along so a later reader of
+    // `retired-sessions/<id>/tombstone.json` learns the real code/signal/
+    // OOM outcome instead of having to guess it from "finished".
     if let Ok(record) = runtime.record() {
         crate::retired::write_finished_tombstone(
             &runtime.paths,
@@ -160,6 +163,7 @@ fn remove_finished_state(runtime: &WorkerRuntime) {
             &record.workspace,
             &record.tag,
             crate::retired::TombstoneCause::Finished,
+            Some(exit),
         );
     }
     if let Err(error) = fs::remove_dir_all(runtime.paths.state_session(runtime.id)) {
@@ -502,7 +506,7 @@ fn finalize_session(runtime: &WorkerRuntime, state: &mut LoopState) {
         if let Some(c) = cg.take() {
             c.cleanup();
         }
-        remove_finished_state(runtime);
+        remove_finished_state(runtime, &exit);
         return;
     }
     record_final_state(runtime, &exit, state);
@@ -539,7 +543,7 @@ fn finalize_session(runtime: &WorkerRuntime, state: &mut LoopState) {
     // Ctrl-D are the same "gone from `a list`" outcome as the fast
     // path. Any remaining `fatal` keeps the evidence.
     if state.fatal.is_none() && !oom && !keep_exited {
-        remove_finished_state(runtime);
+        remove_finished_state(runtime, &exit);
     }
 }
 

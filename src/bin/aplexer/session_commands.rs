@@ -273,6 +273,7 @@ pub(crate) fn reap_sweep(paths: &Paths, wait_for_terminating: bool) -> Result<Pr
                     &record.workspace,
                     &record.tag,
                     aplexer::retired::TombstoneCause::Pruned,
+                    record.exit.as_ref(),
                 );
                 outcome.removed.push(record.id);
                 if !containment_proven {

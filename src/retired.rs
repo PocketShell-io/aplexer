@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 use crate::paths::{canonical_workspace, ensure_private_dir, Paths};
 use crate::persist::atomic_write_json;
+use crate::record::ExitInfo;
 use crate::util::now_ms;
 
 pub const TOMBSTONE_FILE: &str = "tombstone.json";
@@ -65,6 +66,13 @@ pub struct FinishedTombstone {
     pub tag: String,
     pub finished_at_ms: u64,
     pub cause: TombstoneCause,
+    /// Exact native workload exit when the remover knew it. `Some` on the
+    /// worker's own clean finalization and whenever a reaped/ forgotten
+    /// record already carried `SessionRecord.exit`; `None` when the remover
+    /// never observed the exit (never fabricated -- an unknown exit stays
+    /// unknown). Old tombstones predate this field and parse as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<ExitInfo>,
 }
 
 /// Leaves the "this session is deliberately gone" marker. Best-effort by
@@ -77,8 +85,9 @@ pub fn write_finished_tombstone(
     workspace: &Path,
     tag: &str,
     cause: TombstoneCause,
+    exit: Option<&ExitInfo>,
 ) {
-    let result = write_finished_tombstone_checked(paths, id, workspace, tag, cause);
+    let result = write_finished_tombstone_checked(paths, id, workspace, tag, cause, exit);
     if let Err(error) = result {
         eprintln!("a: could not write finished-tombstone for session {id}: {error:#}");
     }
@@ -90,6 +99,7 @@ fn write_finished_tombstone_checked(
     workspace: &Path,
     tag: &str,
     cause: TombstoneCause,
+    exit: Option<&ExitInfo>,
 ) -> Result<()> {
     let dir = paths.retired_session(id);
     // A supersede archive owns this id when a full record was retired into
@@ -106,6 +116,7 @@ fn write_finished_tombstone_checked(
         tag: tag.to_string(),
         finished_at_ms: now_ms(),
         cause,
+        exit: exit.cloned(),
     };
     atomic_write_json(&dir.join(TOMBSTONE_FILE), &tombstone)
         .with_context(|| format!("write finished-tombstone for session {id}"))
@@ -250,7 +261,7 @@ pub fn prune_expired_tombstones(paths: &Paths) -> Result<Vec<Uuid>> {
 
 /// The JSON answer `a kill --json` prints for a tombstoned target.
 pub fn tombstone_kill_json(tombstone: &FinishedTombstone) -> serde_json::Value {
-    json!({
+    let mut value = json!({
         "found": false,
         "finished": true,
         "id": tombstone.id,
@@ -258,5 +269,25 @@ pub fn tombstone_kill_json(tombstone: &FinishedTombstone) -> serde_json::Value {
         "tag": tombstone.tag,
         "finished_at_ms": tombstone.finished_at_ms,
         "cause": tombstone.cause,
-    })
+    });
+    if let Some(exit) = &tombstone.exit {
+        value["exit"] = json!({
+            "code": exit.code,
+            "signal": exit.signal,
+            "oom_killed": exit.oom_killed,
+            "exited_at_ms": exit.exited_at_ms,
+        });
+    }
+    value
+}
+
+/// Direct read of one session's published retirement receipt
+/// (`retired-sessions/<id>/tombstone.json`), the durable public exit API
+/// Hub headless diagnostics consume. Returns `None` when there is no
+/// tombstone-only dir for `id` (including supersede archives, which hold a
+/// full `session.json` instead of a tombstone), or when the file does not
+/// parse -- old tombstones without `exit` still parse, with `exit: None`.
+pub fn read_finished_tombstone(paths: &Paths, id: Uuid) -> Option<FinishedTombstone> {
+    let text = std::fs::read_to_string(paths.retired_session(id).join(TOMBSTONE_FILE)).ok()?;
+    serde_json::from_str(&text).ok()
 }

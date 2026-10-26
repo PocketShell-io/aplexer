@@ -11,6 +11,7 @@ pub(crate) fn remove_session_state(paths: &Paths, record: &SessionRecord) -> Res
         &record.workspace,
         &record.tag,
         aplexer::retired::TombstoneCause::Finished,
+        record.exit.as_ref(),
     );
     let _registry = FileLock::exclusive(&paths.registry_lock(), false)?;
     fs::remove_dir_all(paths.state_session(record.id))?;

@@ -389,6 +389,7 @@ fn kill_on_a_finished_session_tombstone_succeeds() {
         &record.workspace,
         &record.tag,
         aplexer::retired::TombstoneCause::Finished,
+        None,
     );
 
     let args = KillArgs {
@@ -481,6 +482,7 @@ fn tombstone_lookup_mirrors_resolve_selectors() {
         &record.workspace,
         &record.tag,
         aplexer::retired::TombstoneCause::Finished,
+        None,
     );
     let id_string = record.id.to_string();
 
@@ -519,6 +521,7 @@ fn prune_ages_expired_tombstones_and_leaves_archives() {
         &fresh.workspace,
         &fresh.tag,
         aplexer::retired::TombstoneCause::Finished,
+        None,
     );
 
     let stale = mk_record("/ws/i2665", "stale", Phase::Exited);
@@ -528,6 +531,7 @@ fn prune_ages_expired_tombstones_and_leaves_archives() {
         tag: "stale".to_string(),
         finished_at_ms: 0,
         cause: aplexer::retired::TombstoneCause::Pruned,
+        exit: None,
     };
     let stale_dir = paths.retired_session(stale.id);
     aplexer::ensure_private_dir(&stale_dir).unwrap();
@@ -583,4 +587,107 @@ fn kill_in_an_existing_workspace_without_a_tombstone_keeps_failing_loudly() {
         format!("{error:#}").contains("no matching session"),
         "{error:#}"
     );
+}
+
+/// The Hub exit-receipt contract: a finished tombstone preserves the exact
+/// native ExitInfo (code/signal/oom_killed/exited_at_ms) with exact
+/// UUID/workspace/tag linkage. Covers exit0, nonzero, signal and OOM.
+#[test]
+fn finished_tombstone_preserves_exact_exit_info() {
+    let cases: Vec<(&str, aplexer::ExitInfo)> = vec![
+        ("exit0", aplexer::ExitInfo { code: Some(0), signal: None, oom_killed: false, exited_at_ms: 1_700_000_000_001 }),
+        ("nonzero", aplexer::ExitInfo { code: Some(3), signal: None, oom_killed: false, exited_at_ms: 1_700_000_000_002 }),
+        ("signal", aplexer::ExitInfo { code: None, signal: Some(15), oom_killed: false, exited_at_ms: 1_700_000_000_003 }),
+        ("oom", aplexer::ExitInfo { code: None, signal: Some(9), oom_killed: true, exited_at_ms: 1_700_000_000_004 }),
+    ];
+    for (tag, exit) in cases {
+        let state_dir = tempfile::tempdir().unwrap();
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            runtime_root: runtime_dir.path().to_path_buf(),
+            state_root: state_dir.path().to_path_buf(),
+            config_file: state_dir.path().join("config.toml"),
+        };
+        paths.ensure().unwrap();
+        let record = mk_record("/ws/receipt", tag, Phase::Exited);
+        aplexer::retired::write_finished_tombstone(
+            &paths,
+            record.id,
+            &record.workspace,
+            &record.tag,
+            aplexer::retired::TombstoneCause::Finished,
+            Some(&exit),
+        );
+        let stored = aplexer::retired::read_finished_tombstone(&paths, record.id)
+            .expect("tombstone receipt must be readable by id");
+        assert_eq!(stored.id, record.id);
+        assert_eq!(stored.workspace, record.workspace);
+        assert_eq!(stored.tag, tag);
+        let stored_exit = stored.exit.as_ref().expect("exit must be preserved");
+        assert_eq!(stored_exit.code, exit.code, "tag {tag}");
+        assert_eq!(stored_exit.signal, exit.signal, "tag {tag}");
+        assert_eq!(stored_exit.oom_killed, exit.oom_killed, "tag {tag}");
+        assert_eq!(stored_exit.exited_at_ms, exit.exited_at_ms, "tag {tag}");
+        // The kill JSON answer carries the same bounded receipt.
+        let rendered = aplexer::retired::tombstone_kill_json(&stored);
+        assert_eq!(rendered["exit"]["code"], exit.code.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null));
+        assert_eq!(rendered["exit"]["oom_killed"], serde_json::Value::Bool(exit.oom_killed));
+        assert_eq!(rendered["exit"]["exited_at_ms"], serde_json::Value::from(exit.exited_at_ms));
+    }
+}
+
+/// Backwards compatibility: tombstones written before the exit field
+/// existed parse as `exit: None` rather than failing, and the kill JSON
+/// omits the exit object instead of fabricating code 0.
+#[test]
+fn legacy_tombstone_without_exit_stays_readable() {
+    let state_dir = tempfile::tempdir().unwrap();
+    let runtime_dir = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        runtime_root: runtime_dir.path().to_path_buf(),
+        state_root: state_dir.path().to_path_buf(),
+        config_file: state_dir.path().join("config.toml"),
+    };
+    paths.ensure().unwrap();
+    let record = mk_record("/ws/receipt", "legacy", Phase::Exited);
+    let dir = paths.retired_session(record.id);
+    aplexer::ensure_private_dir(&dir).unwrap();
+    aplexer::atomic_write_json(
+        &dir.join(aplexer::retired::TOMBSTONE_FILE),
+        &serde_json::json!({
+            "id": record.id,
+            "workspace": record.workspace,
+            "tag": record.tag,
+            "finished_at_ms": 1_700_000_000_000u64,
+            "cause": "finished",
+        }),
+    )
+    .unwrap();
+    let stored = aplexer::retired::read_finished_tombstone(&paths, record.id)
+        .expect("legacy tombstone must still parse");
+    assert!(stored.exit.is_none());
+    let rendered = aplexer::retired::tombstone_kill_json(&stored);
+    assert!(rendered.get("exit").is_none(), "unknown exit must stay unknown, never code 0");
+}
+
+/// `remove_session_state` carries the record's exit into the tombstone, so
+/// the prune/forget/Killed-record paths publish it without a separate write.
+#[test]
+fn remove_session_state_carries_record_exit_into_tombstone() {
+    let mut record = mk_record("/ws/receipt", "pruned", Phase::Exited);
+    record.worker_pid = None;
+    record.workload_pid = None;
+    record.exit = Some(aplexer::ExitInfo {
+        code: Some(7),
+        signal: None,
+        oom_killed: false,
+        exited_at_ms: 1_700_000_000_007,
+    });
+    let (paths, _state_dir, _runtime_dir) = seeded_registry(&mut record);
+    remove_session_state(&paths, &record).unwrap();
+    let stored = aplexer::retired::read_finished_tombstone(&paths, record.id)
+        .expect("tombstone must exist");
+    let exit = stored.exit.as_ref().expect("record exit must be carried");
+    assert_eq!(exit.code, Some(7));
+    assert_eq!(exit.exited_at_ms, 1_700_000_000_007);
 }

@@ -674,6 +674,7 @@ pub fn forget_session(paths: &Paths, selector: &str, force: bool) -> Result<Valu
         &current.workspace,
         &current.tag,
         crate::retired::TombstoneCause::Forgotten,
+        current.exit.as_ref(),
     );
     fs::remove_dir_all(paths.state_session(current.id))
         .with_context(|| format!("remove forgotten session {} durable state", current.id))?;
