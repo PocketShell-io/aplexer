@@ -677,7 +677,7 @@ fn a_terminal_record_never_reports_an_agent_from_a_recycled_pid() {
             parent_session: None,
             schema_version: SCHEMA_VERSION,
             id,
-            workspace: harness.workspace.path().to_path_buf(),
+            workspace: aplexer::canonical_workspace(harness.workspace.path()).unwrap(),
             tag: format!("agent-{id}"),
             engine: "shell".into(),
             profile: None,

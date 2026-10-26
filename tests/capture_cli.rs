@@ -58,7 +58,7 @@ impl Harness {
             parent_session: None,
             schema_version: SCHEMA_VERSION,
             id,
-            workspace: self.workspace.path().to_path_buf(),
+            workspace: aplexer::canonical_workspace(self.workspace.path()).unwrap(),
             tag: format!("capture-{id}"),
             engine: "shell".into(),
             profile: None,

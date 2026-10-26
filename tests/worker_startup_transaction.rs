@@ -89,7 +89,7 @@ impl Harness {
             parent_session: None,
             schema_version: 1,
             id,
-            workspace: self.workspace.path().to_path_buf(),
+            workspace: aplexer::canonical_workspace(self.workspace.path()).unwrap(),
             tag: format!("startup-{id}"),
             engine: "shell".into(),
             profile: None,

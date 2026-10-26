@@ -35,7 +35,7 @@ fn local_messages_follow_live_session_workspace_before_stale_environment() {
     #[cfg(windows)]
     let expected_workspace = aplexer::canonical_workspace(current_workspace.path()).unwrap();
     #[cfg(not(windows))]
-    let expected_workspace = current_workspace.path().to_path_buf();
+    let expected_workspace = aplexer::canonical_workspace(current_workspace.path()).unwrap();
     assert_eq!(envelope["workspace"], expected_workspace.to_str().unwrap());
 
     let inbox = harness

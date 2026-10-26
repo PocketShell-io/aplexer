@@ -9,7 +9,12 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use uuid::Uuid;
 
+/// Backlog saturation is OS-specific: Linux queues exactly one connection
+/// past a zero backlog, Darwin accepts the connect instead, so the timeout
+/// arm cannot be staged there. The deadline machinery itself is covered by
+/// the silent-worker test in the same file.
 #[test]
+#[cfg(target_os = "linux")]
 fn status_cli_bounds_connect_to_a_saturated_control_backlog() {
     let runtime = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();
@@ -32,7 +37,7 @@ fn status_cli_bounds_connect_to_a_saturated_control_backlog() {
         parent_session: None,
         schema_version: 1,
         id,
-        workspace: workspace.path().to_path_buf(),
+        workspace: aplexer::canonical_workspace(workspace.path()).unwrap(),
         tag: "saturated".into(),
         engine: "shell".into(),
         profile: None,

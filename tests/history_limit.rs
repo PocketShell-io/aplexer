@@ -98,7 +98,7 @@ fn embedded_api_rejects_usize_max_before_worker_spawn() {
     let workspace = TempDir::new().expect("workspace");
     let paths = harness.paths();
     let request = StartRequest {
-        workspace: workspace.path().to_path_buf(),
+        workspace: aplexer::canonical_workspace(workspace.path()).unwrap(),
         tag: "oversized".into(),
         engine: None,
         model: None,

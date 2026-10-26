@@ -245,7 +245,13 @@ fn make_live_worker_dead_leader(
     };
     paths.ensure().expect("session roots");
 
+    #[cfg(target_os = "linux")]
     let mut gone = Command::new("/bin/true").spawn().expect("dead leader");
+    #[cfg(target_os = "macos")]
+    let mut gone = Command::new("/bin/sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .expect("dead leader");
     let workload_pid = gone.id() as i32;
     gone.wait().expect("reap dead leader");
     assert!(
@@ -339,12 +345,22 @@ fn prune_reaps_broken_record_whose_worker_and_workload_are_gone() {
         "broken record was not reaped: {pruned}"
     );
     assert_eq!(pruned["retained_count"], 0, "{pruned}");
-    // No worker ever proved its containment empty, so prune must say so
-    // rather than silently claiming a clean reap.
+    // No worker ever proved its containment empty. On Linux the record
+    // carries no locator, so prune must say the reap is unproven rather
+    // than silently claiming a clean one. On macOS the session always
+    // records its pgid domain and the probe verified it empty, so the
+    // same reap is proven.
+    #[cfg(target_os = "linux")]
     assert_eq!(
         pruned["removed_without_containment_proof"],
         serde_json::json!([session.id]),
         "{pruned}"
+    );
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        pruned["removed_without_containment_proof"],
+        serde_json::json!([]),
+        "the empty pgid domain must reap as proven: {pruned}"
     );
     assert!(
         !harness.state_dir_exists(&session.id),
@@ -554,6 +570,7 @@ fn prune_immediately_after_kill_removes_the_record() {
 /// making a permanently unreapable record reapable; the alternative was a row
 /// that only `a forget --force` could ever remove.
 #[test]
+#[cfg(target_os = "linux")]
 fn prune_reaps_a_record_whose_setsid_descendant_escaped() {
     assert!(Path::new("/usr/bin/setsid").is_file(), "setsid is required");
     let harness = Harness::new();
@@ -609,6 +626,98 @@ fn prune_reaps_a_record_whose_setsid_descendant_escaped() {
         pruned["removed_without_containment_proof"],
         serde_json::json!([session.id]),
         "an escaped descendant must never be reported as a proven-clean reap: {pruned}"
+    );
+    assert!(!harness.state_dir_exists(&session.id));
+    assert!(
+        process_alive(descendant),
+        "prune must never signal anything, including a descendant it is abandoning"
+    );
+}
+
+/// macOS counterpart of the setsid-escape test: there is no `setsid(1)` on
+/// macOS, so the escapee daemonizes with a double fork, leaving both the
+/// worker's descendant tree and the session process group behind.
+///
+/// Unlike a Linux unlimited session, the macOS record carries a
+/// `pgid-<pgid>` locator, so the verdict is not "no remaining handle": the
+/// probe verifies the recorded domain empty and the reap is proven-clean,
+/// even though the daemonized escapee -- outside the domain -- survives
+/// unsignalled. That is the documented macOS trade: the domain is empty by
+/// construction, the escapee was never in it.
+#[test]
+#[cfg(target_os = "macos")]
+fn prune_reaps_a_record_whose_daemonized_descendant_escaped() {
+    let harness = Harness::new();
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let marker = harness
+        .runtime
+        .path()
+        .join("daemon-descendant-pid");
+    let daemon = workspace.path().join("daemon.py");
+    fs::write(
+        &daemon,
+        "import os, sys, time\n\
+         marker = sys.argv[1]\n\
+         first = os.fork()\n\
+         if first != 0:\n\
+         \x20   os._exit(0)\n\
+         os.setsid()\n\
+         second = os.fork()\n\
+         if second != 0:\n\
+         \x20   os._exit(0)\n\
+         with open(marker, \"w\") as handle:\n\
+         \x20   handle.write(str(os.getpid()))\n\
+         time.sleep(900)\n",
+    )
+    .expect("write daemon script");
+    let session = harness.start(
+        &workspace,
+        "escapee",
+        &[
+            "/bin/sh",
+            "-c",
+            "python3 \"$1\" \"$2\" & wait",
+            "aplexer-leader",
+            daemon.to_str().expect("utf8 daemon path"),
+            marker.to_str().expect("utf8 marker path"),
+        ],
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let descendant: i32 = fs::read_to_string(&marker)
+        .expect("descendant marker")
+        .trim()
+        .parse()
+        .expect("descendant pid");
+    let _cleanup = ProcessCleanup(vec![session.worker_pid, session.workload_pid, descendant]);
+
+    // Worker first (no exit recorded), then the leader. The daemonized
+    // grandchild survives both: it is in its own session and a child of
+    // launchd by now.
+    kill_and_wait(session.worker_pid);
+    kill_and_wait(session.workload_pid);
+    assert!(
+        process_alive(descendant),
+        "fixture needs an escaped descendant that outlived worker and leader"
+    );
+
+    // Unlike Linux, `a kill` is not refused: the recorded pgid domain is
+    // empty and proves itself. Prune then reaps the record as proven-clean
+    // (not as an unproven handle-loss) while the escapee survives,
+    // unsignalled, outside the domain.
+    let pruned = harness.json(&["--json", "prune"]);
+    assert_eq!(
+        pruned["removed"],
+        serde_json::json!([session.id]),
+        "{pruned}"
+    );
+    assert_eq!(
+        pruned["removed_without_containment_proof"],
+        serde_json::json!([]),
+        "the empty pgid domain must reap as proven: {pruned}"
     );
     assert!(!harness.state_dir_exists(&session.id));
     assert!(

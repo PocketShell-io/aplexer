@@ -76,10 +76,10 @@ impl Harness {
     ) -> SessionRecord {
         let paths = self.paths();
         paths.ensure().unwrap();
-        // Production records always carry the canonical workspace. On Windows a
-        // raw TempDir path can be the 8.3 short form (C:\Users\RUNNER~1\...),
-        // which would then disagree with the long form the CLI canonicalizes to.
-        #[cfg(windows)]
+        // Production records always carry the canonical workspace. A raw
+        // TempDir path would disagree with the canonicalized lookup: on
+        // Windows it can be the 8.3 short form (C:\Users\RUNNER~1\...),
+        // on macOS it lives under symlinked /var -> /private/var.
         let workspace = &aplexer::canonical_workspace(workspace).unwrap();
         let id = Uuid::now_v7();
         let record = SessionRecord {

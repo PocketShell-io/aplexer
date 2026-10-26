@@ -121,7 +121,7 @@ fn concurrent_direct_renames_cannot_claim_the_same_workspace_and_tag() {
     let barrier = Arc::new(Barrier::new(3));
     let spawn_rename = |record: aplexer::SessionRecord| {
         let barrier = Arc::clone(&barrier);
-        let target = target_workspace.path().to_path_buf();
+        let target = aplexer::canonical_workspace(target_workspace.path()).unwrap();
         thread::spawn(move || {
             barrier.wait();
             direct_rename(record, target, "shared")

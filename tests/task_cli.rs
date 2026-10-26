@@ -425,7 +425,7 @@ fn completion_notice_carries_the_real_parent_identity_to_the_target() {
     #[cfg(windows)]
     let expected_workspace = aplexer::canonical_workspace(task_workspace.path()).unwrap();
     #[cfg(not(windows))]
-    let expected_workspace = task_workspace.path().to_path_buf();
+    let expected_workspace = aplexer::canonical_workspace(task_workspace.path()).unwrap();
     assert_eq!(
         result["parent_session"]["workspace"],
         expected_workspace.to_str().unwrap()
