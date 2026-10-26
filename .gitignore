@@ -8,3 +8,4 @@ python/aplexer/_native.abi3.so
 /.claude/worktrees/
 /.worktrees/
 /.allarch-tmp/
+/target
