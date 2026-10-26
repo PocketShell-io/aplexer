@@ -46,7 +46,9 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
                     // Accepted sockets inherit the listener's non-blocking
                     // mode; reads must block for the read timeout below to
                     // apply (macOS surfaces raw EAGAIN otherwise).
-                    stream.set_nonblocking(false).expect("blocking worker stream");
+                    stream
+                        .set_nonblocking(false)
+                        .expect("blocking worker stream");
                     Some(stream)
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => None,

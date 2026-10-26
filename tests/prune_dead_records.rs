@@ -649,14 +649,8 @@ fn prune_reaps_a_record_whose_setsid_descendant_escaped() {
 fn prune_reaps_a_record_whose_daemonized_descendant_escaped() {
     let harness = Harness::new();
     let workspace = TempDir::new().expect("workspace tempdir");
-    let marker = harness
-        .runtime
-        .path()
-        .join("daemon-descendant-pid");
-    let marker2 = harness
-        .runtime
-        .path()
-        .join("daemon-intermediate-pid");
+    let marker = harness.runtime.path().join("daemon-descendant-pid");
+    let marker2 = harness.runtime.path().join("daemon-intermediate-pid");
     let daemon = workspace.path().join("daemon.py");
     fs::write(
         &daemon,

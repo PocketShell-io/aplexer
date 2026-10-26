@@ -75,7 +75,9 @@ mod fake_worker {
             // reads must block for the read timeout to apply (macOS
             // surfaces raw EAGAIN otherwise).
             Ok((stream, _)) => {
-                stream.set_nonblocking(false).expect("blocking worker stream");
+                stream
+                    .set_nonblocking(false)
+                    .expect("blocking worker stream");
                 Ok(Some(stream))
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),

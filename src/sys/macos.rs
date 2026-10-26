@@ -171,9 +171,7 @@ pub fn proc_path_of(pid: u32) -> Option<PathBuf> {
 pub fn all_pids() -> Vec<u32> {
     // proc_list* returns a pid COUNT, not a byte size: first probe with a
     // NULL buffer, then read exactly that many entries.
-    let count = unsafe {
-        libc::proc_listallpids(std::ptr::null_mut(), 0)
-    };
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
     if count <= 0 {
         return Vec::new();
     }
