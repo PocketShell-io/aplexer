@@ -14,7 +14,7 @@ addressable by *project* and *name* from any terminal.
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/aplexer/)
 [![CI](https://github.com/PocketShell-io/aplexer/actions/workflows/ci.yml/badge.svg)](https://github.com/PocketShell-io/aplexer/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux-fcc624?logo=linux&logoColor=black)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-Linux_%7C_macOS_%7C_Windows-blue)](#requirements)
 
 ![a list: sessions grouped by workspace, with each session's engine, state, age, and live process/CPU usage](docs/screenshots/list.svg)
 
@@ -22,7 +22,8 @@ addressable by *project* and *name* from any terminal.
 
 See [SCOPE.md](SCOPE.md) for ownership and product boundaries.
 
-aplexer is a Linux-native, agent-aware alternative to tmux. Instead of
+aplexer is a Linux-native, agent-aware alternative to tmux, with native
+ports for macOS and Windows. Instead of
 numbered panes on one server, you get one lightweight worker per session,
 each with its own PTY, socket, and scrollback history. Sessions are grouped
 by the directory they run in (the **workspace**) and named with a **tag**
@@ -50,12 +51,16 @@ Five things it does differently:
 
 You need:
 
-- Linux (x86_64 or aarch64)
-- The session state filesystem (`APLEXER_STATE_DIR`) must support Linux
-  `RENAME_EXCHANGE`; startup checks this before launching a workload
+- Linux (x86_64 or aarch64), macOS 11+ (x86_64 or arm64), or Windows 10
+  1809+ (see the Windows section below)
+- On Linux, the session state filesystem (`APLEXER_STATE_DIR`) must support
+  Linux `RENAME_EXCHANGE`; startup checks this before launching a workload
+  (macOS uses `renameatx_np(RENAME_SWAP)` with a plain-`rename` fallback)
 - Python 3.11+ for the pip install (the binaries are precompiled)
-- Optional: a systemd user session with cgroup-v2 delegation for `--memory`
-  / `--pids` / `--cpu-*` limits - everything else works without it
+- Optional: on Linux, a systemd user session with cgroup-v2 delegation
+  for `--memory` / `--pids` / `--cpu-*` limits - everything else works
+  without it. Capped launches fail closed on macOS and Windows: containment
+  there is process-group / Job-Object based, with no resource-limit backend
 
 ## Install
 
@@ -708,6 +713,35 @@ atomically); `-AddToPath` adds that directory to your user `PATH`, and
 `aplexer-windows-amd64.exe` are attached to each GitHub release, plus native
 ARM64 `a-windows-arm64.exe` and `aplexer-windows-arm64.exe` (and `win_arm64`
 wheels) for Windows on ARM.
+
+## macOS
+
+aplexer runs natively on macOS 11+ (both Intel x86_64 and Apple Silicon
+arm64); see `docs/macos-port.md` for the backend map.
+
+**Install**
+
+```bash
+python -m pip install aplexer
+```
+
+or from a checkout:
+
+```bash
+scripts/install.sh            # builds and installs to ~/.local/bin
+scripts/install.sh --bin ./aplexer-macos-arm64   # install a prebuilt binary
+```
+
+Prebuilt `a-macos-amd64` / `aplexer-macos-amd64` and `a-macos-arm64` /
+`aplexer-macos-arm64` binaries are attached to each GitHub release, plus
+`macosx_11_0_x86_64` / `macosx_11_0_arm64` wheels.
+
+**What differs from Linux.** Sessions are contained in their own process
+group (`setsid` at spawn, `killpg` teardown) instead of a cgroup scope, so
+`--memory` / `--pids` / `--cpu-*` launches fail closed with a clear error
+rather than run unenforced. Agent detection, foreground-command tracking,
+and workspace-following all work through libproc; live agent event-log
+tailing is not ported yet.
 
 Sessions default to Git for Windows' `bash.exe` (started as `bash --login -i`
 so `~/.bashrc` aliases and functions load, with `TERM=xterm-256color`), then

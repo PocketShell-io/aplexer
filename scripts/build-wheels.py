@@ -60,6 +60,10 @@ TARGETS = [
     # Native ARM64 Windows (aarch64-pc-windows-msvc), built on a windows-11-arm
     # runner. Wheel tag is final; there is no auditwheel on Windows.
     ("windows-arm64", "win_arm64", ".exe"),
+    # macOS wheels bundle zig-cross-linked Mach-O binaries; the platform
+    # tag is final (no auditwheel for Mach-O on the Linux build host).
+    ("macos-amd64", "macosx_11_0_x86_64", ""),
+    ("macos-arm64", "macosx_11_0_arm64", ""),
 ]
 
 # One binary serves both roles: the `a` console script is an alias that
