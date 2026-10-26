@@ -51,7 +51,7 @@ jobs:
           key: ${{ matrix.arch }}-macos-port
 
       - name: Run Rust tests
-        run: cargo test --locked --verbose
+        run: cargo test --locked --no-fail-fast --verbose
 
       - name: Smoke start/list/stop on the real binary
         run: |
