@@ -17,7 +17,9 @@ package "aplexer_cli"), which exposes two console scripts, "a" and
 "aplexer", that both execute this one binary -- `a` is just an alias for
 `aplexer`. The wheel depends on the exact same version of
 the ``aplexer-client`` distribution, which provides the public ``aplexer``
-import package. The Windows wheel ships ``aplexer.exe`` and is tagged ``win_amd64`` directly.
+import package. The Windows wheels ship ``aplexer.exe`` and are tagged ``win_amd64``
+(directly; there is no auditwheel on Windows) and ``win_arm64`` for the
+native ARM64 build.
 Linux wheels intentionally start with the conservative
 ``linux_<arch>`` tag. Release CI builds the binaries in a pinned PyPA manylinux
 image and uses auditwheel to validate/repair that wheel into the advertised
@@ -55,6 +57,9 @@ TARGETS = [
     ("linux-arm64", "linux_aarch64", ""),
     # Windows wheels are built natively (no auditwheel); the tag is final.
     ("windows-amd64", "win_amd64", ".exe"),
+    # Native ARM64 Windows (aarch64-pc-windows-msvc), built on a windows-11-arm
+    # runner. Wheel tag is final; there is no auditwheel on Windows.
+    ("windows-arm64", "win_arm64", ".exe"),
 ]
 
 # One binary serves both roles: the `a` console script is an alias that

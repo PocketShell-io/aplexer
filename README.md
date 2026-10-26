@@ -705,7 +705,9 @@ The script installs `aplexer.exe` and an `a.exe` copy of it to
 `%LOCALAPPDATA%\Programs\aplexer\bin` (replacing any previous install
 atomically); `-AddToPath` adds that directory to your user `PATH`, and
 `-BinDir` installs elsewhere. Prebuilt `a-windows-amd64.exe` and
-`aplexer-windows-amd64.exe` are attached to each GitHub release.
+`aplexer-windows-amd64.exe` are attached to each GitHub release, plus native
+ARM64 `a-windows-arm64.exe` and `aplexer-windows-arm64.exe` (and `win_arm64`
+wheels) for Windows on ARM.
 
 Sessions default to Git for Windows' `bash.exe` (started as `bash --login -i`
 so `~/.bashrc` aliases and functions load, with `TERM=xterm-256color`), then

@@ -86,12 +86,17 @@ class TestBuildWheel(unittest.TestCase):
                 ("linux-arm64", "linux_aarch64", ""),
             ],
         )
-        # Anything beyond Linux must be the Windows x86-64 wheel (.exe binary).
+        # Anything beyond Linux must be a Windows wheel (.exe binary): the
+        # x86-64 wheel and the native ARM64 wheel.
         for name, tag, suffix in targets:
             if not name.startswith("linux-"):
-                self.assertEqual(name, "windows-amd64")
-                self.assertEqual(tag, "win_amd64")
+                self.assertIn(name, ("windows-amd64", "windows-arm64"))
+                self.assertEqual(tag, {"windows-amd64": "win_amd64", "windows-arm64": "win_arm64"}[name])
                 self.assertEqual(suffix, ".exe")
+        self.assertEqual(
+            sorted(t[0] for t in targets if not t[0].startswith("linux-")),
+            ["windows-amd64", "windows-arm64"],
+        )
 
 
 class TestMainMatrixEnforcement(unittest.TestCase):
@@ -135,6 +140,7 @@ class TestMainMatrixEnforcement(unittest.TestCase):
             self.assertEqual(stdout, "")
             self.assertIn("required platform linux-arm64", stderr)
             self.assertIn("required platform windows-amd64", stderr)
+            self.assertIn("required platform windows-arm64", stderr)
             self.assertIn("refusing a partial wheel matrix", stderr)
             self.assertFalse(os.path.exists(output_dir))
 
@@ -210,6 +216,7 @@ class TestMainMatrixEnforcement(unittest.TestCase):
             self.assertIn("required platform linux-amd64", stderr)
             self.assertIn("required platform linux-arm64", stderr)
             self.assertIn("required platform windows-amd64", stderr)
+            self.assertIn("required platform windows-arm64", stderr)
             self.assertFalse(os.path.exists(output_dir))
 
 
