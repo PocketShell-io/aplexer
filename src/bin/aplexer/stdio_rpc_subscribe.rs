@@ -879,3 +879,140 @@ pub(super) fn writer_loop(out: Arc<Mutex<std::io::Stdout>>, bus: Arc<Bus>, stop:
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn push(bus: &Bus, sub: &str, topic: &str, kind: Kind, tag: &str) {
+        let (event, data) = match kind {
+            Kind::Snapshot => ("snapshot", Some(json!([{"tag": tag}]))),
+            Kind::Screen => ("screen", Some(json!({"text": tag}))),
+            Kind::Heartbeat => ("heartbeat", None),
+            Kind::Ended => ("ended", None),
+        };
+        bus.push(
+            sub,
+            topic,
+            kind,
+            event_frame(2, event, sub, topic, bus.alloc_seq(), data, None),
+        );
+    }
+
+    // Use exactly the writer's dequeue operation. Holding back these pops
+    // establishes backpressure without depending on pipe size, polling
+    // cadence, or how much CPU the helper gets during a timed deaf window.
+    fn pop(bus: &Bus) -> Value {
+        bus.inner.lock().unwrap().queue.pop_front().unwrap().frame
+    }
+
+    #[test]
+    fn dropped_frames_resume_with_gap_and_latest_state() {
+        let bus = Bus::new();
+        push(&bus, "sub-1", "sessions", Kind::Snapshot, "old");
+        push(&bus, "sub-1", "screen:live", Kind::Screen, "screen-v1");
+        // No writer pops until all these replacements have happened.
+        for tag in ["intermediate", "final-tag"] {
+            push(&bus, "sub-1", "sessions", Kind::Snapshot, tag);
+        }
+        push(&bus, "sub-1", "screen:live", Kind::Screen, "screen-v2");
+        push(&bus, "sub-1", "screen:live", Kind::Ended, "");
+        // A heartbeat must not overwrite the latest state or its gap.
+        push(&bus, "sub-1", "sessions", Kind::Heartbeat, "");
+
+        let snapshot = pop(&bus);
+        assert_eq!(snapshot["event"], "snapshot");
+        assert_eq!(snapshot["subscription"], "sub-1");
+        assert_eq!(snapshot["topic"], "sessions");
+        assert_eq!(snapshot["data"], json!([{"tag": "final-tag"}]));
+        assert_eq!(snapshot["gap"], true);
+        let ended = pop(&bus);
+        assert_eq!(ended["event"], "ended");
+        assert_eq!(ended["subscription"], "sub-1");
+        assert_eq!(ended["topic"], "screen:live");
+        assert_eq!(ended["gap"], true);
+        assert!(ended.get("data").is_none());
+        assert!(bus.inner.lock().unwrap().queue.is_empty());
+
+        push(&bus, "sub-1", "sessions", Kind::Snapshot, "after-resume");
+        assert!(pop(&bus).get("gap").is_none());
+    }
+
+    #[test]
+    fn final_state_without_queue_loss_has_no_gap() {
+        let bus = Bus::new();
+        // Legal ordering in the old integration fixture: the writer fits
+        // every emitted snapshot in the pipe before the client resumes.
+        // Another legal ordering publishes only final-tag after the helper
+        // is descheduled across all the intermediate disk writes.
+        for tag in ["hammer-0", "hammer-1", "final-tag"] {
+            push(&bus, "sub-1", "sessions", Kind::Snapshot, tag);
+            let frame = pop(&bus);
+            assert_eq!(frame["data"], json!([{"tag": tag}]));
+            assert!(frame.get("gap").is_none());
+        }
+        // A real gap may also have been delivered before final-tag. It is
+        // per queued frame, not sticky for the rest of the deaf interval.
+        push(&bus, "sub-1", "sessions", Kind::Snapshot, "old");
+        push(&bus, "sub-1", "sessions", Kind::Snapshot, "new");
+        assert_eq!(pop(&bus)["gap"], true);
+        push(&bus, "sub-1", "sessions", Kind::Snapshot, "final-tag");
+        assert!(pop(&bus).get("gap").is_none());
+    }
+
+    #[test]
+    fn overflow_gap_follows_the_evicted_subscription_and_topic() {
+        let bus = Bus::new();
+        push(&bus, "lost", "sessions", Kind::Snapshot, "old");
+        for n in 0..EVENT_QUEUE_CAP {
+            push(
+                &bus,
+                &format!("other-{n}"),
+                "sessions",
+                Kind::Snapshot,
+                "other",
+            );
+        }
+        assert_eq!(bus.inner.lock().unwrap().queue.len(), EVENT_QUEUE_CAP);
+        for _ in 0..EVENT_QUEUE_CAP {
+            assert!(pop(&bus).get("gap").is_none());
+        }
+        push(&bus, "lost", "screen:live", Kind::Screen, "unaffected");
+        assert!(pop(&bus).get("gap").is_none());
+        push(&bus, "lost", "sessions", Kind::Snapshot, "final-tag");
+        let snapshot = pop(&bus);
+        assert_eq!(snapshot["data"], json!([{"tag": "final-tag"}]));
+        assert_eq!(snapshot["gap"], true);
+        push(&bus, "lost", "sessions", Kind::Snapshot, "after-resume");
+        assert!(pop(&bus).get("gap").is_none());
+    }
+
+    #[test]
+    fn ended_survives_overflow_and_inherits_an_evicted_screen_gap() {
+        let bus = Bus::new();
+        push(&bus, "sub-1", "screen:live", Kind::Screen, "old");
+        for n in 0..EVENT_QUEUE_CAP {
+            push(
+                &bus,
+                &format!("other-{n}"),
+                "sessions",
+                Kind::Snapshot,
+                "other",
+            );
+        }
+        push(&bus, "sub-1", "screen:live", Kind::Ended, "");
+        for n in 0..EVENT_QUEUE_CAP {
+            push(&bus, &format!("new-{n}"), "sessions", Kind::Snapshot, "new");
+        }
+        let guard = bus.inner.lock().unwrap();
+        let ended: Vec<_> = guard
+            .queue
+            .iter()
+            .filter(|q| q.kind == Kind::Ended)
+            .collect();
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0].frame["topic"], "screen:live");
+        assert_eq!(ended[0].frame["gap"], true);
+        assert!(ended[0].frame.get("data").is_none());
+    }
+}
