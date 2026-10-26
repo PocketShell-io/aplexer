@@ -12,15 +12,12 @@ fn dump_procargs_layout() {
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(300));
     let pid = child.id();
-    let argv = aplexer::sys::macos::proc_argv_of(pid)
-        .expect("argv must be readable");
+    let argv = aplexer::sys::macos::proc_argv_of(pid).expect("argv must be readable");
+    // `sh -c` with a single command execs it directly, so the child is
+    // already `sleep 5` rather than `sh` -- the parse is what matters.
     assert_eq!(
         argv,
-        vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            "sleep 5".to_string()
-        ],
+        vec!["sleep".to_string(), "5".to_string()],
         "unexpected argv layout"
     );
     let name = aplexer::sys::macos::proc_name_of(pid).expect("name must be readable");

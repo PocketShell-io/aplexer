@@ -708,6 +708,16 @@ fn prune_reaps_a_record_whose_daemonized_descendant_escaped() {
     // empty and proves itself. Prune then reaps the record as proven-clean
     // (not as an unproven handle-loss) while the escapee survives,
     // unsignalled, outside the domain.
+    assert!(
+        harness.state_dir_exists(&session.id),
+        "record must still exist before prune"
+    );
+    let row = harness
+        .snapshot()
+        .into_iter()
+        .find(|row| row["id"] == serde_json::Value::String(session.id.clone()))
+        .expect("record must still be listed");
+    eprintln!("pre-prune row: {row}");
     let pruned = harness.json(&["--json", "prune"]);
     assert_eq!(
         pruned["removed"],
