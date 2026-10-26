@@ -42,7 +42,13 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
         while !signal.load(Ordering::SeqCst) && Instant::now() < deadline {
             #[cfg(unix)]
             let stream = match listener.accept() {
-                Ok((stream, _)) => Some(stream),
+                Ok((stream, _)) => {
+                    // Accepted sockets inherit the listener's non-blocking
+                    // mode; reads must block for the read timeout below to
+                    // apply (macOS surfaces raw EAGAIN otherwise).
+                    stream.set_nonblocking(false).expect("blocking worker stream");
+                    Some(stream)
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
                 Err(e) => panic!("{e}"),
             };

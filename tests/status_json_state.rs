@@ -340,20 +340,37 @@ fn status_json_adds_only_the_derived_state_and_agent_fields() {
         "`a status --json` dropped keys the released CLI emitted: {removed:?}"
     );
     let added: Vec<&String> = observed.difference(&baseline).collect();
+    // Placement evidence is platform-shaped: Linux records the /proc
+    // worker/workload cgroups, macOS the pgid containment locator. Both
+    // feed the same worker/workload_placement summaries.
+    #[cfg(target_os = "linux")]
+    let expected_added = vec![
+        "agent",
+        "agent_profile",
+        "cpu_percent",
+        "processes",
+        "state",
+        "warning",
+        "worker_cgroup",
+        "worker_placement",
+        "workload_cgroup",
+        "workload_placement",
+    ];
+    #[cfg(target_os = "macos")]
+    let expected_added = vec![
+        "agent",
+        "agent_profile",
+        "containment_cgroup",
+        "containment_cgroup_identity",
+        "cpu_percent",
+        "processes",
+        "state",
+        "warning",
+        "worker_placement",
+        "workload_placement",
+    ];
     assert_eq!(
-        added,
-        vec![
-            "agent",
-            "agent_profile",
-            "cpu_percent",
-            "processes",
-            "state",
-            "warning",
-            "worker_cgroup",
-            "worker_placement",
-            "workload_cgroup",
-            "workload_placement",
-        ],
+        added, expected_added,
         "`a status --json` changed its wire shape by more than the additive derived \
          state/agent/placement/warning/proc-usage fields"
     );

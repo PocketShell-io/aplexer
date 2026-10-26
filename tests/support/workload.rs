@@ -317,7 +317,8 @@ pub enum DateFmt {
 }
 
 /// Local wall-clock time shifted by `minutes` (negative = past), formatted.
-/// Unix uses `date -d`; Windows uses PowerShell `Get-Date`.
+/// GNU/Linux uses `date -d`, macOS (BSD date) uses `date -v`, Windows uses
+/// PowerShell `Get-Date`.
 pub fn date_shifted(minutes: i64, fmt: DateFmt) -> String {
     if cfg!(windows) {
         let pattern = match fmt {
@@ -330,6 +331,15 @@ pub fn date_shifted(minutes: i64, fmt: DateFmt) -> String {
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
             .output()
             .expect("run powershell Get-Date");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else if cfg!(target_os = "macos") {
+        let shift = format!("{minutes:+}M");
+        let args: Vec<&str> = match fmt {
+            DateFmt::Hhmm => vec!["-v", &shift, "+%H:%M"],
+            DateFmt::Iso8601Seconds => vec!["-v", &shift, "+%Y-%m-%dT%H:%M:%S%z"],
+            DateFmt::NaiveIso => vec!["-v", &shift, "+%Y-%m-%dT%H:%M:%S"],
+        };
+        let output = Command::new("date").args(args).output().unwrap();
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     } else {
         let offset = format!("{minutes} minutes");

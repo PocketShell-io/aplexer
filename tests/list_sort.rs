@@ -157,8 +157,16 @@ fn list_sorts_workspaces_and_attach_stamps_last_accessed() {
     thread::sleep(Duration::from_millis(50));
     let apple_id = harness.start(&ws_apple, "main");
 
-    let apple = ws_apple.to_string_lossy().into_owned();
-    let zebra = ws_zebra.to_string_lossy().into_owned();
+    // `a list` prints canonical workspaces; the fixture dirs live under
+    // a symlinked $TMPDIR on macOS.
+    let apple = aplexer::canonical_workspace(&ws_apple)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let zebra = aplexer::canonical_workspace(&ws_zebra)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
 
     assert_eq!(
         harness.list_workspace_order(&["--sort", "name"]),

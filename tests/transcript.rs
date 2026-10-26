@@ -27,15 +27,16 @@ impl Harness {
     fn new() -> Self {
         let runtime_dir = TempDir::new().expect("runtime tempdir");
         let state_dir = TempDir::new().expect("state tempdir");
-        // Production records carry the canonical workspace; on Windows a raw
-        // TempDir can sit under the 8.3 short form (C:\Users\RUNNER~1\...), so
-        // create the home (and with it every workspace) under the long form.
-        #[cfg(windows)]
+        // Production records carry the canonical workspace; a raw TempDir
+        // can sit under a non-canonical prefix (Windows 8.3 short names,
+        // macOS /var -> /private/var), so create the home (and with it
+        // every workspace) under the canonical temp dir.
+        #[cfg(any(windows, target_os = "macos"))]
         let home = tempfile::tempdir_in(
             aplexer::canonical_workspace(&std::env::temp_dir()).expect("canonical temp dir"),
         )
         .expect("home tempdir");
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let home = TempDir::new().expect("home tempdir");
         let config_file = runtime_dir.path().join("config.toml");
         Self {
@@ -98,6 +99,8 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::process::Output
 }
 
 fn write_session(h: &Harness, id: &str, cwd: &Path, engine: &str) {
+    // Fixture records must carry what `a start` would have written.
+    let cwd = &aplexer::canonical_workspace(cwd).unwrap();
     let session_dir = h.state_dir.path().join("sessions").join(id);
     fs::create_dir_all(&session_dir).unwrap();
     #[cfg(unix)]

@@ -66,6 +66,20 @@ fn process_alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
+/// SIGKILL a pid and wait for it to leave the process table. Tolerates an
+/// already-gone pid: killing a worker often takes its workload with it.
+#[cfg(target_os = "macos")]
+fn kill_and_wait_mac(pid: i32) {
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!process_alive(pid), "pid {pid} did not die");
+}
+
 /// Scope note -- this test asserts `a kill`'s and `a forget`'s contract
 /// only: kill refuses a cleanup it cannot prove and preserves both evidence
 /// directories, and only `--force` removes them. It is NOT a claim about
@@ -84,6 +98,7 @@ fn process_alive(pid: i32) -> bool {
 /// `tests/prune_dead_records.rs::prune_reaps_a_record_whose_setsid_descendant_escaped`;
 /// this test stays on kill/forget so the two contracts remain separable.
 #[test]
+#[cfg(target_os = "linux")]
 fn kill_preserves_evidence_when_dead_unlimited_worker_loses_setsid_descendant() {
     assert!(Path::new("/usr/bin/setsid").is_file(), "setsid is required");
     let harness = Harness::new();
@@ -337,4 +352,89 @@ fn forget_fences_pre_pid_startup_and_refuses_held_worker_lock() {
     let restarted: Value = serde_json::from_slice(&restarted.stdout).expect("restart JSON");
     let restarted_worker = restarted["worker_pid"].as_i64().expect("worker pid") as i32;
     let _cleanup = ProcessCleanup(vec![restarted_worker]);
+}
+
+/// macOS counterpart: there is no `setsid(1)` and every session carries a
+/// `pgid-<pgid>` locator, so `a kill` on a dead worker with an empty domain
+/// proves the cleanup instead of refusing it. Evidence is still preserved
+/// first (the kill reports what it did), and the daemonized survivor --
+/// outside the domain -- is untouched.
+#[test]
+#[cfg(target_os = "macos")]
+fn kill_proves_empty_pgid_domain_for_dead_worker_with_daemonized_descendant() {
+    let harness = Harness::new();
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let marker = harness.runtime.path().join("daemon-descendant-pid");
+    let daemon = workspace.path().join("daemon.py");
+    std::fs::write(
+        &daemon,
+        "import os, sys, time\n\
+         marker = sys.argv[1]\n\
+         first = os.fork()\n\
+         if first != 0:\n\
+         \x20   os._exit(0)\n\
+         os.setsid()\n\
+         second = os.fork()\n\
+         if second != 0:\n\
+         \x20   os._exit(0)\n\
+         with open(marker, \"w\") as handle:\n\
+         \x20   handle.write(str(os.getpid()))\n\
+         time.sleep(900)\n",
+    )
+    .expect("write daemon script");
+    let started = harness.run(&[
+        "--json",
+        "start",
+        "--workspace",
+        workspace.path().to_str().expect("UTF-8 workspace"),
+        "--tag",
+        "broken-daemon",
+        "--",
+        "/bin/sh",
+        "-c",
+        "python3 \"$1\" \"$2\" & wait",
+        "aplexer-leader",
+        daemon.to_str().expect("UTF-8 daemon path"),
+        marker.to_str().expect("UTF-8 marker path"),
+    ]);
+    assert!(
+        started.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let record: Value = serde_json::from_slice(&started.stdout).expect("start JSON");
+    let id = record["id"].as_str().expect("session id");
+    let worker_pid = record["worker_pid"].as_i64().expect("worker pid") as i32;
+    let workload_pid = record["workload_pid"].as_i64().expect("workload pid") as i32;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let descendant_pid = std::fs::read_to_string(&marker)
+        .expect("read descendant marker")
+        .trim()
+        .parse::<i32>()
+        .expect("descendant pid");
+    let _cleanup = ProcessCleanup(vec![descendant_pid, worker_pid, workload_pid]);
+
+    kill_and_wait_mac(worker_pid);
+    kill_and_wait_mac(workload_pid);
+    assert!(
+        process_alive(descendant_pid),
+        "fixture needs a daemonized descendant that outlived worker and leader"
+    );
+
+    // The recorded pgid domain is empty and proves itself: kill succeeds
+    // instead of refusing for lack of a locator.
+    let killed = harness.run(&["kill", id, "--signal", "KILL", "--grace-ms", "0"]);
+    assert!(
+        killed.status.success(),
+        "kill of an empty pgid domain failed: {}",
+        String::from_utf8_lossy(&killed.stderr)
+    );
+    assert!(
+        process_alive(descendant_pid),
+        "a kill must never signal the daemon outside the domain"
+    );
 }

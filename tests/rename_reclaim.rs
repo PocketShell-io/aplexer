@@ -315,7 +315,10 @@ fn seed_live_worker_dead_leader(
     workspace: &TempDir,
     tag: &str,
 ) -> (Session, std::process::Child) {
-    let mut gone = Command::new("/bin/true").spawn().expect("dead leader");
+    let mut gone = Command::new("/bin/sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .expect("dead leader");
     let workload_pid = gone.id() as i32;
     gone.wait().expect("reap dead leader");
     assert!(
@@ -401,7 +404,13 @@ impl Shape {
                 )
             }
             Shape::CrashedStart => {
+                #[cfg(target_os = "linux")]
                 let mut gone = Command::new("/bin/true").spawn().expect("dead worker");
+                #[cfg(target_os = "macos")]
+                let mut gone = Command::new("/bin/sh")
+                    .args(["-c", "exit 0"])
+                    .spawn()
+                    .expect("dead worker");
                 let worker_pid = gone.id() as i32;
                 gone.wait().expect("reap dead worker");
                 let session = seed_starting_stub(harness, workspace, tag);

@@ -289,7 +289,10 @@ fn make_live_worker_dead_leader(
     };
     paths.ensure().expect("session roots");
 
-    let mut gone = Command::new("/bin/true").spawn().expect("dead leader");
+    let mut gone = Command::new("/bin/sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .expect("dead leader");
     let workload_pid = gone.id() as i32;
     gone.wait().expect("reap dead leader");
     assert!(
