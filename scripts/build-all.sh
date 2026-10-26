@@ -433,7 +433,13 @@ fi
 log "smoke: linux-amd64 native"
 # Product constraint: control socket paths must fit in SUN_LEN (108).
 # The agent TMPDIR is deep inside the worktree, so smoke state goes to /tmp.
+# The ambient APLEXER_WORKSPACE/APLEXER_SESSION_ID (when this script itself
+# runs inside an aplexer session) must not leak into the smoke: bare-tag
+# resolution prefers them over the cwd, which would point the smoke kill
+# at the wrong workspace.
 export TMPDIR=/tmp
+unset APLEXER_SESSION_ID
+export APLEXER_WORKSPACE="$ROOT"
 "$DIST/aplexer-linux-amd64" --version
 APLEXER_STATE_DIR="$(mktemp -d)" APLEXER_RUNTIME_DIR="$(mktemp -d)"
 export APLEXER_STATE_DIR APLEXER_RUNTIME_DIR

@@ -32,6 +32,12 @@ jobs:
             arch: x86_64
           - runner: macos-15
             arch: arm64
+    # macOS runners default TMPDIR to a ~60-char /var/folders path, which
+    # blows the 104-byte sockaddr_un budget for session control sockets.
+    # /tmp is the same short root Linux CI uses (and a symlink to
+    # /private/tmp, which the canonicalized paths handle).
+    env:
+      TMPDIR: /tmp
     steps:
       - uses: actions/checkout@v4
 
