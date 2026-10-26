@@ -481,7 +481,11 @@ fn dropped_frames_resume_with_gap_and_latest_state() {
     let final_snapshot = snapshots
         .iter()
         .find(|snapshot| {
-            snapshot["data"].as_array().unwrap().iter().any(|row| row["tag"] == "final-tag")
+            snapshot["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["tag"] == "final-tag")
         })
         .expect("no sessions snapshot carries the final tag");
     assert!(final_snapshot["data"]
