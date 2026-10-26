@@ -365,20 +365,25 @@ fn kill_proves_empty_pgid_domain_for_dead_worker_with_daemonized_descendant() {
     let harness = Harness::new();
     let workspace = TempDir::new().expect("workspace tempdir");
     let marker = harness.runtime.path().join("daemon-descendant-pid");
+    let marker2 = harness.runtime.path().join("daemon-intermediate-pid");
     let daemon = workspace.path().join("daemon.py");
     std::fs::write(
         &daemon,
-        "import os, sys, time\n\
-         marker = sys.argv[1]\n\
+        "import os, sys, time, signal\n\
+         marker, marker2 = sys.argv[1], sys.argv[2]\n\
          first = os.fork()\n\
-         if first != 0:\n\
-         \x20   os._exit(0)\n\
-         os.setsid()\n\
-         second = os.fork()\n\
-         if second != 0:\n\
-         \x20   os._exit(0)\n\
-         with open(marker, \"w\") as handle:\n\
+         if first == 0:\n\
+         \x20   os.setsid()\n\
+         \x20   second = os.fork()\n\
+         \x20   if second != 0:\n\
+         \x20       os._exit(0)\n\
+         \x20   with open(marker, \"w\") as handle:\n\
+         \x20       handle.write(str(os.getpid()))\n\
+         \x20   time.sleep(900)\n\
+         with open(marker2, \"w\") as handle:\n\
          \x20   handle.write(str(os.getpid()))\n\
+         signal.signal(signal.SIGHUP, signal.SIG_IGN)\n\
+         signal.signal(signal.SIGTERM, signal.SIG_IGN)\n\
          time.sleep(900)\n",
     )
     .expect("write daemon script");
@@ -392,10 +397,11 @@ fn kill_proves_empty_pgid_domain_for_dead_worker_with_daemonized_descendant() {
         "--",
         "/bin/sh",
         "-c",
-        "python3 \"$1\" \"$2\" & wait",
+        "python3 \"$1\" \"$2\"",
         "aplexer-leader",
         daemon.to_str().expect("UTF-8 daemon path"),
         marker.to_str().expect("UTF-8 marker path"),
+        marker2.to_str().expect("UTF-8 marker2 path"),
     ]);
     assert!(
         started.status.success(),
@@ -422,10 +428,16 @@ fn kill_proves_empty_pgid_domain_for_dead_worker_with_daemonized_descendant() {
         .trim()
         .parse::<i32>()
         .expect("descendant pid");
-    let _cleanup = ProcessCleanup(vec![descendant_pid, worker_pid, workload_pid]);
+    let middle_pid = std::fs::read_to_string(&marker2)
+        .expect("intermediate marker")
+        .trim()
+        .parse::<i32>()
+        .expect("intermediate pid");
+    let _cleanup = ProcessCleanup(vec![descendant_pid, worker_pid, workload_pid, middle_pid]);
 
     kill_and_wait_mac(worker_pid);
     kill_and_wait_mac(workload_pid);
+    kill_and_wait_mac(middle_pid);
     assert!(
         process_alive(descendant_pid),
         "fixture needs a daemonized descendant that outlived worker and leader"

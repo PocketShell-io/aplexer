@@ -653,20 +653,28 @@ fn prune_reaps_a_record_whose_daemonized_descendant_escaped() {
         .runtime
         .path()
         .join("daemon-descendant-pid");
+    let marker2 = harness
+        .runtime
+        .path()
+        .join("daemon-intermediate-pid");
     let daemon = workspace.path().join("daemon.py");
     fs::write(
         &daemon,
-        "import os, sys, time\n\
-         marker = sys.argv[1]\n\
+        "import os, sys, time, signal\n\
+         marker, marker2 = sys.argv[1], sys.argv[2]\n\
          first = os.fork()\n\
-         if first != 0:\n\
-         \x20   os._exit(0)\n\
-         os.setsid()\n\
-         second = os.fork()\n\
-         if second != 0:\n\
-         \x20   os._exit(0)\n\
-         with open(marker, \"w\") as handle:\n\
+         if first == 0:\n\
+         \x20   os.setsid()\n\
+         \x20   second = os.fork()\n\
+         \x20   if second != 0:\n\
+         \x20       os._exit(0)\n\
+         \x20   with open(marker, \"w\") as handle:\n\
+         \x20       handle.write(str(os.getpid()))\n\
+         \x20   time.sleep(900)\n\
+         with open(marker2, \"w\") as handle:\n\
          \x20   handle.write(str(os.getpid()))\n\
+         signal.signal(signal.SIGHUP, signal.SIG_IGN)\n\
+         signal.signal(signal.SIGTERM, signal.SIG_IGN)\n\
          time.sleep(900)\n",
     )
     .expect("write daemon script");
@@ -676,10 +684,11 @@ fn prune_reaps_a_record_whose_daemonized_descendant_escaped() {
         &[
             "/bin/sh",
             "-c",
-            "python3 \"$1\" \"$2\" & wait",
+            "python3 \"$1\" \"$2\" \"$3\"",
             "aplexer-leader",
             daemon.to_str().expect("utf8 daemon path"),
             marker.to_str().expect("utf8 marker path"),
+            marker2.to_str().expect("utf8 marker2 path"),
         ],
     );
 
@@ -692,13 +701,27 @@ fn prune_reaps_a_record_whose_daemonized_descendant_escaped() {
         .trim()
         .parse()
         .expect("descendant pid");
-    let _cleanup = ProcessCleanup(vec![session.worker_pid, session.workload_pid, descendant]);
+    // The intermediate stays in the foreground (like the Linux test's
+    // trapping sleeper) so the leader -- and the session -- stays alive
+    // until we kill it; only the grandchild escapes.
+    let middle: i32 = fs::read_to_string(&marker2)
+        .expect("intermediate marker")
+        .trim()
+        .parse()
+        .expect("intermediate pid");
+    let _cleanup = ProcessCleanup(vec![
+        session.worker_pid,
+        session.workload_pid,
+        middle,
+        descendant,
+    ]);
 
-    // Worker first (no exit recorded), then the leader. The daemonized
-    // grandchild survives both: it is in its own session and a child of
-    // launchd by now.
+    // Worker first (no exit recorded), then the leader and the
+    // intermediate. The daemonized grandchild survives all three: it is in
+    // its own session and a child of launchd by now.
     kill_and_wait(session.worker_pid);
     kill_and_wait(session.workload_pid);
+    kill_and_wait(middle);
     assert!(
         process_alive(descendant),
         "fixture needs an escaped descendant that outlived worker and leader"

@@ -1,4 +1,4 @@
-//! TEMPORARY diagnostic: validates KERN_PROCARGS2 parsing on a real Mac.
+//! TEMPORARY diagnostic: raw libproc return-value semantics.
 
 #![cfg(target_os = "macos")]
 
@@ -11,22 +11,41 @@ fn dump_procargs_layout() {
         .spawn()
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(300));
-    let pid = child.id();
-    let argv = aplexer::sys::macos::proc_argv_of(pid).expect("argv must be readable");
-    // `sh -c` with a single command execs it directly, so the child is
-    // already `sleep 5` rather than `sh` -- the parse is what matters.
-    assert_eq!(
-        argv,
-        vec!["sleep".to_string(), "5".to_string()],
-        "unexpected argv layout"
+    let pid = child.id() as libc::pid_t;
+    let me = std::process::id() as libc::pid_t;
+
+    // Raw proc_listchildpids call: is the return value a count or bytes?
+    let mut buf = vec![0 as libc::c_int; 256];
+    let r_child = unsafe {
+        libc::proc_listchildpids(
+            me,
+            buf.as_mut_ptr().cast::<libc::c_void>(),
+            (buf.len() * std::mem::size_of::<libc::c_int>()) as libc::c_int,
+        )
+    };
+    let as_count: Vec<i32> = buf.iter().take(r_child.max(0) as usize).copied().collect();
+    let as_bytes: Vec<i32> = buf
+        .iter()
+        .take((r_child.max(0) as usize) / std::mem::size_of::<libc::c_int>())
+        .copied()
+        .collect();
+
+    // Raw proc_listallpids call for comparison.
+    let mut buf_all = vec![0 as libc::c_int; 262144];
+    let r_all = unsafe {
+        libc::proc_listallpids(
+            buf_all.as_mut_ptr().cast::<libc::c_void>(),
+            (buf_all.len() * std::mem::size_of::<libc::c_int>()) as libc::c_int,
+        )
+    };
+
+    panic!(
+        "childpid={pid} listchildpids(self)={r_child} as_count={as_count:?} as_bytes={as_bytes:?} listallpids={r_all} argv={:?}",
+        aplexer::sys::macos::proc_argv_of(pid as u32)
     );
-    let name = aplexer::sys::macos::proc_name_of(pid).expect("name must be readable");
-    // `sh -c` with a single command execs it directly (verified above).
-    assert_eq!(name, "sleep", "unexpected process name");
-    assert!(
-        aplexer::sys::macos::direct_children_of(std::process::id()).contains(&pid),
-        "child must be listed as ours"
-    );
-    child.kill().unwrap();
-    child.wait().unwrap();
+    #[allow(unreachable_code)]
+    {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
 }
