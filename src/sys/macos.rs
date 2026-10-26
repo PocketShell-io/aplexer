@@ -169,25 +169,26 @@ pub fn proc_path_of(pid: u32) -> Option<PathBuf> {
 /// Every live pid on the machine, via `proc_listallpids`. Callers filter
 /// by ppid themselves (see [`direct_children_of`]).
 pub fn all_pids() -> Vec<u32> {
-    // 32k pids is far above any real machine; a short read means the
-    // table fit, a full read means retry once with headroom.
-    for capacity in [32768_usize, 262144] {
-        let mut buffer = vec![0 as libc::c_int; capacity];
-        let bytes = unsafe {
-            libc::proc_listallpids(
-                buffer.as_mut_ptr().cast::<libc::c_void>(),
-                (capacity * std::mem::size_of::<libc::c_int>()) as libc::c_int,
-            )
-        };
-        if bytes <= 0 {
-            return Vec::new();
-        }
-        let count = bytes as usize / std::mem::size_of::<libc::c_int>();
-        if count < capacity {
-            return buffer[..count].iter().map(|pid| *pid as u32).collect();
-        }
+    // proc_list* returns a pid COUNT, not a byte size: first probe with a
+    // NULL buffer, then read exactly that many entries.
+    let count = unsafe {
+        libc::proc_listallpids(std::ptr::null_mut(), 0)
+    };
+    if count <= 0 {
+        return Vec::new();
     }
-    Vec::new()
+    let mut buffer = vec![0 as libc::c_int; count as usize];
+    let read = unsafe {
+        libc::proc_listallpids(
+            buffer.as_mut_ptr().cast::<libc::c_void>(),
+            (buffer.len() * std::mem::size_of::<libc::c_int>()) as libc::c_int,
+        )
+    };
+    if read <= 0 {
+        return Vec::new();
+    }
+    let count = (read as usize).min(buffer.len());
+    buffer[..count].iter().map(|pid| *pid as u32).collect()
 }
 
 /// Direct children of `ppid`, via `proc_listchildpids`: one syscall, no
@@ -197,24 +198,24 @@ pub fn direct_children_of(ppid: u32) -> Vec<u32> {
         Some(pid) => pid,
         None => return Vec::new(),
     };
-    for capacity in [256_usize, 16384] {
-        let mut buffer = vec![0 as libc::c_int; capacity];
-        let bytes = unsafe {
-            libc::proc_listchildpids(
-                parent,
-                buffer.as_mut_ptr().cast::<libc::c_void>(),
-                (capacity * std::mem::size_of::<libc::c_int>()) as libc::c_int,
-            )
-        };
-        if bytes < 0 {
-            return Vec::new();
-        }
-        let count = bytes as usize / std::mem::size_of::<libc::c_int>();
-        if count < capacity {
-            return buffer[..count].iter().map(|pid| *pid as u32).collect();
-        }
+    // Like all proc_list* flavours, this returns a pid COUNT, not bytes.
+    let count = unsafe { libc::proc_listchildpids(parent, std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return Vec::new();
     }
-    Vec::new()
+    let mut buffer = vec![0 as libc::c_int; count as usize];
+    let read = unsafe {
+        libc::proc_listchildpids(
+            parent,
+            buffer.as_mut_ptr().cast::<libc::c_void>(),
+            (buffer.len() * std::mem::size_of::<libc::c_int>()) as libc::c_int,
+        )
+    };
+    if read <= 0 {
+        return Vec::new();
+    }
+    let count = (read as usize).min(buffer.len());
+    buffer[..count].iter().map(|pid| *pid as u32).collect()
 }
 
 /// `(user_ns, system_ns)` CPU counters for one process, via
