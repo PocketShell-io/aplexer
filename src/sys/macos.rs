@@ -207,6 +207,26 @@ pub fn proc_task_cpu_ns(pid: u32) -> Option<(u64, u64)> {
     Some((info.pti_total_user, info.pti_total_system))
 }
 
+/// Live thread count of a process, via `PROC_PIDTASKINFO`
+/// (`pti_threadnum`). `None` for a missing process.
+pub fn proc_thread_count(pid: u32) -> Option<i32> {
+    let pid_i32 = u32_to_pid(pid)?;
+    let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid_i32,
+            libc::PROC_PIDTASKINFO,
+            0,
+            (&mut info as *mut libc::proc_taskinfo).cast::<libc::c_void>(),
+            std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int,
+        )
+    };
+    if read != std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int {
+        return None;
+    }
+    Some(info.pti_threadnum)
+}
+
 /// Boot time as microseconds since the Unix epoch, via `kern.boottime`.
 /// macOS has no `/proc/sys/kernel/random/boot_id`; this is the reboot
 /// detector the worker-identity comparison uses instead (same role:

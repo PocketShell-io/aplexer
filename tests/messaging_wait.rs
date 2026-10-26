@@ -5,6 +5,7 @@ mod support;
 use aplexer::messaging::{ack_messages, read_cursor};
 use aplexer::{Phase, SessionRecord};
 use serde_json::Value;
+#[cfg(target_os = "linux")]
 use std::fs;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -33,6 +34,7 @@ fn send(harness: &Harness, sender: &SessionRecord, recipient: &SessionRecord) ->
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn has_watch(pid: u32) -> bool {
     let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fdinfo")) else {
         return false;
@@ -45,6 +47,35 @@ fn has_watch(pid: u32) -> bool {
         }
     }
     false
+}
+
+/// macOS counterpart: the waiting CLI holds its mailbox watch as a kqueue
+/// fd (`PROX_FDTYPE_KQUEUE`), same race-avoidance role as the inotify
+/// check above.
+#[cfg(target_os = "macos")]
+fn has_watch(pid: u32) -> bool {
+    let pid = pid as libc::pid_t;
+    if pid <= 0 {
+        return false;
+    }
+    // Room for 256 fds; the waiter holds a handful.
+    let mut infos = vec![unsafe { std::mem::zeroed::<libc::proc_fdinfo>() }; 256];
+    let bytes = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDLISTFDS,
+            0,
+            infos.as_mut_ptr().cast::<libc::c_void>(),
+            (infos.len() * std::mem::size_of::<libc::proc_fdinfo>()) as libc::c_int,
+        )
+    };
+    if bytes <= 0 {
+        return false;
+    }
+    let count = bytes as usize / std::mem::size_of::<libc::proc_fdinfo>();
+    infos[..count]
+        .iter()
+        .any(|info| info.proc_fdtype as libc::c_int == libc::PROX_FDTYPE_KQUEUE)
 }
 
 fn await_subscription(child: &mut Child) {

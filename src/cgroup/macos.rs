@@ -152,6 +152,9 @@ pub struct ScopePlan {
 
 impl ScopePlan {
     pub fn prepare(id: Uuid, limits: &Limits) -> Result<Option<Self>> {
+        // Same embedding contract as Linux: a host that ignores SIGCHLD
+        // could auto-reap the workload before the worker waits on it.
+        crate::ensure_sigchld_compatible_for_child_management()?;
         if !limits.requested() {
             return Ok(None);
         }

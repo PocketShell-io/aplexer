@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 //! A running worker must reap the descendants it adopts.
 //!
 //! Workers set `PR_SET_CHILD_SUBREAPER`, so every process in the workload's

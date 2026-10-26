@@ -472,6 +472,7 @@ fn doctor_reports_corrupt_registry_entry_with_its_path() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn optional_cgroup_capability_is_explicit_and_never_makes_clean_doctor_fatal() {
     let temp = TempDir::new().unwrap();
     let paths = test_paths(&temp);
@@ -768,4 +769,40 @@ fn doctor_flags_a_stale_pin_and_fix_re_resolves_it() {
         reparsed.engines["apponly"].command,
         vec![script.display().to_string(), "--serve".into()]
     );
+}
+
+/// macOS counterpart: the `containment` check reports the pgid backend as
+/// available and resource limits as refused-but-warning, never fatal.
+#[test]
+#[cfg(target_os = "macos")]
+fn pgid_containment_is_explicit_and_never_makes_clean_doctor_fatal() {
+    let temp = TempDir::new().unwrap();
+    let paths = test_paths(&temp);
+    let output = Command::new(env!("CARGO_BIN_EXE_aplexer"))
+        .args(["--json", "doctor"])
+        .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
+        .env("APLEXER_STATE_DIR", &paths.state_root)
+        .env("APLEXER_CONFIG", &paths.config_file)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["ok"], true);
+    let check = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "containment")
+        .expect("doctor must report macOS containment");
+    assert_eq!(check["available"], true);
+    assert_eq!(check["ok"], true);
+    assert_eq!(check["severity"], "warning");
+    assert_eq!(check["required"], false);
+    assert!(check["detail"]
+        .as_str()
+        .unwrap()
+        .contains("unlimited sessions still work"));
+    assert_eq!(check["prerequisites"]["backend"], "pgid");
+    assert_eq!(check["prerequisites"]["resource_limits"]["ok"], false);
 }

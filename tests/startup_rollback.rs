@@ -213,7 +213,7 @@ fn wait_for_path(path: &Path) {
 /// `/proc/self/fd` handle below) are all `FD_CLOEXEC`, so they are excluded:
 /// they never reach the child, and excluding them also makes the count immune
 /// to whatever sibling tests are doing on other threads.
-#[cfg(feature = "startup-test-hooks")]
+#[cfg(all(feature = "startup-test-hooks", target_os = "linux"))]
 fn inherited_descriptor_count() -> libc::rlim_t {
     let mut inherited = std::collections::BTreeSet::from([0, 1, 2]);
     for entry in fs::read_dir("/proc/self/fd").expect("read open descriptors") {
@@ -221,6 +221,22 @@ fn inherited_descriptor_count() -> libc::rlim_t {
         let Ok(fd) = entry.file_name().to_string_lossy().parse::<i32>() else {
             continue;
         };
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+            inherited.insert(fd);
+        }
+    }
+    inherited.len() as libc::rlim_t
+}
+
+/// macOS counterpart: no `/proc/self/fd`, so probe fds directly with
+/// `fcntl(F_GETFD)`, skipping the CLOEXEC ones for the same reason.
+#[cfg(all(feature = "startup-test-hooks", target_os = "macos"))]
+fn inherited_descriptor_count() -> libc::rlim_t {
+    let mut inherited = std::collections::BTreeSet::from([0, 1, 2]);
+    // 1024 covers the launcher's descriptor budget preflight many times
+    // over; fds above it are irrelevant to the count.
+    for fd in 0..1024 {
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
         if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
             inherited.insert(fd);

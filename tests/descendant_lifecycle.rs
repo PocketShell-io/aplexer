@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 //! Linux descendant-containment regressions.
 //!
 //! Each test starts a short-lived shell leader which launches a `setsid`

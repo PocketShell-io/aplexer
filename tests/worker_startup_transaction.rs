@@ -18,6 +18,7 @@ use uuid::Uuid;
 /// only bounds how long a broken run takes to say so.
 const LIVENESS_BACKSTOP: Duration = Duration::from_secs(30);
 
+#[cfg(target_os = "linux")]
 fn process_state(pid: u32) -> Option<char> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     stat.rfind(')')
@@ -26,6 +27,12 @@ fn process_state(pid: u32) -> Option<char> {
         .next()?
         .chars()
         .next()
+}
+
+/// No /proc on macOS: same single-character alphabet via libproc.
+#[cfg(target_os = "macos")]
+fn process_state(pid: u32) -> Option<char> {
+    aplexer::sys::macos::proc_state_char(pid)
 }
 
 /// True when `pid` is gone or only a zombie. This test inspects the pid from
