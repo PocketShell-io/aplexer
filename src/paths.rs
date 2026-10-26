@@ -491,11 +491,12 @@ fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
 /// the long form. Unchanged (plain `TempDir::new`) elsewhere.
 #[cfg(test)]
 pub(crate) fn canonical_tempdir() -> tempfile::TempDir {
-    // Temp dirs must already be canonical: product paths go through
-    // `canonical_workspace` (which resolves symlinks), so fixtures built
-    // on a symlinked $TMPDIR (macOS: /var -> /private/var) would otherwise
-    // compare a raw prefix against a resolved one. Windows needs it for
-    // 8.3 short names; macOS for /var and /tmp.
+    // Fixtures must live under canonical paths or they disagree with the
+    // canonicalized workspaces the product records: the 8.3 short form on
+    // Windows, /var -> /private/var and /tmp -> /private/tmp on macOS.
+    #[cfg(windows)]
+    let root = canonical_workspace(&env::temp_dir()).unwrap();
+    #[cfg(not(windows))]
     let root = fs::canonicalize(env::temp_dir()).unwrap_or_else(|_| env::temp_dir());
     tempfile::TempDir::new_in(root).unwrap()
 }
