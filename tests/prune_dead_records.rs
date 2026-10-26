@@ -183,16 +183,42 @@ fn process_alive(pid: i32) -> bool {
     aplexer::process_alive(pid as u32)
 }
 
-/// SIGKILL a pid and wait for it to leave /proc. Tolerates a pid that is
+/// SIGKILL a pid and wait until it cannot run code. Tolerates a pid that is
 /// already gone: killing a worker often takes its workload with it, and the
 /// point of the call is the post-condition, not the signal.
 fn kill_and_wait(pid: i32) {
-    unsafe { libc::kill(pid, libc::SIGKILL) };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while process_alive(pid) && Instant::now() < deadline {
+    let result = unsafe { libc::kill(pid, libc::SIGKILL) };
+    assert!(
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH),
+        "kill pid {pid}: {}",
+        std::io::Error::last_os_error()
+    );
+    wait_until_dead(pid, Duration::from_secs(5), process_alive);
+}
+
+fn wait_until_dead(pid: i32, timeout: Duration, mut alive: impl FnMut(i32) -> bool) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        // Keep the first observation of death. A second probe can race reaping:
+        // kill(pid, 0) succeeds for the zombie, then /proc disappears, leaving
+        // the production predicate's conservative "possibly alive" answer.
+        if !alive(pid) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "pid {pid} did not die");
         thread::sleep(Duration::from_millis(10));
     }
-    assert!(!process_alive(pid), "pid {pid} did not die");
+}
+
+#[test]
+fn death_wait_keeps_the_first_dead_observation() {
+    let mut probes = 0;
+    wait_until_dead(123, Duration::ZERO, |_| {
+        probes += 1;
+        // Reproduce a dead zombie followed by an uncertain reaping-race probe.
+        probes > 1
+    });
+    assert_eq!(probes, 1);
 }
 
 fn row<'a>(snapshot: &'a [Value], id: &str) -> Option<&'a Value> {
@@ -207,7 +233,7 @@ fn make_zombie(harness: &Harness, workspace: &TempDir, tag: &str) -> Session {
     let session = harness.start_sleeper(workspace, tag);
     // Worker first, so it never gets to record an exit. Killing it closes
     // the PTY, which usually takes the plain `sleep` leader with it; kill
-    // it explicitly anyway so both pids are provably absent from /proc.
+    // it explicitly anyway so neither process can still run code.
     kill_and_wait(session.worker_pid);
     kill_and_wait(session.workload_pid);
     let snapshot = harness.snapshot();
