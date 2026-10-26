@@ -71,7 +71,13 @@ mod fake_worker {
     #[cfg(unix)]
     fn accept(listener: &Listener) -> std::io::Result<Option<Stream>> {
         match listener.accept() {
-            Ok((stream, _)) => Ok(Some(stream)),
+            // Accepted sockets inherit the listener's non-blocking mode;
+            // reads must block for the read timeout to apply (macOS
+            // surfaces raw EAGAIN otherwise).
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).expect("blocking worker stream");
+                Ok(Some(stream))
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
             Err(error) => Err(error),
         }
