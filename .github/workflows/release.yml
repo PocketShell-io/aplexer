@@ -203,6 +203,8 @@ jobs:
     name: Test release inputs (Windows ARM64)
     needs: check-versions
     runs-on: windows-11-arm
+    # Guard so a hung step can never burn the org's Actions quota.
+    timeout-minutes: 90
     continue-on-error: true
     defaults:
       run:
@@ -524,6 +526,8 @@ jobs:
     # because test-windows-arm64 is continue-on-error (non-blocking for Linux).
     if: ${{ !cancelled() && needs.test-windows-arm64.result == 'success' }}
     runs-on: windows-11-arm
+    # Guard so a hung step can never burn the org's Actions quota.
+    timeout-minutes: 90
     continue-on-error: true
     defaults:
       run:
@@ -622,6 +626,7 @@ jobs:
           name: aplexer-bins-${{ env.PLATFORM }}
           path: staging/*
           if-no-files-found: error
+          retention-days: 7
 
       - name: Upload aplexer CLI wheel
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
@@ -629,6 +634,7 @@ jobs:
           name: aplexer-cli-wheel-${{ env.PLATFORM }}
           path: cli-dist/*.whl
           if-no-files-found: error
+          retention-days: 7
 
       - name: Upload aplexer-client bindings wheel
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
@@ -636,6 +642,7 @@ jobs:
           name: aplexer-client-wheel-${{ env.PLATFORM }}
           path: client-dist/*.whl
           if-no-files-found: error
+          retention-days: 7
 
   release:
     name: Create GitHub release
