@@ -86,16 +86,22 @@ class TestBuildWheel(unittest.TestCase):
                 ("linux-arm64", "linux_aarch64", ""),
             ],
         )
-        # Anything beyond Linux must be a Windows wheel (.exe binary): the
-        # x86-64 wheel and the native ARM64 wheel.
+        # Anything beyond Linux must be a Windows wheel (.exe binary) or a
+        # macOS wheel (Mach-O binary, macosx tag): the x86-64 and ARM64
+        # Windows wheels plus both Mac architectures.
         for name, tag, suffix in targets:
             if not name.startswith("linux-"):
-                self.assertIn(name, ("windows-amd64", "windows-arm64"))
-                self.assertEqual(tag, {"windows-amd64": "win_amd64", "windows-arm64": "win_arm64"}[name])
-                self.assertEqual(suffix, ".exe")
+                self.assertIn(name, ("windows-amd64", "windows-arm64", "macos-amd64", "macos-arm64"))
+                self.assertEqual(tag, {
+                    "windows-amd64": "win_amd64",
+                    "windows-arm64": "win_arm64",
+                    "macos-amd64": "macosx_11_0_x86_64",
+                    "macos-arm64": "macosx_11_0_arm64",
+                }[name])
+                self.assertEqual(suffix, "" if name.startswith("macos-") else ".exe")
         self.assertEqual(
             sorted(t[0] for t in targets if not t[0].startswith("linux-")),
-            ["windows-amd64", "windows-arm64"],
+            ["macos-amd64", "macos-arm64", "windows-amd64", "windows-arm64"],
         )
 
 
