@@ -93,6 +93,7 @@ fn containment_reap_verdict_reads_durable_proof_without_probing() {
 /// `recorded_cgroup_observed_empty_tracks_a_real_delegated_cgroup`
 /// covers the probe itself against a real one.
 #[test]
+#[cfg(target_os = "linux")]
 fn containment_reap_verdict_maps_every_cgroup_probe_outcome() {
     let state = tempfile::tempdir().unwrap();
     let mut record = liveness_record(state.path());
@@ -134,6 +135,7 @@ fn containment_reap_verdict_maps_every_cgroup_probe_outcome() {
 /// A recorded cgroup with no identity cannot be validated, so it cannot
 /// be declared empty either -- keep the locator.
 #[test]
+#[cfg(target_os = "linux")]
 fn containment_reap_verdict_retains_an_unvalidatable_locator() {
     let state = tempfile::tempdir().unwrap();
     let mut record = liveness_record(state.path());
@@ -155,6 +157,7 @@ fn containment_reap_verdict_retains_an_unvalidatable_locator() {
 /// recovery) refusal to touch a foreign-boot identity would make a
 /// rebooted-away record permanently unreapable.
 #[test]
+#[cfg(target_os = "linux")]
 fn containment_reap_verdict_treats_a_previous_boot_as_empty() {
     let state = tempfile::tempdir().unwrap();
     let mut record = liveness_record(state.path());
@@ -198,6 +201,7 @@ fn containment_reap_verdict_treats_a_previous_boot_as_empty() {
 /// this test is what proves those two meet reality.
 #[test]
 #[ignore = "needs cgroup-v2 delegation to the running user; run explicitly"]
+#[cfg(target_os = "linux")]
 fn recorded_cgroup_observed_empty_tracks_a_real_delegated_cgroup() {
     let state = tempfile::tempdir().unwrap();
     let mut record = liveness_record(state.path());

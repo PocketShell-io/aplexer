@@ -43,7 +43,24 @@ pub(crate) struct AttachSignalBridge {
 impl AttachSignalBridge {
     pub(crate) fn install(writer: Arc<Mutex<UnixStream>>, active: Arc<AtomicBool>) -> Result<Self> {
         let mut fds = [-1; 2];
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        // macOS has no `pipe2`: `pipe` plus `fcntl` cloexec.
+        #[cfg(target_os = "linux")]
+        let piped = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+        #[cfg(target_os = "macos")]
+        let piped = unsafe {
+            if libc::pipe(fds.as_mut_ptr()) != 0 {
+                -1
+            } else if libc::fcntl(fds[0], libc::F_SETFD, libc::FD_CLOEXEC) < 0
+                || libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC) < 0
+            {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+                -1
+            } else {
+                0
+            }
+        };
+        if piped != 0 {
             return Err(io::Error::last_os_error()).context("create attach signal pipe");
         }
         let flags = unsafe { libc::fcntl(fds[1], libc::F_GETFL) };

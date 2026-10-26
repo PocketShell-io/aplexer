@@ -4,6 +4,8 @@
 use super::{CgroupIdentity, SessionRecord};
 #[cfg(target_os = "linux")]
 use crate::{cgroup_path_populated, linux_boot_id, validate_recorded_cgroup};
+#[cfg(target_os = "macos")]
+use crate::recorded_pgroup_observed_empty;
 use anyhow::Result;
 use std::path::Path;
 use uuid::Uuid;
@@ -78,6 +80,8 @@ pub enum ContainmentReap {
 pub fn containment_reap_verdict(record: &SessionRecord) -> ContainmentReap {
     #[cfg(target_os = "linux")]
     return containment_reap_verdict_with(record, recorded_cgroup_observed_empty);
+    #[cfg(target_os = "macos")]
+    return containment_reap_verdict_with(record, recorded_pgroup_observed_empty);
     #[cfg(windows)]
     return windows_reap_verdict(record);
 }

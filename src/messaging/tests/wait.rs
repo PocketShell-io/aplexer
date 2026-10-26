@@ -189,7 +189,7 @@ fn initial_legacy_migration_is_readable() {
 }
 
 #[test]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn legacy_publication_does_not_wake_stable_watch() {
     let root = TempDir::new().unwrap();
     let (paths, workspace, consumer) = fixture(root.path());

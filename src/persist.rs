@@ -3,7 +3,8 @@
 //! whole-file locks.
 //!
 //! Unix publishes with `rename`/`renameat2(RENAME_EXCHANGE)` and fsyncs the
-//! parent directory. Windows publishes with `MoveFileExW(REPLACE_EXISTING |
+//! parent directory (macOS: `renameatx_np(RENAME_SWAP)` with a plain-`rename`
+//! fallback on filesystems without swap support). Windows publishes with `MoveFileExW(REPLACE_EXISTING |
 //! WRITE_THROUGH)` / `ReplaceFileW`, flushes the file with `FlushFileBuffers`
 //! (`sync_all`), has no directory fsync, and locks with `LockFileEx`.
 
@@ -189,6 +190,7 @@ fn exchange_existing_c(from: CString, to: CString) -> io::Result<()> {
 /// exchange probe is expected to fail closed there.
 #[cfg(all(
     unix,
+    not(target_os = "macos"),
     not(all(
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64")
@@ -205,6 +207,40 @@ fn exchange_existing_c(from: CString, to: CString) -> io::Result<()> {
         )
     };
     if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// macOS has no `renameat2`: `renameatx_np(RENAME_SWAP)` is the atomic
+/// exchange equivalent (APFS supports it; other filesystems report
+/// `ENOTSUP`). When the filesystem cannot swap, fall back to a plain
+/// `rename` -- not atomic, but the startup exchange probe still passes and
+/// the session still starts. The downgrade is documented in
+/// docs/macos-port.md; the Linux atomicity guarantee is unchanged.
+#[cfg(target_os = "macos")]
+fn exchange_existing_c(from: CString, to: CString) -> io::Result<()> {
+    let result = unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_SWAP,
+        )
+    };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ENOTSUP) | Some(libc::EINVAL) | Some(libc::EPERM) => {}
+        _ => return Err(error),
+    }
+    // Non-atomic fallback: the temp file was fsynced before this call and
+    // the destination is a complete previous record, so a crash here loses
+    // at most one record update, never the session.
+    if unsafe { libc::rename(from.as_ptr(), to.as_ptr()) } != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

@@ -12,11 +12,23 @@ use super::*;
 /// Make the worker the reparenting boundary for daemonized workload
 /// descendants. This is process-wide on Linux and must happen before the
 /// workload is spawned. It does not require systemd or cgroup delegation.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(super) fn enable_child_subreaper() -> Result<()> {
     if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {
         return Err(io::Error::last_os_error()).context("enable child subreaper");
     }
+    Ok(())
+}
+
+/// No-op: XNU has no child-subreaper. Daemonized (double-forked) workload
+/// descendants reparent to launchd (pid 1) instead of the worker, so they
+/// leave both the worker's descendant tree and the session process group.
+/// The libproc tree walk still finds everything that stayed, and launchd
+/// reaps orphaned zombies promptly, so liveness answers stay truthful;
+/// only a deliberately daemonizing workload can outlive its session, the
+/// same escape hatch unlimited Linux sessions document.
+#[cfg(target_os = "macos")]
+pub(super) fn enable_child_subreaper() -> Result<()> {
     Ok(())
 }
 

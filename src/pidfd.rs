@@ -51,10 +51,10 @@ fn check(deadline: Option<Deadline>, operation: &str) -> Result<()> {
     deadline.map_or(Ok(()), |deadline| deadline.check(operation))
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(crate) use linux::*;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod linux {
     use super::{check, Deadline};
     use anyhow::{bail, Context, Result};
@@ -481,6 +481,251 @@ mod windows_impl {
                 found = descendant_pids(std::process::id())
                     .unwrap()
                     .contains(&child.id());
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            child.kill().unwrap();
+            child.wait().unwrap();
+            assert!(found);
+        }
+    }
+}
+
+/// macOS counterpart of the pidfd toolkit: process handles pinned to a
+/// `{pid, libproc start time}` identity, and process-tree walks over
+/// libproc parent links. See `sys::macos`.
+///
+/// No pidfd, no `/proc`, no subreaper on macOS: a recycled numeric pid can
+/// never redirect a signal because every handle re-validates the libproc
+/// start time after opening (which is only a `kill(pid, 0)` existence
+/// probe) and `signal` re-checks it before signalling. A pid that was
+/// recycled between the check and the `kill` can still receive a stray
+/// signal in theory -- the same residual race Linux had before pidfds --
+/// but the window is one syscall wide and every destructive caller
+/// re-verifies identity first (see `signal_recorded_worker`).
+#[cfg(target_os = "macos")]
+pub(crate) use macos_impl::*;
+
+#[cfg(target_os = "macos")]
+mod macos_impl {
+    use super::{check, Deadline};
+    use crate::sys::macos;
+    use anyhow::{bail, Context, Result};
+    use std::collections::{HashSet, VecDeque};
+    use std::path::Path;
+
+    /// Direct children of `pid` (the `/proc` root is ignored on macOS).
+    pub(crate) fn direct_child_pids_in(_proc_root: &Path, pid: u32) -> Result<Vec<u32>> {
+        Ok(macos::direct_children_of(pid))
+    }
+
+    /// Every live non-zombie process under `root`, breadth-first over
+    /// libproc parent links. Zombies are excluded for the same reason as
+    /// on Linux (see `linux::walk_descendants`): an unreaped descendant
+    /// reads as signalable but cannot run code, so counting it would pin
+    /// `workload_populated` true forever.
+    pub(crate) fn descendant_pids(root: u32) -> Result<Vec<u32>> {
+        walk_descendants(root, None, None)
+    }
+
+    /// `descendant_pids` for a bounded teardown: checks `deadline` before
+    /// every libproc pass and refuses a tree larger than `max_descendants`.
+    pub(crate) fn descendant_pids_until(
+        root: u32,
+        deadline: Deadline,
+        max_descendants: usize,
+    ) -> Result<Vec<u32>> {
+        walk_descendants(root, Some(deadline), Some(max_descendants))
+    }
+
+    fn walk_descendants(
+        root: u32,
+        deadline: Option<Deadline>,
+        max_descendants: Option<usize>,
+    ) -> Result<Vec<u32>> {
+        check(deadline, "scanning process tree")?;
+        // One machine-wide snapshot, then a pure in-memory walk: cheaper
+        // than one `proc_listchildpids` syscall per process, and stable
+        // under concurrent fork/exit.
+        let mut children_of: std::collections::HashMap<u32, Vec<u32>> =
+            std::collections::HashMap::new();
+        for pid in macos::all_pids() {
+            check(deadline, "scanning process tree")?;
+            if pid == 0 || macos::proc_is_zombie(pid) {
+                continue;
+            }
+            if let Some(ppid) = macos::proc_ppid(pid) {
+                children_of.entry(ppid).or_default().push(pid);
+            }
+        }
+        let mut pending = VecDeque::from([root]);
+        let mut seen = HashSet::from([root]);
+        let mut descendants = Vec::new();
+        while let Some(parent) = pending.pop_front() {
+            check(deadline, "scanning process tree")?;
+            if let Some(children) = children_of.get(&parent) {
+                for child in children {
+                    if !seen.insert(*child) {
+                        continue;
+                    }
+                    if max_descendants.is_some_and(|max| descendants.len() >= max) {
+                        bail!(
+                            "process tree exceeds safe descendant limit of {}",
+                            max_descendants.unwrap_or(0)
+                        );
+                    }
+                    descendants.push(*child);
+                    pending.push_back(*child);
+                }
+            }
+        }
+        Ok(descendants)
+    }
+
+    /// A process handle pinned to one identity: the libproc start time read
+    /// before the existence probe must match the one read after it, so a
+    /// numeric pid recycled between a tree walk and the open can never
+    /// redirect a signal silently.
+    #[derive(Debug)]
+    pub(crate) struct PidHandle {
+        pid: u32,
+        start_time_us: u64,
+    }
+
+    impl PidHandle {
+        /// `Ok(None)` when there is no such process by the time it is
+        /// looked at -- a failed `kill(pid, 0)`, or a different process
+        /// (a recycled pid) behind the handle just opened. Any other
+        /// failure to read the identity is an error, never a silent skip.
+        pub(crate) fn open(pid: u32, deadline: Option<Deadline>) -> Result<Option<Self>> {
+            check(deadline, "opening process handle")?;
+            let start_time_us = match macos::proc_start_time_us(pid) {
+                Some(value) => value,
+                None => return Ok(None),
+            };
+            check(deadline, "opening process handle")?;
+            // Existence probe, then re-read the identity: only a process
+            // that survived both with the same start time is pinned.
+            let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
+                || io_error_is_eperm();
+            if !alive {
+                return Ok(None);
+            }
+            check(deadline, "opening process handle")?;
+            match macos::proc_start_time_us(pid) {
+                Some(current) if current == start_time_us => Ok(Some(Self { pid, start_time_us })),
+                Some(_) => Ok(None),
+                None => Ok(None),
+            }
+        }
+
+        pub(crate) fn pid(&self) -> u32 {
+            self.pid
+        }
+
+        pub(crate) fn start_time_ticks(&self) -> u64 {
+            self.start_time_us
+        }
+
+        pub(crate) fn exited(&self) -> Result<bool> {
+            let rc = unsafe { libc::kill(self.pid as libc::pid_t, 0) };
+            if rc == 0 {
+                return Ok(false);
+            }
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::ESRCH) => Ok(true),
+                // Exists but owned by another user: not exited.
+                Some(libc::EPERM) => Ok(false),
+                _ => Err(error).with_context(|| format!("probe process {}", self.pid)),
+            }
+        }
+
+        /// Signal through the pinned identity: the start time is
+        /// re-validated first, and an already-exited process is not an
+        /// error. `0` probes without disturbing the process.
+        pub(crate) fn signal(&self, signal: i32) -> Result<()> {
+            match macos::proc_start_time_us(self.pid) {
+                Some(current) if current == self.start_time_us => {}
+                Some(_) => bail!(
+                    "process {} has been reused (recorded start {}, current start {}); refusing to signal",
+                    self.pid,
+                    self.start_time_us,
+                    macos::proc_start_time_us(self.pid).unwrap_or(0)
+                ),
+                None => return Ok(()),
+            }
+            let rc = unsafe { libc::kill(self.pid as libc::pid_t, signal) };
+            if rc == 0 {
+                return Ok(());
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(());
+            }
+            Err(error).with_context(|| format!("signal process {}", self.pid))
+        }
+    }
+
+    fn io_error_is_eperm() -> bool {
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        fn spawn_sleep() -> std::process::Child {
+            Command::new("/bin/sleep")
+                .arg("30")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn sleep")
+        }
+
+        #[test]
+        fn a_handle_pins_and_probes_the_current_process() {
+            let handle = PidHandle::open(std::process::id(), None)
+                .expect("open current process")
+                .expect("current process is present");
+            assert_eq!(handle.pid(), std::process::id());
+            assert!(handle.start_time_ticks() > 0);
+            assert!(!handle.exited().unwrap());
+            handle.signal(0).expect("probe");
+        }
+
+        #[test]
+        fn an_expired_deadline_stops_open_and_walk() {
+            let deadline = Deadline::after(Duration::ZERO);
+            assert!(PidHandle::open(std::process::id(), Some(deadline)).is_err());
+            assert!(descendant_pids_until(std::process::id(), deadline, 16).is_err());
+        }
+
+        #[test]
+        fn a_gone_pid_opens_to_none() {
+            assert!(PidHandle::open(u32::MAX - 1, None).unwrap().is_none());
+        }
+
+        #[test]
+        fn kill_through_a_handle_ends_the_process() {
+            let mut child = spawn_sleep();
+            let handle = PidHandle::open(child.id(), None).unwrap().unwrap();
+            handle.signal(9).unwrap();
+            child.wait().unwrap();
+            assert!(handle.exited().unwrap());
+            handle.signal(9).expect("killing an exited process is fine");
+        }
+
+        #[test]
+        fn descendants_walk_finds_spawned_children() {
+            let mut child = spawn_sleep();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut found = false;
+            while !found && Instant::now() < deadline {
+                found = descendant_pids(std::process::id()).unwrap().contains(&child.id());
                 std::thread::sleep(Duration::from_millis(10));
             }
             child.kill().unwrap();

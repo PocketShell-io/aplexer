@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 //! Worker/workload cgroup recording and placement classification, end to
 //! end (issue #1).
 //!

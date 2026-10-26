@@ -629,6 +629,10 @@ impl WorkerRuntime {
         }
         #[cfg(target_os = "linux")]
         let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).ok();
+        // macOS: vnode path info via libproc; `None` (access denied,
+        // exited) leaves the workspace unchanged.
+        #[cfg(target_os = "macos")]
+        let cwd = crate::sys::macos::proc_cwd_of(pid);
         // Windows: PEB read via procinfo; `None` (access denied, exited, or
         // the shell is elevated) leaves the workspace unchanged.
         #[cfg(windows)]

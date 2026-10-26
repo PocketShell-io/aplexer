@@ -457,6 +457,16 @@ pub(super) fn bring_up(
             let (child, cgroup, workload_pid) = child_result?;
             (child, cgroup, workload_pid, master_read, master_write)
         };
+        // macOS: the leader's process group is the containment domain (no
+        // subreaper, no cgroup), so wrap it even for unlimited sessions --
+        // the Linux `None` path would leave `record.containment_cgroup`
+        // empty and every teardown on the descendant tree alone. A limited
+        // launch never reaches here (`ScopePlan::prepare` fails closed).
+        #[cfg(target_os = "macos")]
+        let cgroup = match &cgroup {
+            Some(existing) => Some(existing.clone()),
+            None => crate::cgroup::Cgroup::for_leader(workload_pid),
+        };
         // Windows: ConPTY master, one named Job Object per session
         // (`aplexer-<uuid>`, KILL_ON_JOB_CLOSE) that the workload is born
         // inside, wrapped in the job-backed `Cgroup` shim so the runtime's

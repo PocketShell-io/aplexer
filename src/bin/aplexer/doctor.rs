@@ -1,7 +1,8 @@
 use super::*;
 
 #[derive(Debug)]
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) struct CgroupLimitProbe {
     pub(crate) cgroup_v2: bool,
     pub(crate) controllers: Vec<String>,
@@ -95,7 +96,7 @@ pub(crate) fn probe_cgroup_limits() -> CgroupLimitProbe {
     }
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(target_os = "linux")]
 pub(crate) fn cgroup_limits_check(probe: CgroupLimitProbe) -> Value {
     let required_controllers = ["cpu", "memory", "pids"];
     let controllers_ok = required_controllers
@@ -275,10 +276,15 @@ fn named_pipe_path_check(paths: &Paths) -> Value {
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn unix_socket_path_check(paths: &Paths) -> Value {
     let sample = paths.socket(Uuid::nil());
-    let sample_fits = sample.as_os_str().len() < 108;
+    // `sun_path` capacity: 108 on Linux, 104 on macOS.
+    #[cfg(target_os = "linux")]
+    let capacity = 108;
+    #[cfg(target_os = "macos")]
+    let capacity = 104;
+    let sample_fits = sample.as_os_str().len() < capacity;
     json!({
         "name": "unix_socket_path",
         "ok": sample_fits,
@@ -490,6 +496,44 @@ fn powershell_policy_report(rows: &[ResolutionRow]) -> (Value, Option<String>) {
 /// The host-level checks that do not touch session records: platform,
 /// durable roots, socket path length, cgroup capability, launch placement,
 /// config load, engine PATH resolution.
+#[cfg(target_os = "macos")]
+fn environment_checks(paths: &Paths) -> Vec<Value> {
+    vec![
+        json!({"name":"macos","ok":true,"detail":std::env::consts::OS}),
+        path_check("runtime_root", &paths.runtime_root),
+        path_check("state_root", &paths.state_root),
+        unix_socket_path_check(paths),
+        pgid_containment_check(),
+        config_check(paths),
+        shell_check(paths),
+        engine_resolution_check(paths),
+    ]
+}
+
+/// macOS containment capability: every session runs in its own process
+/// group (`setsid` at spawn, `killpg` teardown), which is always available.
+/// Resource limits are refused rather than run unenforced (see
+/// `cgroup::macos`), hence the warning severity: unlimited sessions work,
+/// capped launches fail closed.
+#[cfg(target_os = "macos")]
+pub(crate) fn pgid_containment_check() -> Value {
+    json!({
+        "name": "containment",
+        "ok": true,
+        "severity": "warning",
+        "required": false,
+        "available": true,
+        "detail": "process-group containment (setsid/killpg) is always available; resource limits unavailable, but unlimited sessions still work",
+        "prerequisites": {
+            "backend": "pgid",
+            "resource_limits": {
+                "ok": false,
+                "detail": "capped launches fail closed: limits need the Linux cgroup backend",
+            },
+        },
+    })
+}
+
 #[cfg(windows)]
 fn environment_checks(paths: &Paths) -> Vec<Value> {
     vec![

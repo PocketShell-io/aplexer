@@ -18,6 +18,8 @@ mod scope;
 mod systemd;
 #[cfg(windows)]
 mod windows;
+#[cfg(target_os = "macos")]
+mod macos;
 
 #[cfg(target_os = "linux")]
 pub use identity::*;
@@ -29,6 +31,8 @@ pub use scope::*;
 pub use systemd::*;
 #[cfg(windows)]
 pub use windows::*;
+#[cfg(target_os = "macos")]
+pub use macos::*;
 
 #[cfg(target_os = "linux")]
 pub(crate) const MAX_CGROUP_RECOVERY_MEMBERS: usize = 4096;

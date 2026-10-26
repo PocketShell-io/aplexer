@@ -1,14 +1,16 @@
 //! Process-tree accounting: who owns a pid, and when two samples become a rate.
 
 use super::*;
+use crate::proc_usage::{bracket_session_proc_usage, cpu_percent, SessionProcUsage};
+#[cfg(target_os = "linux")]
 use crate::proc_usage::{
-    bracket_session_proc_usage, cached_session_proc_usage, clock_ticks_hz, cpu_percent, mono_ms,
-    scan_session_procs, SessionProcUsage,
+    cached_session_proc_usage, clock_ticks_hz, mono_ms, scan_session_procs,
 };
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 fn write_stat(
     proc_root: &Path,
     pid: u32,
@@ -46,6 +48,7 @@ fn cpu_percent_is_one_core_when_the_tree_burns_hz_jiffies_per_second() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn stat_comm_may_contain_parentheses_and_spaces() {
     let (dir, _) = temp_proc();
     let proc_root = dir.path().join("proc");
@@ -60,6 +63,7 @@ fn stat_comm_may_contain_parentheses_and_spaces() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn nested_session_keeps_its_own_processes() {
     let (dir, _) = temp_proc();
     let proc_root = dir.path().join("proc");
@@ -82,6 +86,7 @@ fn nested_session_keeps_its_own_processes() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn missing_worker_counts_as_an_empty_tree() {
     let (dir, _) = temp_proc();
     let proc_root = dir.path().join("proc");
@@ -93,6 +98,7 @@ fn missing_worker_counts_as_an_empty_tree() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn cache_turns_a_one_second_old_sample_into_a_rate_and_ignores_a_stale_one() {
     let (dir, runtime) = temp_proc();
     let proc_root = dir.path().join("proc");
@@ -129,6 +135,7 @@ fn cache_turns_a_one_second_old_sample_into_a_rate_and_ignores_a_stale_one() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn a_sample_younger_than_the_rate_window_keeps_the_stored_rate() {
     let (dir, runtime) = temp_proc();
     let proc_root = dir.path().join("proc");
@@ -147,6 +154,7 @@ fn a_sample_younger_than_the_rate_window_keeps_the_stored_rate() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn pid_reuse_does_not_inherit_the_previous_process_rate() {
     let (dir, runtime) = temp_proc();
     let proc_root = dir.path().join("proc");

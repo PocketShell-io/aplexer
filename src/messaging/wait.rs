@@ -1,5 +1,5 @@
-//! Unread mailbox waits: event-driven (inotify) on Linux, a short-interval
-//! directory poll on Windows.
+//! Unread mailbox waits: event-driven (inotify) on Linux, kqueue vnode
+//! events on macOS, and a short-interval directory poll on Windows.
 
 use super::*;
 #[cfg(unix)]
@@ -130,12 +130,12 @@ impl MailboxWatch {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 struct MailboxWatch {
     fd: OwnedFd,
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl MailboxWatch {
     fn subscribe(directory: &Path) -> Result<Self> {
         let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
@@ -211,7 +211,7 @@ impl MailboxWatch {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn check_events(bytes: &[u8]) -> Result<()> {
     let mut offset = 0;
     let header = std::mem::size_of::<libc::inotify_event>();
@@ -236,3 +236,139 @@ fn check_events(bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 #[path = "tests/wait.rs"]
 mod tests;
+
+/// macOS watch: kqueue `EVFILT_VNODE` on the mailbox directory, the direct
+/// counterpart of the Linux inotify watch above. The directory fd stays open
+/// for the watch's life (the vnode filter is tied to it); `NOTE_DELETE` /
+/// `NOTE_REVOKE` invalidate the watch the same way `IN_IGNORED` does, and
+/// everything else is a wake hint re-verified under lock by the caller.
+#[cfg(target_os = "macos")]
+struct MailboxWatch {
+    kq: OwnedFd,
+    #[allow(dead_code)]
+    dir: OwnedFd,
+}
+
+#[cfg(target_os = "macos")]
+impl MailboxWatch {
+    fn subscribe(directory: &Path) -> Result<Self> {
+        let directory = CString::new(directory.as_os_str().as_bytes())?;
+        let raw_dir = unsafe { libc::open(directory.as_ptr(), libc::O_EVTONLY | libc::O_CLOEXEC) };
+        if raw_dir < 0 {
+            return Err(io::Error::last_os_error()).context("open mailbox directory for kqueue");
+        }
+        let dir = unsafe { OwnedFd::from_raw_fd(raw_dir) };
+        let raw_kq = unsafe { libc::kqueue() };
+        if raw_kq < 0 {
+            return Err(io::Error::last_os_error()).context("create mailbox kqueue");
+        }
+        let kq = unsafe { OwnedFd::from_raw_fd(raw_kq) };
+        let change = libc::kevent {
+            ident: dir.as_raw_fd() as libc::uintptr_t,
+            filter: libc::EVFILT_VNODE,
+            flags: libc::EV_ADD | libc::EV_CLEAR,
+            fflags: libc::NOTE_WRITE
+                | libc::NOTE_EXTEND
+                | libc::NOTE_DELETE
+                | libc::NOTE_REVOKE,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        let registered = unsafe {
+            libc::kevent(
+                kq.as_raw_fd(),
+                &change,
+                1,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        if registered < 0 {
+            return Err(io::Error::last_os_error()).context("subscribe to mailbox vnode events");
+        }
+        Ok(Self { kq, dir })
+    }
+
+    fn wait_for_change(&self, deadline: Instant) -> Result<()> {
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(());
+            }
+            match self.poll(remaining) {
+                Ok(false) => return Ok(()),
+                Ok(true) => {
+                    self.drain()?;
+                    return Ok(());
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error).context("wait for mailbox publication"),
+            }
+        }
+    }
+
+    fn poll(&self, remaining: Duration) -> io::Result<bool> {
+        let millis = remaining
+            .as_millis()
+            .saturating_add(u128::from(remaining.subsec_nanos() % 1_000_000 != 0))
+            .min(i32::MAX as u128) as i32;
+        let mut pollfd = libc::pollfd {
+            fd: self.kq.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut pollfd, 1, millis) };
+        if ready < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if pollfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            return Err(io::Error::other("mailbox watch became unavailable"));
+        }
+        Ok(ready != 0)
+    }
+
+    fn drain(&self) -> Result<()> {
+        // One bounded batch is enough for a wake hint; a continuous stream
+        // must not keep us draining instead of scanning or checking timeout.
+        let mut events: [libc::kevent; 8] = unsafe { std::mem::zeroed() };
+        let timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let count = unsafe {
+            libc::kevent(
+                self.kq.as_raw_fd(),
+                std::ptr::null(),
+                0,
+                events.as_mut_ptr(),
+                events.len() as libc::c_int,
+                &timeout,
+            )
+        };
+        if count < 0 {
+            let error = io::Error::last_os_error();
+            match error.kind() {
+                io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock => return Ok(()),
+                _ => return Err(error).context("read mailbox watch events"),
+            }
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        check_vnode_events(&events[..count as usize])
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn check_vnode_events(events: &[libc::kevent]) -> Result<()> {
+    const INVALID: u32 = libc::NOTE_DELETE | libc::NOTE_REVOKE;
+    for event in events {
+        if event.fflags & INVALID != 0 {
+            bail!("mailbox watch was invalidated");
+        }
+        // NOTE_WRITE / NOTE_EXTEND / NOTE_ATTRIB are wake hints: rescan
+        // all retained envelopes.
+    }
+    Ok(())
+}

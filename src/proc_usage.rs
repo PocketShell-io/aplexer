@@ -118,7 +118,7 @@ struct UsageCacheEntry {
     cpu_percent: Option<f64>,
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn clock_ticks_hz() -> u64 {
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
     if hz > 0 {
@@ -126,6 +126,14 @@ pub fn clock_ticks_hz() -> u64 {
     } else {
         100
     }
+}
+
+/// Nanoseconds: the macOS scan below stores `PROC_PIDTASKINFO` user+system
+/// time (nanoseconds) as `jiffies`, so the shared `cpu_percent` rate math
+/// divides by 10^9.
+#[cfg(target_os = "macos")]
+pub fn clock_ticks_hz() -> u64 {
+    1_000_000_000
 }
 
 #[cfg(unix)]
@@ -151,7 +159,7 @@ pub fn cpu_percent(before_jiffies: u64, after_jiffies: u64, dt_ms: u64, hz: u64)
     Some(cores * 100.0)
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 /// One pass over `proc_root`. Every root is present in the snapshot, with
 /// `processes == 0` when that pid is not a live process.
 pub fn scan_session_procs(proc_root: &Path, roots: &[(Uuid, u32)]) -> ProcSnapshot {
@@ -199,6 +207,84 @@ pub fn scan_session_procs(proc_root: &Path, roots: &[(Uuid, u32)]) -> ProcSnapsh
         if let Some(stat) = parse_stat(&bytes) {
             stats.insert(pid, stat);
         }
+    }
+
+    let mut memo: HashMap<u32, Option<Uuid>> = HashMap::new();
+    let pids: Vec<u32> = stats.keys().copied().collect();
+    for pid in pids {
+        let Some(owner) = owner_of(pid, &stats, &root_by_pid, &mut memo) else {
+            continue;
+        };
+        let Some(stat) = stats.get(&pid) else {
+            continue;
+        };
+        let Some(row) = rows.get_mut(&owner) else {
+            continue;
+        };
+        row.processes = row.processes.saturating_add(1);
+        row.jiffies = row.jiffies.saturating_add(stat.jiffies);
+        if pid == row.pid {
+            row.start_ticks = stat.start_ticks;
+        }
+    }
+    ProcSnapshot { at_ms, rows }
+}
+
+/// macOS backend. Same public shapes as the `/proc` pass above: `jiffies`
+/// are `PROC_PIDTASKINFO` user+system nanoseconds (`clock_ticks_hz` is
+/// 10^9) and `start_ticks` is the libproc start time in microseconds, so
+/// the cache's pid-reuse guard keeps working.
+///
+/// Each root is `(session id, worker pid)`. The session's process group is
+/// the containment domain, but membership is by group id, not by tree, so
+/// the count walks parent links from every live process instead: a process
+/// whose nearest ancestor in the queried set is a root counts for that
+/// root. A process whose task info is unreadable (a zombie, a racing exit)
+/// counts for nothing.
+#[cfg(target_os = "macos")]
+pub fn scan_session_procs(_proc_root: &Path, roots: &[(Uuid, u32)]) -> ProcSnapshot {
+    use crate::sys::macos as mac;
+
+    let at_ms = mono_ms();
+    let mut rows: BTreeMap<Uuid, ProcRow> = BTreeMap::new();
+    let mut root_by_pid: HashMap<u32, Uuid> = HashMap::with_capacity(roots.len());
+    for (id, pid) in roots {
+        if *pid == 0 {
+            continue;
+        }
+        rows.insert(
+            *id,
+            ProcRow {
+                pid: *pid,
+                start_ticks: 0,
+                jiffies: 0,
+                processes: 0,
+            },
+        );
+        root_by_pid.insert(*pid, *id);
+    }
+    if rows.is_empty() {
+        return ProcSnapshot { at_ms, rows };
+    }
+
+    let mut stats: HashMap<u32, ProcStat> = HashMap::new();
+    for pid in mac::all_pids() {
+        if pid == 0 {
+            continue;
+        }
+        let (Some(ppid), Some((user_ns, sys_ns))) =
+            (mac::proc_ppid(pid), mac::proc_task_cpu_ns(pid))
+        else {
+            continue;
+        };
+        stats.insert(
+            pid,
+            ProcStat {
+                ppid,
+                jiffies: user_ns.saturating_add(sys_ns),
+                start_ticks: mac::proc_start_time_us(pid).unwrap_or(0),
+            },
+        );
     }
 
     let mut memo: HashMap<u32, Option<Uuid>> = HashMap::new();
@@ -420,7 +506,7 @@ fn owner_of(
 
 /// `/proc/<pid>/stat` after the comm field, which is wrapped in parentheses
 /// and may itself contain spaces and parentheses.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn parse_stat(bytes: &[u8]) -> Option<ProcStat> {
     let end = bytes.iter().rposition(|byte| *byte == b')')?;
     let rest = bytes.get(end + 1..)?;
@@ -447,12 +533,12 @@ fn parse_stat(bytes: &[u8]) -> Option<ProcStat> {
     })
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn parse_u32(bytes: &[u8]) -> Option<u32> {
     std::str::from_utf8(bytes).ok()?.parse().ok()
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn parse_u64(bytes: &[u8]) -> Option<u64> {
     std::str::from_utf8(bytes).ok()?.parse().ok()
 }

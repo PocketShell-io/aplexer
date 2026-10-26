@@ -52,6 +52,7 @@ fn terminal_text_sanitizer_replaces_c0_del_and_c1_controls() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn cgroup_capability_requires_delegation_but_is_optional_when_missing() {
     let warning = cgroup_limits_check(CgroupLimitProbe {
         cgroup_v2: true,
@@ -830,4 +831,19 @@ fn bar_sequences_reset_the_pen_before_erase_and_reverse() {
         assert!(reset < reverse, "reset must precede reverse: {seq:?}");
         assert!(erase < reverse, "{seq:?}");
     }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn pgid_containment_is_present_but_limits_are_a_warning() {
+    let check = pgid_containment_check();
+    assert_eq!(check["available"], true);
+    assert_eq!(check["ok"], true);
+    assert_eq!(check["severity"], "warning");
+    assert_eq!(check["required"], false);
+    assert!(check["detail"]
+        .as_str()
+        .unwrap()
+        .contains("unlimited sessions still work"));
+    assert!(doctor_checks_ok(&[check]));
 }

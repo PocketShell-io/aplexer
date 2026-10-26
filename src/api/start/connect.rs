@@ -49,6 +49,9 @@ pub(crate) fn connect_startup_control(path: &Path, timeout: Duration) -> io::Res
     }
     let address_len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path_bytes.len() + 1)
         as libc::socklen_t;
+    // macOS has no `SOCK_CLOEXEC` / `SOCK_NONBLOCK` socket-flag
+    // equivalents: create a plain stream socket and set both with `fcntl`.
+    #[cfg(target_os = "linux")]
     let raw_fd = unsafe {
         libc::socket(
             libc::AF_UNIX,
@@ -56,8 +59,28 @@ pub(crate) fn connect_startup_control(path: &Path, timeout: Duration) -> io::Res
             0,
         )
     };
+    #[cfg(target_os = "macos")]
+    let raw_fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
     if raw_fd < 0 {
         return Err(io::Error::last_os_error());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+        {
+            let error = io::Error::last_os_error();
+            unsafe { libc::close(raw_fd) };
+            return Err(error);
+        }
+        let fd_flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFD) };
+        if fd_flags < 0
+            || unsafe { libc::fcntl(raw_fd, libc::F_SETFD, fd_flags | libc::FD_CLOEXEC) } < 0
+        {
+            let error = io::Error::last_os_error();
+            unsafe { libc::close(raw_fd) };
+            return Err(error);
+        }
     }
     let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
     let connected = unsafe {

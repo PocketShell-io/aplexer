@@ -260,7 +260,15 @@ pub(super) fn spawn_workload(
             let mut default_action: libc::sigaction = std::mem::zeroed();
             default_action.sa_sigaction = libc::SIG_DFL;
             libc::sigemptyset(&mut default_action.sa_mask);
-            for signal in 1..=libc::SIGRTMAX() {
+            // Linux resets every real-time signal; macOS has no real-time
+            // signals (`SIGRTMAX` does not exist), so 1..=NSIG-1 covers
+            // the whole number space (signals 1-31 per <sys/signal.h>).
+            // Unknown numbers fail with EINVAL and are skipped either way.
+            #[cfg(target_os = "linux")]
+            let max_signal = libc::SIGRTMAX();
+            #[cfg(target_os = "macos")]
+            let max_signal = 31;
+            for signal in 1..=max_signal {
                 if signal == libc::SIGKILL || signal == libc::SIGSTOP {
                     continue;
                 }
@@ -284,7 +292,7 @@ pub(super) fn spawn_workload(
             if libc::setsid() < 0 {
                 return Err(io::Error::last_os_error());
             }
-            if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) < 0 {
+            if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) < 0 {
                 return Err(io::Error::last_os_error());
             }
             for target in 0..=2 {

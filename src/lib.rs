@@ -1,4 +1,4 @@
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 pub mod sys;
 

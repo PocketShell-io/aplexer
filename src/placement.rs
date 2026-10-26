@@ -149,6 +149,13 @@ pub fn read_process_cgroup(_pid: u32) -> Option<String> {
     None
 }
 
+/// macOS has no cgroups either: containment is the session's process group,
+/// derived from the workload leader pid, so there is no placement to record.
+#[cfg(target_os = "macos")]
+pub fn read_process_cgroup(_pid: u32) -> Option<String> {
+    None
+}
+
 /// [`read_process_cgroup`] plus classification, for launch-time validation.
 pub fn classify_process(pid: u32) -> Option<CgroupPlacement> {
     read_process_cgroup(pid)

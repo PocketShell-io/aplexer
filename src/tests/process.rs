@@ -21,7 +21,10 @@ fn kill_grace_is_bounded_before_duration_or_deadline_math() {
 /// was wrong in the direction of "still running, keep it".
 #[test]
 fn process_alive_reports_an_unreaped_zombie_as_dead() {
+    #[cfg(target_os = "linux")]
     let mut child = Command::new("/bin/true").spawn().unwrap();
+    #[cfg(target_os = "macos")]
+    let mut child = Command::new("/bin/sh").args(["-c", "exit 3"]).spawn().unwrap();
     let pid = child.id();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !process_is_zombie(pid) {
@@ -102,6 +105,7 @@ fn the_test_host_reads_as_the_initial_pid_namespace() {
 /// while it was still executing, so the thread group must be down to the
 /// leader's corpse alone.
 #[test]
+#[cfg(target_os = "linux")]
 fn zombie_detection_requires_an_empty_thread_group() {
     let root = tempfile::tempdir().unwrap();
     let write_process = |pid: u32, state: char, threads: &[u32]| {
@@ -147,6 +151,7 @@ fn zombie_detection_requires_an_empty_thread_group() {
 /// state field that follows the comm -- a comm with spaces and a `)` in
 /// it must not shift the count.
 #[test]
+#[cfg(target_os = "linux")]
 fn process_start_time_is_field_22_after_the_comm() {
     let root = tempfile::tempdir().unwrap();
     let dir = root.path().join("7");
@@ -171,6 +176,7 @@ fn process_start_time_is_field_22_after_the_comm() {
 /// `i32::MAX` wraps to a negative `pid_t`, so both used to answer "alive"
 /// for something that is not the recorded process at all.
 #[test]
+#[cfg(target_os = "linux")]
 fn pids_that_cannot_name_one_process_are_dead() {
     for pid in [0, i32::MAX as u32 + 1, u32::MAX] {
         assert!(!process_alive(pid), "pid {pid} must not read as alive");

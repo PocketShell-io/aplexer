@@ -15,7 +15,7 @@ pub(super) static TERMINATION_REQUESTED: std::sync::atomic::AtomicBool =
 #[cfg(unix)]
 pub(super) static TERMINATION_EVENT_FD: AtomicI32 = AtomicI32::new(-1);
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(super) fn notify_event_fd(fd: RawFd) {
     let value = 1u64;
     unsafe {
@@ -48,7 +48,7 @@ extern "C" fn request_worker_termination(_: libc::c_int) {
     request_termination();
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(super) fn create_worker_event_fd(context: &'static str) -> Result<RawFd> {
     let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
     if fd < 0 {
@@ -58,7 +58,7 @@ pub(super) fn create_worker_event_fd(context: &'static str) -> Result<RawFd> {
     Ok(fd)
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(super) fn wait_for_event_fd(fd: RawFd, context: &'static str) -> Result<()> {
     let mut pollfd = libc::pollfd {
         fd,
@@ -133,7 +133,12 @@ pub(super) fn install_termination_handlers() -> Result<()> {
         for signal in [libc::SIGTERM, libc::SIGINT] {
             if libc::sigaction(signal, &action, std::ptr::null_mut()) != 0 {
                 TERMINATION_EVENT_FD.store(-1, Ordering::SeqCst);
-                libc::close(event_fd);
+                #[cfg(target_os = "linux")]
+                unsafe {
+                    libc::close(event_fd);
+                }
+                #[cfg(target_os = "macos")]
+                close_worker_event_pipe(event_fd, &TERMINATION_EVENT_WRITE);
                 return Err(io::Error::last_os_error())
                     .with_context(|| format!("install signal handler {signal}"));
             }
@@ -145,7 +150,12 @@ pub(super) fn install_termination_handlers() -> Result<()> {
         let rc = libc::pthread_sigmask(libc::SIG_UNBLOCK, &unblocked, std::ptr::null_mut());
         if rc != 0 {
             TERMINATION_EVENT_FD.store(-1, Ordering::SeqCst);
-            libc::close(event_fd);
+            #[cfg(target_os = "linux")]
+            unsafe {
+                libc::close(event_fd);
+            }
+            #[cfg(target_os = "macos")]
+            close_worker_event_pipe(event_fd, &TERMINATION_EVENT_WRITE);
             return Err(io::Error::from_raw_os_error(rc))
                 .context("unblock worker termination signals");
         }
@@ -282,7 +292,12 @@ pub(super) fn install_child_reaper_handler() -> Result<RawFd> {
         libc::sigemptyset(&mut action.sa_mask);
         if libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut()) != 0 {
             CHILD_EVENT_FD.store(-1, Ordering::SeqCst);
-            libc::close(event_fd);
+            #[cfg(target_os = "linux")]
+            unsafe {
+                libc::close(event_fd);
+            }
+            #[cfg(target_os = "macos")]
+            close_worker_event_pipe(event_fd, &CHILD_EVENT_WRITE);
             return Err(io::Error::last_os_error()).context("install SIGCHLD handler");
         }
         let mut unblocked: libc::sigset_t = std::mem::zeroed();
@@ -291,7 +306,12 @@ pub(super) fn install_child_reaper_handler() -> Result<RawFd> {
         let rc = libc::pthread_sigmask(libc::SIG_UNBLOCK, &unblocked, std::ptr::null_mut());
         if rc != 0 {
             CHILD_EVENT_FD.store(-1, Ordering::SeqCst);
-            libc::close(event_fd);
+            #[cfg(target_os = "linux")]
+            unsafe {
+                libc::close(event_fd);
+            }
+            #[cfg(target_os = "macos")]
+            close_worker_event_pipe(event_fd, &CHILD_EVENT_WRITE);
             return Err(io::Error::from_raw_os_error(rc)).context("unblock SIGCHLD");
         }
     }
@@ -402,6 +422,12 @@ mod tests {
             .expect("eventfd notification did not wake waiter")
             .unwrap();
         waiter.join().unwrap();
+        // The test pipe registered its write end in the termination slot;
+        // close both ends and restore the slot so later tests start
+        // uninstalled.
+        #[cfg(target_os = "macos")]
+        close_worker_event_pipe(fd, &TERMINATION_EVENT_WRITE);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(unsafe { libc::close(fd) }, 0);
     }
 }
@@ -483,3 +509,164 @@ pub(super) fn install_child_reaper_handler() -> Result<()> {
 #[cfg(windows)]
 #[cfg_attr(windows, allow(dead_code))]
 pub(super) fn run_child_reaper(_: ()) {}
+
+/// macOS wakeups: a nonblocking self-pipe per channel, the direct
+/// counterpart of the Linux eventfd above. macOS has no eventfd, and a
+/// kqueue `EVFILT_USER` trigger is not async-signal-safe, so the pipe is
+/// the mechanism that survives the TERM/INT/SIGCHLD handler context.
+///
+/// The plumbing keeps the single-fd shape: `create_worker_event_fd`
+/// returns the READ end (the fd the monitor thread polls), and the WRITE
+/// end lives in the channel's companion static for `notify_event_fd`.
+/// Both ends are nonblocking and close-on-exec; a full pipe (the reader
+/// stalled with 8 MiB pending, which cannot happen because the reader
+/// drains on every wake) drops the byte rather than blocking the handler.
+#[cfg(target_os = "macos")]
+pub(super) static TERMINATION_EVENT_WRITE: AtomicI32 = AtomicI32::new(-1);
+
+#[cfg(target_os = "macos")]
+pub(super) static CHILD_EVENT_WRITE: AtomicI32 = AtomicI32::new(-1);
+
+#[cfg(target_os = "macos")]
+fn set_nonblocking_cloexec(fd: RawFd, context: &str) -> Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error())
+            .with_context(|| format!("read worker {context} pipe flags"));
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error())
+            .with_context(|| format!("make worker {context} pipe nonblocking"));
+    }
+    let fd_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if fd_flags < 0 {
+        return Err(io::Error::last_os_error())
+            .with_context(|| format!("read worker {context} pipe fd flags"));
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, fd_flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error())
+            .with_context(|| format!("make worker {context} pipe close-on-exec"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn create_worker_event_pipe(context: &'static str, write_slot: &AtomicI32) -> Result<RawFd> {
+    let mut ends = [0 as RawFd; 2];
+    if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error())
+            .with_context(|| format!("create worker {context} pipe"));
+    }
+    if let Err(error) = set_nonblocking_cloexec(ends[0], context)
+        .and_then(|()| set_nonblocking_cloexec(ends[1], context))
+    {
+        unsafe {
+            libc::close(ends[0]);
+            libc::close(ends[1]);
+        }
+        return Err(error);
+    }
+    write_slot.store(ends[1], Ordering::SeqCst);
+    Ok(ends[0])
+}
+
+/// Close both ends of a worker event pipe created by
+/// [`create_worker_event_pipe`].
+#[cfg(target_os = "macos")]
+pub(super) fn close_worker_event_pipe(read_fd: RawFd, write_slot: &AtomicI32) {
+    let write_fd = write_slot.swap(-1, Ordering::SeqCst);
+    if write_fd >= 0 {
+        unsafe {
+            libc::close(write_fd);
+        }
+    }
+    unsafe {
+        libc::close(read_fd);
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn notify_event_fd(_fd: RawFd) {
+    // The notifying context (a signal handler) only knows its channel;
+    // TERM/INT share the termination pipe, SIGCHLD the child-exit pipe.
+    // `write(2)` on a nonblocking pipe is async-signal-safe; a dropped
+    // byte (a full pipe) is harmless because the reader drains on wake and
+    // re-polls until the flag it guards is set.
+    for slot in [&TERMINATION_EVENT_WRITE, &CHILD_EVENT_WRITE] {
+        let fd = slot.load(Ordering::Relaxed);
+        if fd >= 0 {
+            let byte = [1u8];
+            unsafe {
+                libc::write(fd, byte.as_ptr().cast::<libc::c_void>(), 1);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn create_worker_event_fd(context: &'static str) -> Result<RawFd> {
+    // The two install sites (`install_termination_handlers`,
+    // `install_child_reaper_handler`) each call this exactly once with a
+    // fixed context literal, which selects the channel's write slot. The
+    // unit test below uses the "termination" context and restores its slot.
+    let slot = match context {
+        "termination" => &TERMINATION_EVENT_WRITE,
+        _ => &CHILD_EVENT_WRITE,
+    };
+    create_worker_event_pipe(context, slot)
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn wait_for_event_fd(fd: RawFd, context: &'static str) -> Result<()> {
+    let mut pollfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let ready = unsafe { libc::poll(&mut pollfd, 1, -1) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error).with_context(|| format!("wait for worker {context} event"));
+        }
+        if pollfd.revents & libc::POLLIN != 0 {
+            // Drain coalesced wakeups; the flag the waiter guards (not the
+            // byte count) is the condition, same as the eventfd counter.
+            let mut drained = false;
+            loop {
+                let mut bytes = [0u8; 64];
+                let read = unsafe {
+                    libc::read(
+                        fd,
+                        bytes.as_mut_ptr().cast::<libc::c_void>(),
+                        bytes.len(),
+                    )
+                };
+                if read > 0 {
+                    drained = true;
+                    continue;
+                }
+                if read == 0 {
+                    bail!("worker {context} event pipe closed");
+                }
+                let error = io::Error::last_os_error();
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                ) {
+                    break;
+                }
+                return Err(error).with_context(|| format!("read worker {context} event"));
+            }
+            if drained {
+                return Ok(());
+            }
+        }
+        if pollfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            bail!("worker {context} event pipe became invalid");
+        }
+    }
+}

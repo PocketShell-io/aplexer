@@ -55,6 +55,8 @@ use crate::{
 
 #[cfg(target_os = "linux")]
 use crate::cleanup_recorded_cgroup_until;
+#[cfg(target_os = "macos")]
+use crate::cleanup_recorded_cgroup_until;
 
 struct LaunchEnvironmentGuard(PathBuf);
 

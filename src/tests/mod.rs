@@ -1,6 +1,6 @@
 //! Crate-root unit tests, grouped into one file per module under test.
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod cgroup;
 mod config;
 mod delivery_ack;
@@ -25,7 +25,7 @@ use super::*;
 use crate::paths::absolute_override_path;
 #[cfg(unix)]
 use crate::paths::absolute_xdg_path;
-#[cfg_attr(windows, allow(unused_imports))]
+#[cfg_attr(any(windows, target_os = "macos"), allow(unused_imports))]
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -37,7 +37,7 @@ use std::io;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::fs::{symlink, PermissionsExt};
@@ -55,13 +55,13 @@ use uuid::Uuid;
 /// `validate_recorded_cgroup`'s full chain (locator shape, cgroup-v2
 /// filesystem, mount device, identity triple) runs for real. Returns
 /// None when the environment has no writable cgroup-v2 parent.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 struct DelegatedCgroup {
     path: PathBuf,
     members: Vec<std::process::Child>,
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl DelegatedCgroup {
     fn create(id: Uuid) -> Option<Self> {
         let own = fs::read_to_string("/proc/self/cgroup").ok()?;
@@ -128,7 +128,7 @@ impl DelegatedCgroup {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl Drop for DelegatedCgroup {
     fn drop(&mut self) {
         self.drain_members();

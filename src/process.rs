@@ -126,7 +126,7 @@ pub(crate) fn session_id_from_ancestor_environ() -> Option<Uuid> {
     None
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(crate) fn proc_ppid(pid: u32) -> Option<u32> {
     let text = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     for line in text.lines() {
@@ -137,7 +137,13 @@ pub(crate) fn proc_ppid(pid: u32) -> Option<u32> {
     None
 }
 
-#[cfg(unix)]
+/// Parent pid via libproc: no `/proc/<pid>/status` on macOS.
+#[cfg(target_os = "macos")]
+pub(crate) fn proc_ppid(pid: u32) -> Option<u32> {
+    crate::sys::macos::proc_ppid(pid)
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn session_id_in_proc_environ(pid: u32) -> Option<Uuid> {
     let bytes = fs::read(format!("/proc/{pid}/environ")).ok()?;
     for entry in bytes.split(|b| *b == 0) {
@@ -151,6 +157,15 @@ pub(crate) fn session_id_in_proc_environ(pid: u32) -> Option<Uuid> {
         }
     }
     None
+}
+
+/// Ancestor environment via `KERN_PROCARGS2`: no `/proc/<pid>/environ` on
+/// macOS. Same `APLEXER_SESSION_ID=` lookup over the NUL-separated block.
+#[cfg(target_os = "macos")]
+pub(crate) fn session_id_in_proc_environ(pid: u32) -> Option<Uuid> {
+    let block = crate::sys::macos::proc_environ_bytes(pid)?;
+    let value = crate::sys::macos::environ_lookup(&block, "APLEXER_SESSION_ID")?;
+    value.parse().ok()
 }
 
 /// Whether `pid` names a process that can still run code.
@@ -194,7 +209,7 @@ pub fn process_alive(pid: u32) -> bool {
 /// one without the line, cannot answer and fails closed: the absence is
 /// not proven, so record-level callers (`worker_alive`,
 /// `workload_leader_alive`) must stay on the alive side.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn kill_esrch_proves_absence() -> bool {
     match fs::read_to_string("/proc/self/status") {
         Ok(status) => initial_pid_namespace_from_status(&status),
@@ -202,10 +217,18 @@ pub fn kill_esrch_proves_absence() -> bool {
     }
 }
 
+/// No pid namespaces on macOS: an `ESRCH` names the machine, never a
+/// sandbox, so absence is always proven (see the Linux twin for the
+/// incident that earned this question).
+#[cfg(target_os = "macos")]
+pub fn kill_esrch_proves_absence() -> bool {
+    true
+}
+
 /// The `NSpid` line of a `/proc/<pid>/status` text, without the `/proc`
 /// read: exactly one listed id means the initial pid namespace, more than
 /// one means confinement, no line means the answer is unknown.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn initial_pid_namespace_from_status(status: &str) -> bool {
     match status.lines().find(|line| line.starts_with("NSpid:")) {
         Some(line) => line["NSpid:".len()..].split_whitespace().count() == 1,
@@ -223,16 +246,21 @@ pub fn kill_esrch_proves_absence() -> bool {
 
 /// The single-character run state from field 3 of `/proc/<pid>/stat`
 /// (`R` running, `S`/`D` sleeping, `T` stopped, `Z` zombie, `X` dead).
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn process_state(pid: u32) -> Result<char> {
     process_state_in(Path::new(crate::agent_kind::DEFAULT_PROC_ROOT), pid)
 }
 
-/// `process_state` against an arbitrary `/proc` root, so the zombie rules
-/// below can be pinned by ordinary unit tests on a synthetic tree instead of
-/// requiring a real process in a specific state -- the same split
-/// `direct_child_pids_in` uses.
-#[cfg(unix)]
+/// Single-character run state via libproc `pbi_status`, in the same
+/// `/proc/<pid>/stat` alphabet (`R`/`S`/`T`/`Z`). `None` (gone or
+/// unreadable) is an error, matching the Linux "could not tell" contract.
+#[cfg(target_os = "macos")]
+pub fn process_state(pid: u32) -> Result<char> {
+    crate::sys::macos::proc_state_char(pid)
+        .ok_or_else(|| anyhow!("no such process: {pid}"))
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn process_state_in(proc_root: &Path, pid: u32) -> Result<char> {
     let (stat_path, after_comm) = proc_stat_after_comm(proc_root, pid)?;
     after_comm
@@ -246,7 +274,7 @@ pub(crate) fn process_state_in(proc_root: &Path, pid: u32) -> Result<char> {
 /// file's path for error messages. The parenthesized comm field may itself
 /// contain spaces or `)`, so the fields after it are located from its final
 /// close-paren, never by a naive whitespace split of the whole line.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn proc_stat_after_comm(proc_root: &Path, pid: u32) -> Result<(PathBuf, String)> {
     let stat_path = proc_root.join(pid.to_string()).join("stat");
     let stat =
@@ -273,12 +301,21 @@ fn proc_stat_after_comm(proc_root: &Path, pid: u32) -> Result<(PathBuf, String)>
 /// Every unreadable answer is reported as "not a zombie": callers use this
 /// to subtract the dead from a liveness answer, and an unknown state must
 /// never subtract a process that may still be running.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn process_is_zombie(pid: u32) -> bool {
     process_is_zombie_in(Path::new(crate::agent_kind::DEFAULT_PROC_ROOT), pid)
 }
 
-#[cfg(unix)]
+/// Zombie state via libproc `pbi_status`: on macOS the status is per
+/// process and a zombie holds no subtree (its children were reparented at
+/// exit), so no thread-group second opinion is needed. Unknown reads as
+/// "not a zombie", same as on Linux.
+#[cfg(target_os = "macos")]
+pub fn process_is_zombie(pid: u32) -> bool {
+    crate::sys::macos::proc_is_zombie(pid)
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn process_is_zombie_in(proc_root: &Path, pid: u32) -> bool {
     matches!(process_state_in(proc_root, pid), Ok('Z'))
         && thread_group_holds_only_the_leader(proc_root, pid)
@@ -287,7 +324,7 @@ pub(crate) fn process_is_zombie_in(proc_root: &Path, pid: u32) -> bool {
 /// Whether `<proc>/<pid>/task` contains exactly one entry, i.e. no sibling
 /// thread of `pid` is left. Any read failure answers `false`, keeping the
 /// caller on the "may still be running" side.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(crate) fn thread_group_holds_only_the_leader(proc_root: &Path, pid: u32) -> bool {
     let Ok(tasks) = fs::read_dir(proc_root.join(pid.to_string()).join("task")) else {
         return false;
@@ -308,15 +345,24 @@ pub(crate) fn thread_group_holds_only_the_leader(proc_root: &Path, pid: u32) -> 
 /// Linux process start time (field 22 of `/proc/<pid>/stat`), measured in
 /// clock ticks since boot. Combined with the pid, this distinguishes a
 /// persisted process from a later process that reused its numeric pid.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn process_start_time_ticks(pid: u32) -> Result<u64> {
     process_start_time_ticks_in(Path::new(crate::agent_kind::DEFAULT_PROC_ROOT), pid)
+}
+
+/// macOS process start time via libproc, in microseconds since the epoch.
+/// Equality is the only operation callers need (pid-reuse pinning), so the
+/// unit differs deliberately from Linux's ticks: records never cross
+/// operating systems.
+#[cfg(target_os = "macos")]
+pub fn process_start_time_ticks(pid: u32) -> Result<u64> {
+    crate::sys::macos::proc_start_time_us(pid).ok_or_else(|| anyhow!("no such process: {pid}"))
 }
 
 /// `process_start_time_ticks` against an arbitrary `/proc` root, the same
 /// split `process_state_in` has, so the field arithmetic can be pinned on a
 /// synthetic stat line.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(crate) fn process_start_time_ticks_in(proc_root: &Path, pid: u32) -> Result<u64> {
     let (stat_path, after_comm) = proc_stat_after_comm(proc_root, pid)?;
     after_comm
@@ -327,7 +373,7 @@ pub(crate) fn process_start_time_ticks_in(proc_root: &Path, pid: u32) -> Result<
         .with_context(|| format!("parse process start time from {}", stat_path.display()))
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(crate) fn linux_boot_id() -> Result<String> {
     // Cached: the boot id cannot change without a reboot, and every
     // `worker_alive` probe (i.e. every `a list` row, twice per row in the old
@@ -349,6 +395,23 @@ pub(crate) fn linux_boot_id() -> Result<String> {
     Ok(owned)
 }
 
+/// macOS boot identity: `kern.boottime` as microseconds since the epoch,
+/// cached process-wide like the Linux boot id. Same role in the worker
+/// identity comparison (a boot that changed proves a recorded pid identity
+/// stale); only the source differs, since macOS has no
+/// `/proc/sys/kernel/random/boot_id`.
+#[cfg(target_os = "macos")]
+pub(crate) fn linux_boot_id() -> Result<String> {
+    static CACHED_BOOT_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(cached) = CACHED_BOOT_ID.get() {
+        return Ok(cached.clone());
+    }
+    let boot_us = crate::sys::macos::boot_time_us().context("read kern.boottime")?;
+    let owned = boot_us.to_string();
+    let _ = CACHED_BOOT_ID.set(owned.clone());
+    Ok(owned)
+}
+
 /// Whether `pid` can name one process to `kill(2)`/`pidfd_open(2)`. Pid 0
 /// means "my process group" to `kill`, and anything above `i32::MAX` wraps
 /// to a negative `pid_t`, which addresses a whole group (or every process)
@@ -358,7 +421,7 @@ fn is_signalable_pid(pid: u32) -> bool {
     pid != 0 && pid <= i32::MAX as u32
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(crate) fn pidfd_open(pid: u32) -> io::Result<File> {
     if !is_signalable_pid(pid) {
         return Err(io::Error::from_raw_os_error(libc::ESRCH));
@@ -447,12 +510,28 @@ pub fn open_pty(rows: u16, cols: u16) -> Result<(File, File)> {
     // `libc::c_char` is unsigned on some Linux architectures (including
     // aarch64), so keep the buffer's element type aligned with libc rather
     // than assuming x86_64's signed `char`.
-    let mut name = vec![0 as libc::c_char; 256];
-    if unsafe { libc::ptsname_r(master, name.as_mut_ptr(), name.len()) } != 0 {
-        let e = io::Error::last_os_error();
-        cleanup_master();
-        return Err(e).context("ptsname_r");
-    }
+    #[cfg(target_os = "linux")]
+    let name: Vec<libc::c_char> = {
+        let mut name = vec![0 as libc::c_char; 256];
+        if unsafe { libc::ptsname_r(master, name.as_mut_ptr(), name.len()) } != 0 {
+            let e = io::Error::last_os_error();
+            cleanup_master();
+            return Err(e).context("ptsname_r");
+        }
+        name
+    };
+    // macOS has no `ptsname_r`: `ptsname` returns a static buffer, so copy
+    // the path out before any other libc call can disturb it.
+    #[cfg(target_os = "macos")]
+    let name: std::ffi::CString = {
+        let raw = unsafe { libc::ptsname(master) };
+        if raw.is_null() {
+            let e = io::Error::last_os_error();
+            cleanup_master();
+            return Err(e).context("ptsname");
+        }
+        unsafe { std::ffi::CStr::from_ptr(raw) }.to_owned()
+    };
     let slave = unsafe {
         libc::open(
             name.as_ptr(),
@@ -500,7 +579,7 @@ pub fn set_winsize(fd: RawFd, rows: u16, cols: u16) -> Result<()> {
 /// procfs unmounted) yields `None` rather than an error, since this is a
 /// cosmetic status-bar signal, never something worth failing a request or
 /// blocking a hot loop over.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn foreground_command(fd: RawFd) -> Option<String> {
     let pgid = unsafe { libc::tcgetpgrp(fd) };
     if pgid <= 0 {
@@ -515,7 +594,19 @@ pub fn foreground_command(fd: RawFd) -> Option<String> {
     }
 }
 
-#[cfg(unix)]
+/// Foreground process-group name via libproc: `tcgetpgrp(fd)` for the
+/// group, then `proc_name` for the leader's short name. Same best-effort
+/// contract as the Linux `/proc/<pgid>/comm` read.
+#[cfg(target_os = "macos")]
+pub fn foreground_command(fd: RawFd) -> Option<String> {
+    let pgid = unsafe { libc::tcgetpgrp(fd) };
+    if pgid <= 0 {
+        return None;
+    }
+    crate::sys::macos::proc_name_of(pgid as u32)
+}
+
+#[cfg(target_os = "linux")]
 pub fn peer_uid(fd: RawFd) -> Result<u32> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -532,6 +623,31 @@ pub fn peer_uid(fd: RawFd) -> Result<u32> {
         return Err(io::Error::last_os_error()).context("SO_PEERCRED");
     }
     Ok(cred.uid)
+}
+
+/// Peer credentials via `LOCAL_PEERCRED`: macOS has no `SO_PEERCRED`/`ucred`.
+/// `SOL_LOCAL` + `LOCAL_PEERCRED` fills an `xucred` whose `cr_uid` is the
+/// connecting process's uid (no pid is exposed; the control socket's
+/// file-permission check in `trusted_socket_identity` stays the primary
+/// gate, same as on Linux).
+#[cfg(target_os = "macos")]
+pub fn peer_uid(fd: RawFd) -> Result<u32> {
+    let mut cred: libc::xucred = unsafe { std::mem::zeroed() };
+    cred.cr_version = libc::XUCRED_VERSION;
+    let mut len = std::mem::size_of::<libc::xucred>() as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERCRED,
+            (&mut cred as *mut libc::xucred).cast::<libc::c_void>(),
+            &mut len,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error()).context("LOCAL_PEERCRED");
+    }
+    Ok(cred.cr_uid)
 }
 
 pub fn shell_quote(value: &str) -> String {

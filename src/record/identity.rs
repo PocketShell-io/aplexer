@@ -4,7 +4,9 @@
 
 use super::SessionRecord;
 use crate::persist::TEMP_COUNTER;
-use crate::{io_kind, linux_boot_id, pidfd_open, process_start_time_ticks};
+use crate::{io_kind, linux_boot_id, process_start_time_ticks};
+#[cfg(target_os = "linux")]
+use crate::pidfd_open;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -178,18 +180,52 @@ pub fn signal_recorded_worker(record: &SessionRecord, signal: i32) -> Result<()>
         );
     }
 
-    let pidfd = match pidfd_open(pid) {
-        Ok(pidfd) => pidfd,
-        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Ok(()),
-        Err(error) => {
-            return Err(error).with_context(|| format!("open pidfd for worker pid {pid}"));
-        }
-    };
-    // Verified only after the pidfd pins the process, so an exit and pid
-    // reuse between the check and the signal cannot redirect it.
-    match verify_worker_identity(&identity)? {
-        WorkerIdentity::Verified => {}
-        WorkerIdentity::Gone => return Ok(()),
+    #[cfg(target_os = "linux")]
+    {
+        let pidfd = match pidfd_open(pid) {
+            Ok(pidfd) => pidfd,
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("open pidfd for worker pid {pid}"));
+            }
+        };
+        // Verified only after the pidfd pins the process, so an exit and pid
+        // reuse between the check and the signal cannot redirect it.
+        verify_signal_identity(record, &identity, pid)?;
+        crate::pidfd::send_signal(&pidfd, signal)
+            .with_context(|| format!("signal worker pid {pid} through pidfd"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // The libproc handle re-validates the recorded start time before
+        // every signal, so an exit and pid reuse between the check and the
+        // signal cannot redirect it (see `pidfd::macos_impl`).
+        let Some(handle) = crate::pidfd::PidHandle::open(pid, None)
+            .with_context(|| format!("open handle for worker pid {pid}"))?
+        else {
+            return Ok(());
+        };
+        verify_signal_identity(record, &identity, pid)?;
+        handle
+            .signal(signal)
+            .with_context(|| format!("signal worker pid {pid}"))?;
+        return Ok(());
+    }
+}
+
+/// The shared identity verdict table behind `signal_recorded_worker`:
+/// verified proceeds, gone is a no-op, anything else fails closed.
+#[cfg(unix)]
+fn verify_signal_identity(
+    record: &SessionRecord,
+    identity: &ProcessIdentity,
+    pid: u32,
+) -> Result<()> {
+    match verify_worker_identity(identity)? {
+        WorkerIdentity::Verified => Ok(()),
+        WorkerIdentity::Gone => Ok(()),
         WorkerIdentity::DifferentBoot => bail!(
             "worker pid {} for session {} was recorded during a different boot; refusing to signal",
             pid,
@@ -203,8 +239,4 @@ pub fn signal_recorded_worker(record: &SessionRecord, signal: i32) -> Result<()>
             current
         ),
     }
-
-    crate::pidfd::send_signal(&pidfd, signal)
-        .with_context(|| format!("signal worker pid {pid} through pidfd"))?;
-    Ok(())
 }

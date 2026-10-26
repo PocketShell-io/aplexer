@@ -33,7 +33,7 @@ pub(super) fn signal_startup_descendant(
     deadline.check("signalling startup process tree")
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(super) fn pidfd_exited(descendant: &StartupDescendant, deadline: Deadline) -> Result<bool> {
     let mut pollfd = libc::pollfd {
         fd: descendant.as_raw_fd(),
@@ -63,7 +63,7 @@ pub(super) fn pidfd_exited(descendant: &StartupDescendant, deadline: Deadline) -
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(super) fn process_state_and_start_time(
     pid: u32,
     deadline: Deadline,
@@ -251,7 +251,7 @@ pub(super) fn wait_for_descendant_exit(
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(super) fn safe_startup_descendant_capacity(deadline: Deadline) -> Result<usize> {
     deadline.check("preflighting startup containment resources")?;
     let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
@@ -541,4 +541,62 @@ mod tests {
             STARTUP_MAX_DESCENDANTS
         );
     }
+}
+
+/// macOS handle-state probe: a libproc handle has no pollable fd, so
+/// quiescence is decided from liveness directly. Same contract as the
+/// pidfd-poll version: `Ok(true)` means the descendant is gone (or was
+/// never there), `Ok(false)` means still running.
+#[cfg(target_os = "macos")]
+pub(super) fn pidfd_exited(descendant: &StartupDescendant, deadline: Deadline) -> Result<bool> {
+    deadline.check("polling startup process handles")?;
+    descendant.exited()
+}
+
+/// macOS process state and start time via libproc: the state alphabet and
+/// the `None`-when-gone contract match the `/proc/<pid>/stat` version, so
+/// the stopped-worker inspection above reads unchanged.
+#[cfg(target_os = "macos")]
+pub(super) fn process_state_and_start_time(
+    pid: u32,
+    deadline: Deadline,
+) -> Result<Option<(char, u64)>> {
+    deadline.check("reading startup process state")?;
+    let state = crate::sys::macos::proc_state_char(pid);
+    deadline.check("reading startup process state")?;
+    let start = crate::sys::macos::proc_start_time_us(pid);
+    match (state, start) {
+        (Some(state), Some(start)) => Ok(Some((state, start))),
+        _ => Ok(None),
+    }
+}
+
+/// macOS descriptor preflight: no `/proc/self/fd`, so open descriptors are
+/// counted by probing with `fcntl(F_GETFD)` up to the soft limit (capped,
+/// since a high soft limit must not mean a 100k-syscall walk).
+#[cfg(target_os = "macos")]
+pub(super) fn safe_startup_descendant_capacity(deadline: Deadline) -> Result<usize> {
+    deadline.check("preflighting startup containment resources")?;
+    let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return Err(io::Error::last_os_error()).context("read RLIMIT_NOFILE");
+    }
+    deadline.check("preflighting startup containment resources")?;
+    let soft_limit = if limit.rlim_cur == libc::RLIM_INFINITY {
+        u64::MAX
+    } else {
+        limit.rlim_cur
+    };
+    let probe_max = soft_limit.min(4096);
+    let mut open_fds = 0_u64;
+    for fd in 0..probe_max {
+        deadline.check("counting open launcher descriptors")?;
+        if unsafe { libc::fcntl(fd as libc::c_int, libc::F_GETFD) } >= 0 {
+            open_fds = open_fds
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("open descriptor count overflow"))?;
+        }
+    }
+    deadline.check("preflighting startup containment resources")?;
+    startup_descendant_capacity(soft_limit, open_fds)
 }
