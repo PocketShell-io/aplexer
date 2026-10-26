@@ -546,11 +546,14 @@ mod tests {
 /// macOS handle-state probe: a libproc handle has no pollable fd, so
 /// quiescence is decided from liveness directly. Same contract as the
 /// pidfd-poll version: `Ok(true)` means the descendant is gone (or was
-/// never there), `Ok(false)` means still running.
+/// never there), `Ok(false)` means still running. A zombie counts as gone:
+/// it cannot fork, and the stopped-then-killed tree it belongs to is what
+/// the caller is proving empty (its reaping is launchd's or its parent's
+/// job, never this probe's).
 #[cfg(target_os = "macos")]
 pub(super) fn pidfd_exited(descendant: &StartupDescendant, deadline: Deadline) -> Result<bool> {
     deadline.check("polling startup process handles")?;
-    descendant.exited()
+    Ok(descendant.exited()? || crate::process_is_zombie(descendant.pid()))
 }
 
 /// macOS process state and start time via libproc: the state alphabet and

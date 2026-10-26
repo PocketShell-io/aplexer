@@ -67,23 +67,43 @@ pub fn proc_pgid(pid: u32) -> Option<u32> {
 /// subtleties from the Linux port do not apply: macOS reports the zombie
 /// state per process in `pbi_status`, and a zombie holds no subtree (its
 /// children were reparented at exit).
+///
+/// libproc reports no `PROC_PIDTBSDINFO` for a zombie, so an exited-but-
+/// unreaped process is detected by exclusion: still signalable (`kill`
+/// succeeds) but no longer described. A running process always has info;
+/// a gone one is not signalable. `EPERM` (another user's live process)
+/// stays on the "may still be running" side.
 pub fn proc_is_zombie(pid: u32) -> bool {
-    bsdinfo(pid).is_some_and(|info| info.pbi_status == P_STAT_SZOMB)
+    if let Some(info) = bsdinfo(pid) {
+        return info.pbi_status == P_STAT_SZOMB;
+    }
+    let raw_pid = match u32_to_pid(pid) {
+        Some(pid) => pid,
+        None => return false,
+    };
+    let alive = unsafe { libc::kill(raw_pid, 0) };
+    alive == 0
 }
 
 /// Single-character run state in the `/proc/<pid>/stat` alphabet the rest
 /// of the worker reasons in (`R` running, `S` sleeping, `T` stopped,
-/// `Z` zombie). `None` for a missing process.
+/// `Z` zombie). `None` for a missing process. A zombie has libproc state
+/// only by exclusion (see [`proc_is_zombie`]), so it reads as `Z` here.
 pub fn proc_state_char(pid: u32) -> Option<char> {
-    let status = bsdinfo(pid)?.pbi_status;
-    Some(match status {
-        P_STAT_SIDL => 'I',
-        P_STAT_SRUN => 'R',
-        P_STAT_SSLEEP => 'S',
-        P_STAT_SSTOP => 'T',
-        P_STAT_SZOMB => 'Z',
-        _ => return None,
-    })
+    if let Some(info) = bsdinfo(pid) {
+        return Some(match info.pbi_status {
+            P_STAT_SIDL => 'I',
+            P_STAT_SRUN => 'R',
+            P_STAT_SSLEEP => 'S',
+            P_STAT_SSTOP => 'T',
+            P_STAT_SZOMB => 'Z',
+            _ => return None,
+        });
+    }
+    if proc_is_zombie(pid) {
+        return Some('Z');
+    }
+    None
 }
 
 /// Start time as microseconds since the Unix epoch, from

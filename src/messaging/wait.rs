@@ -242,16 +242,22 @@ mod tests;
 /// for the watch's life (the vnode filter is tied to it); `NOTE_DELETE` /
 /// `NOTE_REVOKE` invalidate the watch the same way `IN_IGNORED` does, and
 /// everything else is a wake hint re-verified under lock by the caller.
+///
+/// Rename caveat: kevent does not reliably report the watched directory
+/// itself being renamed, so every wake (and every poll slice) also stats
+/// the path -- a vanished directory invalidates the watch.
 #[cfg(target_os = "macos")]
 struct MailboxWatch {
     kq: OwnedFd,
     #[allow(dead_code)]
     dir: OwnedFd,
+    directory: PathBuf,
 }
 
 #[cfg(target_os = "macos")]
 impl MailboxWatch {
     fn subscribe(directory: &Path) -> Result<Self> {
+        let directory_buf = directory.to_path_buf();
         let directory = CString::new(directory.as_os_str().as_bytes())?;
         let raw_dir = unsafe { libc::open(directory.as_ptr(), libc::O_EVTONLY | libc::O_CLOEXEC) };
         if raw_dir < 0 {
@@ -287,24 +293,49 @@ impl MailboxWatch {
         if registered < 0 {
             return Err(io::Error::last_os_error()).context("subscribe to mailbox vnode events");
         }
-        Ok(Self { kq, dir })
+        Ok(Self {
+            kq,
+            dir,
+            directory: directory_buf,
+        })
     }
 
     fn wait_for_change(&self, deadline: Instant) -> Result<()> {
+        self.check_exists()?;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Ok(());
             }
-            match self.poll(remaining) {
-                Ok(false) => return Ok(()),
+            // Cap poll slices: kevent does not reliably report the watched
+            // directory itself being renamed, so a vanished path is noticed
+            // on the next slice at the latest instead of only at deadline.
+            match self.poll(remaining.min(Duration::from_millis(250))) {
+                Ok(false) => {
+                    self.check_exists()?;
+                }
                 Ok(true) => {
                     self.drain()?;
+                    self.check_exists()?;
                     return Ok(());
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error).context("wait for mailbox publication"),
             }
+        }
+    }
+
+    /// The rename/deletion probe kevent cannot be trusted with: a watched
+    /// directory that no longer resolves invalidates the watch the same
+    /// way `NOTE_DELETE` does.
+    fn check_exists(&self) -> Result<()> {
+        match fs::metadata(&self.directory) {
+            Ok(metadata) if metadata.is_dir() => Ok(()),
+            Ok(_) => bail!("mailbox watch was invalidated"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                bail!("mailbox watch was invalidated")
+            }
+            Err(error) => Err(error).context("stat mailbox watch directory"),
         }
     }
 

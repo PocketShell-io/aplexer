@@ -255,13 +255,15 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
     //
     // The walk starts from the canonicalized path: system prefixes like
     // macOS's `/var -> /private/var` and `/tmp -> /private/tmp` (and any
-    // user mount symlink) would otherwise fail the strict no-follow walk
-    // even though no attacker controls them. Only the longest EXISTING
-    // prefix is resolved; missing trailing components are still created
-    // under pinned fds below, and the final pinned fd is verified against
-    // the canonical path so a mid-walk substitution cannot redirect the
-    // chmod.
+    // installer mount point) would otherwise fail the strict no-follow walk
+    // even though no attacker controls them. Only root-owned redirections
+    // may be resolved this way -- anything a non-root user planted fails
+    // closed exactly like the strict walk always has.
+    reject_non_root_symlinks(path)?;
     let canonical = canonicalize_existing_prefix(path);
+    // Missing trailing components are created under pinned fds below, and
+    // the final pinned fd is verified against the canonical path so a
+    // mid-walk substitution cannot redirect the chmod.
     let base = if canonical.is_absolute() { "/" } else { "." };
     let mut directory = open_directory_at(libc::AT_FDCWD, OsStr::new(base))
         .with_context(|| format!("open directory base for {}", path.display()))?;
@@ -330,6 +332,46 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
             path.display(),
             pinned.display()
         );
+    }
+    Ok(())
+}
+
+/// Refuse user-owned symlinks anywhere in the existing prefix: only
+/// root-owned redirections (macOS's own `/var -> /private/var` and
+/// `/tmp -> /private/tmp`, installer mount points) may be resolved by
+/// `canonicalize_existing_prefix`. Anything a non-root user planted fails
+/// closed exactly like the strict walk always has.
+#[cfg(unix)]
+fn reject_non_root_symlinks(path: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let mut prefix = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => {
+                prefix.push("/");
+                continue;
+            }
+            Component::CurDir => continue,
+            Component::ParentDir => prefix.push(".."),
+            Component::Normal(name) => prefix.push(name),
+            Component::Prefix(_) => {
+                bail!("unexpected prefix in Unix path {}", path.display())
+            }
+        }
+        let metadata = match fs::symlink_metadata(&prefix) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspect {}", path.display()))
+            }
+        };
+        if metadata.file_type().is_symlink() && metadata.uid() != 0 {
+            bail!(
+                "refusing to traverse {} without following symbolic links",
+                path.display()
+            );
+        }
     }
     Ok(())
 }
@@ -453,15 +495,13 @@ fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
 /// the long form. Unchanged (plain `TempDir::new`) elsewhere.
 #[cfg(test)]
 pub(crate) fn canonical_tempdir() -> tempfile::TempDir {
-    #[cfg(windows)]
-    {
-        let root = canonical_workspace(&env::temp_dir()).unwrap();
-        tempfile::TempDir::new_in(root).unwrap()
-    }
-    #[cfg(not(windows))]
-    {
-        tempfile::TempDir::new().unwrap()
-    }
+    // Temp dirs must already be canonical: product paths go through
+    // `canonical_workspace` (which resolves symlinks), so fixtures built
+    // on a symlinked $TMPDIR (macOS: /var -> /private/var) would otherwise
+    // compare a raw prefix against a resolved one. Windows needs it for
+    // 8.3 short names; macOS for /var and /tmp.
+    let root = fs::canonicalize(env::temp_dir()).unwrap_or_else(|_| env::temp_dir());
+    tempfile::TempDir::new_in(root).unwrap()
 }
 
 #[cfg(all(test, windows))]

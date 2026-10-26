@@ -1003,8 +1003,10 @@ mod input_write_tests {
             }
         }
         let mut writer = Blocked(std::io::ErrorKind::WouldBlock, 0);
+        // 100ms, not 10ms: a loaded runner can oversleep the 5ms retry tick
+        // past a 10ms deadline, flaking the attempt count to exactly one.
         let error =
-            super::write_pty_input(&mut writer, b"paste", std::time::Duration::from_millis(10))
+            super::write_pty_input(&mut writer, b"paste", std::time::Duration::from_millis(100))
                 .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert!(writer.1 > 1);
@@ -1027,6 +1029,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let destination = dir.path().join("project");
         fs::create_dir(&destination).unwrap();
+        // The product compares canonical paths; the fixture must be
+        // canonical too (macOS $TMPDIR lives under symlinked /var).
+        #[cfg(target_os = "macos")]
+        let destination = fs::canonicalize(&destination).unwrap();
         let mut shell = std::process::Command::new("bash")
             .args([
                 "-c",
@@ -1047,10 +1053,19 @@ mod tests {
         atomic_write_json(&occupied_path, &occupied).unwrap();
         runtime.record.lock().unwrap().workload_pid = Some(shell.id());
         let deadline = Instant::now() + Duration::from_secs(2);
+        #[cfg(target_os = "linux")]
         while std::fs::read_link(format!("/proc/{}/cwd", shell.id()))
             .ok()
             .as_deref()
             != Some(destination.as_path())
+        {
+            assert!(Instant::now() < deadline, "shell did not change directory");
+            thread::sleep(Duration::from_millis(10));
+        }
+        // No /proc on macOS: same poll through the libproc cwd read the
+        // product itself uses.
+        #[cfg(target_os = "macos")]
+        while crate::sys::macos::proc_cwd_of(shell.id()).as_deref() != Some(destination.as_path())
         {
             assert!(Instant::now() < deadline, "shell did not change directory");
             thread::sleep(Duration::from_millis(10));
@@ -1168,12 +1183,12 @@ mod tests {
 
     /// A runtime whose PTY is a real pty pair, so the size the workload would
     /// see is observable rather than inferred.
-    fn test_runtime_with_pty(dir: &tempfile::TempDir) -> (WorkerRuntime, Arc<File>) {
-        let (master, _slave) = crate::process::open_pty(24, 80).unwrap();
+    fn test_runtime_with_pty(dir: &tempfile::TempDir) -> (WorkerRuntime, Arc<File>, File) {
+        let (master, slave) = crate::process::open_pty(24, 80).unwrap();
         let observed = master.try_clone().unwrap();
         let runtime = test_runtime(dir, dir.path().join("session.json"));
         *runtime.pty_write.lock().unwrap() = Some(Arc::new(master));
-        (runtime, Arc::new(observed))
+        (runtime, Arc::new(observed), slave)
     }
 
     /// The whole point of the policy, as a unit test: with two clients
@@ -1189,7 +1204,7 @@ mod tests {
     #[test]
     pub(super) fn the_shared_pty_is_the_smallest_attached_geometry_and_input_cannot_move_it() {
         let dir = tempfile::tempdir().unwrap();
-        let (runtime, pty) = test_runtime_with_pty(&dir);
+        let (runtime, pty, _slave) = test_runtime_with_pty(&dir);
         let (desktop, _, _, _) = runtime
             .attach_client(AttachPayload::Tail(None), Some((30, 100)), false)
             .unwrap();
@@ -1256,7 +1271,7 @@ mod tests {
     #[test]
     pub(super) fn a_rejected_geometry_never_reaches_the_common_denominator() {
         let dir = tempfile::tempdir().unwrap();
-        let (runtime, pty) = test_runtime_with_pty(&dir);
+        let (runtime, pty, _slave) = test_runtime_with_pty(&dir);
         runtime
             .attach_client(AttachPayload::Tail(None), Some((30, 100)), false)
             .unwrap();
@@ -1299,7 +1314,7 @@ mod tests {
     #[test]
     pub(super) fn a_geometry_less_client_does_not_constrain_the_shared_size() {
         let dir = tempfile::tempdir().unwrap();
-        let (runtime, pty) = test_runtime_with_pty(&dir);
+        let (runtime, pty, _slave) = test_runtime_with_pty(&dir);
         let (sized, _, _, _) = runtime
             .attach_client(AttachPayload::Tail(None), Some((24, 80)), false)
             .unwrap();
@@ -1344,7 +1359,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // A real PTY: `apply_size` publishes only after the ioctl lands, and
         // the fixture's `/dev/null` handle has no winsize to set.
-        let (runtime, _pty) = test_runtime_with_pty(&dir);
+        let (runtime, _pty, _slave) = test_runtime_with_pty(&dir);
         // The screen starts 24x80, so put a marker on its last row: the
         // repaint that follows has to be a rendering of the *current* grid,
         // not a replay of what the workload wrote.
