@@ -96,17 +96,7 @@ impl Cgroup {
     /// excluded from the populated probe (launchd reaps orphaned zombies
     /// promptly); only an error, never a quiet success, on deadline.
     pub fn kill_all_until(&self, deadline: Instant) -> Result<()> {
-        loop {
-            macos::kill_pgid(self.pgid, libc::SIGKILL)
-                .with_context(|| format!("kill pgid {}", self.pgid))?;
-            if !self.populated()? {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                bail!("timed out proving pgid {} empty", self.pgid);
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
+        kill_pgid_until_empty(self.pgid, deadline)
     }
 
     /// Whether any live, non-zombie process remains in the group. A
@@ -114,10 +104,7 @@ impl Cgroup {
     /// cannot tell a zombie member from a running one, and a zombie would
     /// read as populated forever.
     pub fn populated(&self) -> Result<bool> {
-        Ok(macos::all_pids().iter().any(|pid| {
-            let info_pgid = macos::proc_pgid(*pid).map(|pgid| pgid as i32);
-            info_pgid == Some(self.pgid) && !macos::proc_is_zombie(*pid)
-        }))
+        Ok(pgid_populated_live(self.pgid))
     }
 
     /// No OOM accounting on macOS: there is no memory-limit enforcement to
@@ -222,6 +209,30 @@ pub fn wrap_worker_in_system_scope(_id: Uuid, _worker: &mut std::process::Comman
     bail!("no system-scope worker backend on macOS (launchd placement is not wired)")
 }
 
+/// SIGKILL a group until no live (non-zombie) member remains or `deadline`
+/// passes. The populated probe is the zombie-excluding libproc walk, not
+/// `killpg(pgid, 0)`, so a zombie member can never pin the loop forever.
+fn kill_pgid_until_empty(pgid: i32, deadline: Instant) -> Result<()> {
+    loop {
+        macos::kill_pgid(pgid, libc::SIGKILL).with_context(|| format!("kill pgid {pgid}"))?;
+        if !pgid_populated_live(pgid) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("timed out proving pgid {pgid} empty");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Whether any live, non-zombie process remains in `pgid`.
+fn pgid_populated_live(pgid: i32) -> bool {
+    macos::all_pids().iter().any(|pid| {
+        let info_pgid = macos::proc_pgid(*pid).map(|pgid| pgid as i32);
+        info_pgid == Some(pgid) && !macos::proc_is_zombie(*pid)
+    })
+}
+
 /// Validate and empty a recorded `pgid-<pgid>` domain: the startup-rollback
 /// counterpart of [`Cgroup::kill_all_until`]. A locator from a different
 /// boot is empty by construction (groups do not survive reboot); an
@@ -232,7 +243,7 @@ pub fn cleanup_recorded_cgroup_until(
     locator: &Path,
     identity: Option<&CgroupIdentity>,
     signal: i32,
-    _grace: Duration,
+    grace: Duration,
     deadline: Instant,
 ) -> Result<()> {
     if Instant::now() >= deadline {
@@ -247,21 +258,24 @@ pub fn cleanup_recorded_cgroup_until(
             return Ok(());
         }
     }
-    if signal == libc::SIGKILL {
-        loop {
-            macos::kill_pgid(pgid, libc::SIGKILL)
-                .with_context(|| format!("kill recorded pgid {pgid}"))?;
-            if !macos::pgid_populated(pgid)? {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                bail!("timed out proving recorded pgid {pgid} empty");
+    if signal != libc::SIGKILL {
+        // Graceful signal first, mirroring the Linux recovery shape: only
+        // the overall deadline (checked by the loops below) can fail here,
+        // and expiry escalates to SIGKILL rather than erroring.
+        macos::kill_pgid(pgid, signal)
+            .with_context(|| format!("signal recorded pgid {pgid}"))?;
+        let grace_deadline = Instant::now()
+            .checked_add(grace)
+            .unwrap_or(deadline)
+            .min(deadline);
+        while pgid_populated_live(pgid) {
+            if Instant::now() >= grace_deadline {
+                break;
             }
             std::thread::sleep(Duration::from_millis(25));
         }
     }
-    macos::kill_pgid(pgid, signal).with_context(|| format!("signal recorded pgid {pgid}"))?;
-    Ok(())
+    kill_pgid_until_empty(pgid, deadline)
 }
 
 /// Recover a recorded `pgid-<pgid>` domain after its worker died: the
