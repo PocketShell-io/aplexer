@@ -228,7 +228,7 @@ pub fn kill_esrch_proves_absence() -> bool {
 /// The `NSpid` line of a `/proc/<pid>/status` text, without the `/proc`
 /// read: exactly one listed id means the initial pid namespace, more than
 /// one means confinement, no line means the answer is unknown.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 pub(crate) fn initial_pid_namespace_from_status(status: &str) -> bool {
     match status.lines().find(|line| line.starts_with("NSpid:")) {
         Some(line) => line["NSpid:".len()..].split_whitespace().count() == 1,

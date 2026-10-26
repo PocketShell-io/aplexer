@@ -1,8 +1,7 @@
 use super::*;
 
 #[derive(Debug)]
-#[cfg(any(target_os = "linux", test))]
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg(target_os = "linux")]
 pub(crate) struct CgroupLimitProbe {
     pub(crate) cgroup_v2: bool,
     pub(crate) controllers: Vec<String>,

@@ -69,6 +69,7 @@ fn process_alive_reports_an_unreaped_zombie_as_dead() {
 /// 750 ms and wrote a crash warning for each, and every probe looked
 /// locally correct.
 #[test]
+#[cfg(target_os = "linux")]
 fn esrch_proves_absence_only_from_the_initial_pid_namespace() {
     let host = "Name:\tbash\nUid:\t1000\t1000\t1000\t1000\nPid:\t1234\nPPid:\t1\nNSpid:\t1234\n";
     assert!(initial_pid_namespace_from_status(host));
