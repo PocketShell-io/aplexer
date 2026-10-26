@@ -321,6 +321,7 @@ jobs:
       - name: Upload native binaries
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
+          retention-days: 7
           name: aplexer-bins-${{ matrix.platform }}
           path: staging/*
           if-no-files-found: error
@@ -328,6 +329,7 @@ jobs:
       - name: Upload aplexer CLI wheel
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
+          retention-days: 7
           name: aplexer-cli-wheel-${{ matrix.platform }}
           path: cli-dist/*.whl
           if-no-files-found: error
@@ -335,6 +337,7 @@ jobs:
       - name: Upload aplexer-client bindings wheel
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
+          retention-days: 7
           name: aplexer-client-wheel-${{ matrix.platform }}
           path: client-dist/*.whl
           if-no-files-found: error
@@ -441,6 +444,7 @@ jobs:
       - name: Upload native binaries
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
+          retention-days: 7
           name: aplexer-bins-${{ env.PLATFORM }}
           path: staging/*
           if-no-files-found: error
@@ -448,6 +452,7 @@ jobs:
       - name: Upload aplexer CLI wheel
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
+          retention-days: 7
           name: aplexer-cli-wheel-${{ env.PLATFORM }}
           path: cli-dist/*.whl
           if-no-files-found: error
@@ -455,6 +460,7 @@ jobs:
       - name: Upload aplexer-client bindings wheel
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
+          retention-days: 7
           name: aplexer-client-wheel-${{ env.PLATFORM }}
           path: client-dist/*.whl
           if-no-files-found: error
