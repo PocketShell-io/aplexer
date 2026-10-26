@@ -66,6 +66,19 @@ impl Harness {
         command
     }
 
+    fn detach_durable_session(&self, id: &str) {
+        // Atomically remove the worker's durable namespace. Recursively deleting
+        // a live directory races checkpoint temp-file creation and can fail with
+        // ENOTEMPTY before the self-reap behavior is even exercised. Keep the
+        // detached tree under our TempDir for cleanup after the worker exits;
+        // writers must still fail at the original path, never revive it.
+        fs::rename(
+            self.state.path().join("sessions").join(id),
+            self.state.path().join("detached-session"),
+        )
+        .unwrap();
+    }
+
     fn run(&self, args: &[&str]) -> Output {
         let mut command = self.command();
         command.args(args);
@@ -123,10 +136,10 @@ fn pending_history_after_status_cannot_revive_deleted_state() {
     deleted_state_self_reaps(true);
 }
 
-fn deleted_state_self_reaps(delay_status: bool) {
+fn deleted_state_self_reaps(keep_exited: bool) {
     let mut harness = Harness::new();
     let workspace = TempDir::new().unwrap();
-    if delay_status {
+    if keep_exited {
         // Exercise terminal-record persistence, not only clean auto-removal.
         fs::write(&harness.config, "keep_exited = true\n").unwrap();
     }
@@ -150,9 +163,6 @@ fn deleted_state_self_reaps(delay_status: bool) {
     let id = started["id"].as_str().unwrap().to_string();
     harness.id = Some(id.clone());
 
-    if delay_status {
-        thread::sleep(Duration::from_millis(350));
-    }
     let status = harness.run(&["status", &id, "--json"]);
     assert!(status.status.success(), "status RPC failed after start");
     let served: Value = serde_json::from_slice(&status.stdout).unwrap();
@@ -168,7 +178,7 @@ fn deleted_state_self_reaps(delay_status: bool) {
     // The TempDir-drop shape: the whole durable state for this session
     // disappears while the worker (and its workload) keep running.
     let durable_session = harness.state.path().join("sessions").join(&id);
-    fs::remove_dir_all(&durable_session).unwrap();
+    harness.detach_durable_session(&id);
 
     // No CLI surface can address the session any more; the only honest
     // observation is the process tree and the filesystem. The worker must
@@ -297,7 +307,7 @@ fn worker_self_reaps_when_its_whole_footprint_is_deleted_in_tempdir_drop_order()
     assert!(!process_gone(workload_pid as u32), "workload must be live");
 
     fs::remove_dir_all(&runtime_session).unwrap();
-    fs::remove_dir_all(&durable_session).unwrap();
+    harness.detach_durable_session(&id);
 
     // Same observation limits as the durable-state test above: no CLI
     // surface can address the session any more, so the only honest
