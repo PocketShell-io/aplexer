@@ -11,21 +11,25 @@ import platform
 import sys
 
 
-# Release wheels exist for Linux x86_64, Linux aarch64 and Windows x86_64.
-# Linux normally
+# Release wheels exist for Linux x86_64, Linux aarch64, Windows x86_64 and
+# Windows ARM64 (arm64). Linux normally
 # reports the latter as "aarch64", but accept "arm64" as an equivalent machine
-# spelling when locating the same bundled binary.
+# spelling when locating the same bundled binary. Windows reports ARM64 as
+# "ARM64"; accept lowercase too for symmetry.
 _PLATFORM_MAP = {
     ("linux", "x86_64"): "",
     ("linux", "aarch64"): "",
     ("linux", "arm64"): "",
     ("win32", "AMD64"): ".exe",
+    ("win32", "ARM64"): ".exe",
+    ("win32", "arm64"): ".exe",
 }
 
 _SUPPORTED_PLATFORMS = [
     "Linux x86_64",
     "Linux aarch64 (arm64)",
     "Windows x86_64",
+    "Windows ARM64 (arm64)",
 ]
 
 # The one binary this wheel bundles; both console scripts execute it.

@@ -65,6 +65,12 @@ class TestPlatformDetection(unittest.TestCase):
             self.skipTest("Windows wheel not part of this release matrix")
         self._assert_resolves("win32", "AMD64", ".exe")
 
+    def test_windows_arm64_resolves_exe_when_released(self):
+        # Unconditional: the win_arm64 wheel is a required release-matrix
+        # row, so a removed _PLATFORM_MAP entry must fail, not skip.
+        self._assert_resolves("win32", "ARM64", ".exe")
+        self._assert_resolves("win32", "arm64", ".exe")
+
     def test_unreleased_platforms_are_unsupported(self):
         for plat, machine in (
             ("darwin", "x86_64"),
