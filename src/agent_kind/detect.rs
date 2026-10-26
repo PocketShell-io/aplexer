@@ -3,7 +3,7 @@
 //! environment.
 
 use std::collections::{HashSet, VecDeque};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::fs;
 use std::path::Path;
 
@@ -16,7 +16,7 @@ use super::{AgentKind, DetectedAgent, ProfileVariants};
 const MAX_SCANNED_PIDS: usize = 4096;
 
 /// `/proc/<pid>/comm`, trimmed. `None` when the pid is gone or unreadable.
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn read_comm(proc_root: &Path, pid: u32) -> Option<String> {
     let text = fs::read_to_string(proc_root.join(pid.to_string()).join("comm")).ok()?;
     Some(text.trim().to_owned())
@@ -24,7 +24,7 @@ fn read_comm(proc_root: &Path, pid: u32) -> Option<String> {
 
 /// `/proc/<pid>/cmdline` (NUL-delimited) joined with spaces. `None` when the
 /// pid is gone or unreadable; an empty string for a kernel thread.
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn read_cmdline(proc_root: &Path, pid: u32) -> Option<String> {
     let raw = fs::read(proc_root.join(pid.to_string()).join("cmdline")).ok()?;
     let decoded = String::from_utf8_lossy(&raw);
@@ -42,7 +42,7 @@ fn read_cmdline(proc_root: &Path, pid: u32) -> Option<String> {
 /// The value of `var` in `/proc/<pid>/environ` (NUL-delimited `KEY=value`
 /// words). `None` when the pid is gone, unreadable, or does not carry the
 /// variable -- the same defensive read every other /proc probe here does.
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn read_environ_var(proc_root: &Path, pid: u32, var: &str) -> Option<String> {
     let raw = fs::read(proc_root.join(pid.to_string()).join("environ")).ok()?;
     let prefix = format!("{var}=");
@@ -70,6 +70,26 @@ fn read_cmdline(_proc_root: &Path, pid: u32) -> Option<String> {
 #[cfg(windows)]
 fn read_environ_var(_proc_root: &Path, pid: u32, var: &str) -> Option<String> {
     crate::sys::windows::procinfo::environ_var(pid, var)
+}
+
+/// macOS backends: the short image name, the `KERN_PROCARGS2` argument
+/// vector, and one `KERN_PROCARGS2` environment variable, all via
+/// `sys::macos`; `proc_root` is unused.
+#[cfg(target_os = "macos")]
+fn read_comm(_proc_root: &Path, pid: u32) -> Option<String> {
+    crate::sys::macos::proc_name_of(pid)
+}
+
+#[cfg(target_os = "macos")]
+fn read_cmdline(_proc_root: &Path, pid: u32) -> Option<String> {
+    let argv = crate::sys::macos::proc_argv_of(pid)?;
+    Some(argv.join(" ").trim().to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn read_environ_var(_proc_root: &Path, pid: u32, var: &str) -> Option<String> {
+    let block = crate::sys::macos::proc_environ_bytes(pid)?;
+    crate::sys::macos::environ_lookup(&block, var)
 }
 
 #[cfg(windows)]

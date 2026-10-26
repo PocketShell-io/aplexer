@@ -239,6 +239,21 @@ pub fn boot_time_us() -> Option<u64> {
 /// bytes. `None` when the process is gone or its arguments are unreadable
 /// (another user's process, hardened runtime).
 pub fn proc_environ_bytes(pid: u32) -> Option<Vec<u8>> {
+    proc_args(pid).map(|args| args.env)
+}
+
+/// Argument vector of a process (`KERN_PROCARGS2`), lossy-decoded. `None`
+/// when the process is gone or its arguments are unreadable.
+pub fn proc_argv_of(pid: u32) -> Option<Vec<String>> {
+    proc_args(pid).map(|args| args.argv)
+}
+
+struct ProcArgs {
+    argv: Vec<String>,
+    env: Vec<u8>,
+}
+
+fn proc_args(pid: u32) -> Option<ProcArgs> {
     let pid_i32 = u32_to_pid(pid)?;
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid_i32];
     let mut size: libc::size_t = 0;
@@ -274,26 +289,24 @@ pub fn proc_environ_bytes(pid: u32) -> Option<Vec<u8>> {
     // padding envp(NUL-term...). Skip argc, the exec path, then argc argv
     // entries; the rest is the environment block.
     let mut cursor: usize = 4;
-    let skip_cstring = |cursor: &mut usize| {
+    let take_cstring = |cursor: &mut usize| {
         let start = *cursor;
         while *cursor < buffer.len() && buffer[*cursor] != 0 {
             *cursor += 1;
         }
         if *cursor >= buffer.len() {
-            return false;
-        }
-        *cursor += 1;
-        let _ = start;
-        true
-    };
-    if !skip_cstring(&mut cursor) {
-        return None;
-    }
-    let argc = u32::from_ne_bytes(buffer[0..4].try_into().ok()?) as usize;
-    for _ in 0..argc {
-        if !skip_cstring(&mut cursor) {
             return None;
         }
+        let bytes = buffer[start..*cursor].to_vec();
+        *cursor += 1;
+        Some(bytes)
+    };
+    take_cstring(&mut cursor)?;
+    let argc = u32::from_ne_bytes(buffer[0..4].try_into().ok()?) as usize;
+    let mut argv = Vec::with_capacity(argc.min(1024));
+    for _ in 0..argc {
+        let arg = take_cstring(&mut cursor)?;
+        argv.push(String::from_utf8_lossy(&arg).into_owned());
     }
     // Skip padding NULs between argv and envp.
     while cursor < buffer.len() && buffer[cursor] == 0 {
@@ -302,7 +315,10 @@ pub fn proc_environ_bytes(pid: u32) -> Option<Vec<u8>> {
     if cursor >= buffer.len() {
         return None;
     }
-    Some(buffer[cursor..].to_vec())
+    Some(ProcArgs {
+        argv,
+        env: buffer[cursor..].to_vec(),
+    })
 }
 
 /// Current working directory of a process, via

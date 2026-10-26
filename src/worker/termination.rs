@@ -134,9 +134,7 @@ pub(super) fn install_termination_handlers() -> Result<()> {
             if libc::sigaction(signal, &action, std::ptr::null_mut()) != 0 {
                 TERMINATION_EVENT_FD.store(-1, Ordering::SeqCst);
                 #[cfg(target_os = "linux")]
-                unsafe {
-                    libc::close(event_fd);
-                }
+                libc::close(event_fd);
                 #[cfg(target_os = "macos")]
                 close_worker_event_pipe(event_fd, &TERMINATION_EVENT_WRITE);
                 return Err(io::Error::last_os_error())
@@ -151,9 +149,7 @@ pub(super) fn install_termination_handlers() -> Result<()> {
         if rc != 0 {
             TERMINATION_EVENT_FD.store(-1, Ordering::SeqCst);
             #[cfg(target_os = "linux")]
-            unsafe {
-                libc::close(event_fd);
-            }
+            libc::close(event_fd);
             #[cfg(target_os = "macos")]
             close_worker_event_pipe(event_fd, &TERMINATION_EVENT_WRITE);
             return Err(io::Error::from_raw_os_error(rc))
@@ -293,9 +289,7 @@ pub(super) fn install_child_reaper_handler() -> Result<RawFd> {
         if libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut()) != 0 {
             CHILD_EVENT_FD.store(-1, Ordering::SeqCst);
             #[cfg(target_os = "linux")]
-            unsafe {
-                libc::close(event_fd);
-            }
+            libc::close(event_fd);
             #[cfg(target_os = "macos")]
             close_worker_event_pipe(event_fd, &CHILD_EVENT_WRITE);
             return Err(io::Error::last_os_error()).context("install SIGCHLD handler");
@@ -307,9 +301,7 @@ pub(super) fn install_child_reaper_handler() -> Result<RawFd> {
         if rc != 0 {
             CHILD_EVENT_FD.store(-1, Ordering::SeqCst);
             #[cfg(target_os = "linux")]
-            unsafe {
-                libc::close(event_fd);
-            }
+            libc::close(event_fd);
             #[cfg(target_os = "macos")]
             close_worker_event_pipe(event_fd, &CHILD_EVENT_WRITE);
             return Err(io::Error::from_raw_os_error(rc)).context("unblock SIGCHLD");
