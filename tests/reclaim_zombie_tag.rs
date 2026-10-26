@@ -438,11 +438,20 @@ fn start_reclaims_a_workspace_tag_held_by_a_broken_record() {
     );
 
     // Reclaiming from a worker that never proved its containment domain
-    // empty is reported, exactly as `a prune` reports the same class.
+    // empty is reported, exactly as `a prune` reports the same class --
+    // on Linux, where the record carries no locator. On macOS the session
+    // always records its pgid domain and the probe verified it empty, so
+    // the same reclaim is proven-clean.
     let stderr = String::from_utf8_lossy(&started.stderr);
+    #[cfg(target_os = "linux")]
     assert!(
         stderr.contains("without a containment proof") && stderr.contains(&zombie.id),
         "unproven reclaim was reported as a clean one: {stderr}"
+    );
+    #[cfg(target_os = "macos")]
+    assert!(
+        !stderr.contains("without a containment proof"),
+        "the empty pgid domain must reclaim as proven: {stderr}"
     );
 
     harness.run_ok(&["kill", &replacement, "--signal", "KILL", "--grace-ms", "0"]);
