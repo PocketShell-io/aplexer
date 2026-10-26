@@ -114,21 +114,24 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::process::Output
 
 fn start_session(harness: &Harness, workspace: &Path, tag: &str) -> String {
     let workspace = workspace.to_str().expect("utf8 workspace path");
-    let stdout = harness.run_ok(
-        &[
-            "start",
-            "--workspace",
-            workspace,
-            "--tag",
-            tag,
-            "--json",
-            "--",
-            "bash",
-            "--norc",
-            "-l",
-        ],
-        Duration::from_secs(15),
-    );
+    // A login shell sources /etc/profile, which on macOS runners prints the
+    // zsh MOTD and shifts the exact screen layout these tests assert. The
+    // scroll-region behavior under test does not depend on login init.
+    #[cfg(target_os = "macos")]
+    let shell: &[&str] = &["bash", "--norc"];
+    #[cfg(not(target_os = "macos"))]
+    let shell: &[&str] = &["bash", "--norc", "-l"];
+    let mut args = vec![
+        "start",
+        "--workspace",
+        workspace,
+        "--tag",
+        tag,
+        "--json",
+        "--",
+    ];
+    args.extend_from_slice(shell);
+    let stdout = harness.run_ok(&args, Duration::from_secs(15));
     let value: Value = serde_json::from_str(&stdout).expect("`a start` output is JSON");
     value["id"]
         .as_str()
