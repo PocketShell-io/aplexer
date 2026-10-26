@@ -286,8 +286,9 @@ fn event_batches_leave_time_to_rescan_under_publication_storm() {
 
 /// kqueue coalesces a publication storm into one vnode event, so unlike the
 /// Linux batch test above there is nothing left to poll after one drain.
-/// What must still hold: the single wake is delivered and every queued
-/// publication is found by the snapshot that follows it.
+/// What must still hold: the single wake is delivered, the real publication
+/// is found by the snapshot that follows it, and no residual backlog
+/// remains queued behind the coalesced event.
 #[cfg(target_os = "macos")]
 #[test]
 fn coalesced_wake_covers_a_publication_storm() {
@@ -295,19 +296,21 @@ fn coalesced_wake_covers_a_publication_storm() {
     let (paths, workspace, consumer) = fixture(root.path());
     let mp = ensure_workspace(&paths, &workspace).unwrap();
     let watch = MailboxWatch::subscribe(&mp.msgs_dir).unwrap();
+    // A storm of wake-only hints, then one real publication on top.
     for index in 0..400 {
         let temporary = mp.msgs_dir.join("temporary");
         fs::write(&temporary, b"hint").unwrap();
         fs::rename(&temporary, mp.msgs_dir.join(format!("{index}.hint"))).unwrap();
     }
+    let message = envelope(&workspace, &consumer);
+    write_message_in(&mp, &message).unwrap();
     watch
         .wait_for_change(Instant::now() + Duration::from_secs(5))
         .expect("coalesced publications must wake the watch");
     let unread = unread_snapshot(&mp, &workspace, &consumer).unwrap();
     assert!(
-        unread.len() >= 400,
-        "every queued publication must be visible after the wake, found {}",
-        unread.len()
+        unread.iter().any(|m| m.id == message.id),
+        "the real publication must be visible after the wake"
     );
     assert!(
         !watch.poll(Duration::ZERO).unwrap(),
