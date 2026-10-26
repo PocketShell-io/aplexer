@@ -57,7 +57,10 @@ jobs:
         run: |
           cargo build --locked --bins
           ./target/debug/aplexer --version
-          export APLEXER_STATE_DIR="$(mktemp -d)" APLEXER_RUNTIME_DIR="$(mktemp -d)"
+          # Explicit /tmp templates: bare `mktemp -d` ignores TMPDIR on
+          # macOS and lands under the long /var/folders path, blowing the
+          # 104-byte sockaddr_un budget for control sockets.
+          export APLEXER_STATE_DIR="$(mktemp -d /tmp/aplexer-state-XXXXXX)" APLEXER_RUNTIME_DIR="$(mktemp -d /tmp/aplexer-runtime-XXXXXX)"
           ./target/debug/aplexer start --workspace "$RUNNER_TEMP" --tag "smoke-${{ matrix.arch }}" -- sleep 60
           ./target/debug/aplexer list | grep "smoke-${{ matrix.arch }}"
           ./target/debug/aplexer kill "smoke-${{ matrix.arch }}"
