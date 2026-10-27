@@ -530,6 +530,9 @@ fn prune_ages_expired_tombstones_and_leaves_archives() {
         finished_at_ms: 0,
         cause: aplexer::retired::TombstoneCause::Pruned,
         exit: None,
+        created_at_ms: None,
+        containment_empty: None,
+        output: None,
     };
     let stale_dir = paths.retired_session(stale.id);
     aplexer::ensure_private_dir(&stale_dir).unwrap();
@@ -664,6 +667,9 @@ fn legacy_tombstone_without_exit_stays_readable() {
     let stored = aplexer::retired::read_finished_tombstone(&paths, record.id)
         .expect("legacy tombstone must still parse");
     assert!(stored.exit.is_none());
+    assert!(stored.output.is_none());
+    assert!(stored.created_at_ms.is_none());
+    assert!(stored.containment_empty.is_none());
     let rendered = aplexer::retired::tombstone_kill_json(&stored);
     assert!(rendered.get("exit").is_none(), "unknown exit must stay unknown, never code 0");
 }
@@ -688,4 +694,28 @@ fn remove_session_state_carries_record_exit_into_tombstone() {
     let exit = stored.exit.as_ref().expect("record exit must be carried");
     assert_eq!(exit.code, Some(7));
     assert_eq!(exit.exited_at_ms, 1_700_000_000_007);
+}
+
+#[test]
+fn generic_removal_does_not_downgrade_worker_evidence() {
+    let mut record = mk_record("/ws/retired-output", "receipt", Phase::Exited);
+    let (paths, _state_dir, _runtime_dir) = seeded_registry(&mut record);
+    let dir = paths.retired_session(record.id);
+    aplexer::ensure_private_dir(&dir).unwrap();
+    let rich = serde_json::json!({
+        "id": record.id, "workspace": record.workspace, "tag": record.tag,
+        "finished_at_ms": 123, "cause": "finished", "created_at_ms": 100,
+        "containment_empty": true,
+        "exit": {"code": 7, "signal": null, "oom_killed": false, "exited_at_ms": 120},
+        "output": {"status": "complete", "observed_bytes": 2,
+            "limit_bytes": 65536, "bytes": [255, 10]}
+    });
+    aplexer::atomic_write_json(&dir.join(aplexer::retired::TOMBSTONE_FILE), &rich).unwrap();
+    aplexer::retired::write_finished_tombstone(
+        &paths, record.id, &record.workspace, &record.tag,
+        aplexer::retired::TombstoneCause::Pruned, None,
+    );
+    let actual: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.join(aplexer::retired::TOMBSTONE_FILE)).unwrap()).unwrap();
+    assert_eq!(actual, rich);
 }

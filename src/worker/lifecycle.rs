@@ -156,15 +156,47 @@ fn remove_finished_state(runtime: &WorkerRuntime, exit: &crate::record::ExitInfo
     // native ExitInfo rides along so a later reader of
     // `retired-sessions/<id>/tombstone.json` learns the real code/signal/
     // OOM outcome instead of having to guess it from "finished".
-    if let Ok(record) = runtime.record() {
-        crate::retired::write_finished_tombstone(
-            &runtime.paths,
-            runtime.id,
-            &record.workspace,
-            &record.tag,
-            crate::retired::TombstoneCause::Finished,
-            Some(exit),
-        );
+    let mut retry = HISTORY_RETRY_INITIAL;
+    loop {
+        // An explicit external retirement must not resurrect state.
+        if control_socket::durable_record_vanished(runtime) {
+            return;
+        }
+        let result = runtime.record().and_then(|record| {
+            if record
+                .env
+                .get("APLEXER_RETAIN_RETIRED_OUTPUT")
+                .map(String::as_str)
+                != Some("1")
+            {
+                crate::retired::write_finished_tombstone(
+                    &runtime.paths,
+                    runtime.id,
+                    &record.workspace,
+                    &record.tag,
+                    crate::retired::TombstoneCause::Finished,
+                    Some(exit),
+                );
+                return Ok(());
+            }
+            crate::retired::write_worker_receipt(
+                &runtime.paths,
+                &record,
+                exit,
+                runtime.output.retirement_output(),
+            )
+        });
+        match result {
+            Ok(()) => break,
+            Err(error) => {
+                log_best_effort(&format!(
+                    "aplexer worker: retain retirement receipt: {error:#}; retrying in {}ms",
+                    retry.as_millis()
+                ));
+                thread::sleep(retry);
+                retry = retry.saturating_mul(2).min(HISTORY_RETRY_MAX);
+            }
+        }
     }
     if let Err(error) = fs::remove_dir_all(runtime.paths.state_session(runtime.id)) {
         log_best_effort(&format!(

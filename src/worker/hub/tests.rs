@@ -456,3 +456,43 @@ pub(super) fn record_broadcast_drops_dead_receivers_and_spares_finalized_session
         "a finalized session must not push record updates"
     );
 }
+
+#[test]
+fn retirement_evidence_never_presents_a_partial_stream_as_complete() {
+    use crate::retired::RETIRED_OUTPUT_MAX_BYTES;
+    for (capacity, length, expected) in [
+        (1024, 0, "complete"),
+        (1024, 7, "complete"),
+        (
+            RETIRED_OUTPUT_MAX_BYTES,
+            RETIRED_OUTPUT_MAX_BYTES,
+            "complete",
+        ),
+        (
+            RETIRED_OUTPUT_MAX_BYTES + 1,
+            RETIRED_OUTPUT_MAX_BYTES + 1,
+            "oversize",
+        ),
+        (4, 7, "oversize"),
+        (0, 7, "oversize"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = OutputHub::new(
+            History::open(dir.path().join("history.bin"), capacity).unwrap(),
+            24,
+            80,
+            dir.path().join("screen.txt"),
+        )
+        .unwrap();
+        let bytes: Vec<u8> = (0..length).map(|i| (i % 256) as u8).collect();
+        hub.append(&bytes).unwrap();
+        let receipt = hub.retirement_output();
+        assert_eq!(receipt.status, expected);
+        assert_eq!(receipt.observed_bytes, Some(length as u64));
+        if expected == "complete" {
+            assert_eq!(receipt.bytes.as_ref(), Some(&bytes));
+        } else {
+            assert!(receipt.bytes.is_none());
+        }
+    }
+}

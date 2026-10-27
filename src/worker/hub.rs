@@ -164,6 +164,27 @@ impl OutputHub {
         }
         Ok(())
     }
+    pub(super) fn retirement_output(&self) -> crate::retired::RetiredOutput {
+        use crate::retired::{RetiredOutput, RETIRED_OUTPUT_MAX_BYTES};
+        let Ok(inner) = lock(&self.inner) else {
+            return RetiredOutput {
+                status: "missing".into(),
+                observed_bytes: None,
+                limit_bytes: RETIRED_OUTPUT_MAX_BYTES,
+                bytes: None,
+            };
+        };
+        let total = inner.history.observed_end;
+        let complete =
+            total <= RETIRED_OUTPUT_MAX_BYTES as u64 && total == inner.history.bytes.len() as u64;
+        RetiredOutput {
+            status: if complete { "complete" } else { "oversize" }.into(),
+            observed_bytes: Some(total),
+            limit_bytes: RETIRED_OUTPUT_MAX_BYTES,
+            bytes: complete.then(|| inner.history.snapshot(None)),
+        }
+    }
+
     pub(super) fn snapshot(&self, max: Option<usize>) -> Result<Vec<u8>> {
         Ok(lock(&self.inner)?
             .history

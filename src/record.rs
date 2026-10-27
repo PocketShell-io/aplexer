@@ -485,9 +485,14 @@ impl SessionRecord {
 
 /// Environment entries that are session metadata rather than launch
 /// secrets. Transcript discovery needs these profile-specific roots after
-/// the worker exits; every other launch value remains one-shot/private.
-pub(crate) const SESSION_METADATA_ENV_KEYS: &[&str] =
-    &["CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME"];
+/// the worker exits. The explicit retirement-output opt-in is nonsecret
+/// lifecycle metadata; every other launch value remains one-shot/private.
+pub(crate) const SESSION_METADATA_ENV_KEYS: &[&str] = &[
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "GROK_HOME",
+    "APLEXER_RETAIN_RETIRED_OUTPUT",
+];
 
 pub fn session_metadata_env(env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     env.iter()

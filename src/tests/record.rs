@@ -383,13 +383,17 @@ fn legacy_exit_info_remains_a_containment_proof() {
 }
 
 #[test]
-fn session_metadata_keeps_only_transcript_roots() {
+fn session_metadata_keeps_transcript_roots_and_explicit_retirement_opt_in() {
     let env = BTreeMap::from([
         ("CODEX_HOME".to_string(), "/profiles/codex".to_string()),
         ("API_TOKEN".to_string(), "secret".to_string()),
+        ("APLEXER_RETAIN_RETIRED_OUTPUT".to_string(), "1".to_string()),
     ]);
     assert_eq!(
         session_metadata_env(&env),
-        BTreeMap::from([("CODEX_HOME".to_string(), "/profiles/codex".to_string())])
+        BTreeMap::from([
+            ("CODEX_HOME".to_string(), "/profiles/codex".to_string()),
+            ("APLEXER_RETAIN_RETIRED_OUTPUT".to_string(), "1".to_string()),
+        ])
     );
 }

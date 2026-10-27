@@ -27,6 +27,20 @@ use crate::persist::atomic_write_json;
 use crate::record::ExitInfo;
 use crate::util::now_ms;
 
+/// Maximum complete raw PTY evidence retained per retirement receipt.
+pub const RETIRED_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+
+/// Raw bytes are present only when the entire observed stream fits both
+/// the history ring and this contract's ceiling. Never present a tail as complete.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetiredOutput {
+    pub status: String,
+    pub observed_bytes: Option<u64>,
+    pub limit_bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<u8>>,
+}
+
 pub const TOMBSTONE_FILE: &str = "tombstone.json";
 
 /// How long a tombstone keeps answering "already finished" before `a prune`
@@ -73,6 +87,12 @@ pub struct FinishedTombstone {
     /// unknown). Old tombstones predate this field and parse as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<ExitInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub containment_empty: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<RetiredOutput>,
 }
 
 /// Leaves the "this session is deliberately gone" marker. Best-effort by
@@ -109,6 +129,11 @@ fn write_finished_tombstone_checked(
     if dir.join("session.json").exists() {
         return Ok(());
     }
+    // Recovery may see active state left after successful receipt publication.
+    // Never downgrade its exact native evidence to a generic removal marker.
+    if read_finished_tombstone(paths, id).is_some_and(|receipt| receipt.output.is_some()) {
+        return Ok(());
+    }
     ensure_private_dir(&dir)?;
     let tombstone = FinishedTombstone {
         id,
@@ -117,6 +142,9 @@ fn write_finished_tombstone_checked(
         finished_at_ms: now_ms(),
         cause,
         exit: exit.cloned(),
+        created_at_ms: None,
+        containment_empty: None,
+        output: None,
     };
     atomic_write_json(&dir.join(TOMBSTONE_FILE), &tombstone)
         .with_context(|| format!("write finished-tombstone for session {id}"))
@@ -289,5 +317,31 @@ pub fn tombstone_kill_json(tombstone: &FinishedTombstone) -> serde_json::Value {
 /// parse -- old tombstones without `exit` still parse, with `exit: None`.
 pub fn read_finished_tombstone(paths: &Paths, id: Uuid) -> Option<FinishedTombstone> {
     let text = std::fs::read_to_string(paths.retired_session(id).join(TOMBSTONE_FILE)).ok()?;
-    serde_json::from_str(&text).ok()
+    let receipt: FinishedTombstone = serde_json::from_str(&text).ok()?;
+    (receipt.id == id).then_some(receipt)
+}
+
+/// Publish the worker's exact-incarnation receipt before removing active state.
+/// Failure keeps active state available instead of discarding the evidence.
+pub(crate) fn write_worker_receipt(
+    paths: &Paths,
+    record: &crate::SessionRecord,
+    exit: &ExitInfo,
+    output: RetiredOutput,
+) -> Result<()> {
+    let receipt = FinishedTombstone {
+        id: record.id,
+        workspace: record.workspace.clone(),
+        tag: record.tag.clone(),
+        finished_at_ms: now_ms(),
+        cause: TombstoneCause::Finished,
+        exit: Some(exit.clone()),
+        created_at_ms: Some(record.created_at_ms),
+        containment_empty: Some(true),
+        output: Some(output),
+    };
+    atomic_write_json(
+        &paths.retired_session(record.id).join(TOMBSTONE_FILE),
+        &receipt,
+    )
 }
