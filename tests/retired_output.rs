@@ -33,6 +33,8 @@ fn naturally_retired_output_survives_without_a_census_for_each_native_exit() {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
         fs::create_dir(&workspace).unwrap();
+        // macOS exposes /tmp through /private/tmp; native identity is canonical.
+        let workspace = fs::canonicalize(&workspace).unwrap();
         let state = root.path().join("state");
         let runtime = root.path().join("runtime");
         let launch = Command::new(env!("CARGO_BIN_EXE_aplexer"))
