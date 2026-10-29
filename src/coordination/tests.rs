@@ -761,3 +761,70 @@ fn snapshot_skips_a_busy_mailbox_and_matches_the_wrappers() {
         snapshot.mailboxes
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn relations_from_worktree_roots_keep_nested_and_foreign_repositories_elsewhere() {
+    let isolated = isolated();
+    let base = crate::paths::canonical_tempdir();
+    let repo = init_repo(base.path().join("repo"));
+    let worktree = base.path().join("wt");
+    run(&format!(
+        "git -C {} worktree add -b side {}",
+        repo.display(),
+        worktree.display()
+    ));
+    // A subdirectory of the sibling worktree is still that worktree: the
+    // relator verifies subdirectories with git rather than by prefix.
+    let wt_subdirectory = worktree.join("pkg");
+    std::fs::create_dir(&wt_subdirectory).unwrap();
+    // An independent repository nested inside the checkout and an
+    // unrelated repository next to it share no common dir.
+    let nested = init_repo(repo.join("vendor").join("nested"));
+    let foreign = init_repo(base.path().join("foreign"));
+    let plain = base.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+
+    for (path, tag) in [
+        (&worktree, "wt-root"),
+        (&wt_subdirectory, "wt-sub"),
+        (&nested, "nested"),
+        (&foreign, "foreign"),
+        (&plain, "plain"),
+    ] {
+        record_at(&isolated.paths, path, tag, Phase::Running, true);
+    }
+    // Many records sharing one origin resolve to one relation each.
+    for n in 0..5 {
+        record_at(
+            &isolated.paths,
+            &worktree,
+            &format!("wt-dup-{n}"),
+            Phase::Exited,
+            false,
+        );
+    }
+
+    let view = context(&isolated.paths, None, &repo).unwrap();
+    let relation = |tag: &str| {
+        view.peers
+            .iter()
+            .find(|p| p.session.tag == tag)
+            .map(|p| p.relation)
+    };
+    assert_eq!(relation("wt-root"), Some(Relation::RelatedWorktree));
+    assert_eq!(relation("wt-sub"), Some(Relation::RelatedWorktree));
+    for n in 0..5 {
+        assert_eq!(
+            relation(&format!("wt-dup-{n}")),
+            Some(Relation::RelatedWorktree)
+        );
+    }
+    assert_eq!(relation("nested"), None, "nested repository is elsewhere");
+    assert_eq!(relation("foreign"), None, "foreign repository is elsewhere");
+    assert_eq!(relation("plain"), None, "plain directory is elsewhere");
+
+    // Outside any git work tree only the queried directory itself relates.
+    let from_plain = context(&isolated.paths, None, &plain).unwrap();
+    assert!(from_plain.peers.iter().all(|p| p.session.tag == "plain"));
+}

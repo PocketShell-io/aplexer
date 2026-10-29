@@ -9,12 +9,14 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use super::gitinfo::git_info;
+use super::gitinfo::{git_info, worktree_roots};
 use super::state::{self, Participation};
 use super::WorkMode;
 use crate::{
     canonical_workspace, list_records, now_ms, observed_state, Paths, Phase, SessionRecord,
 };
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 /// How many peers/overlaps/unread refs the rendered summary walks through,
 /// regardless of how many the JSON carries. JSON retains all matching safe
@@ -165,17 +167,8 @@ pub fn context(paths: &Paths, id: Option<Uuid>, workspace: &Path) -> Result<Work
     // subdirectory you joined, or an ancestor of it — and otherwise the
     // origin workspace itself. Claims you made elsewhere in this checkout
     // participate exactly like the exact-match one.
-    let is_related = |directory: &Path| {
-        !matches!(
-            relation_of(
-                directory,
-                &workspace,
-                location.git_worktree.as_ref(),
-                location.git_common_dir.as_ref(),
-            ),
-            Relation::Elsewhere
-        )
-    };
+    let relator = Relator::new(&workspace, &location);
+    let is_related = |directory: &Path| !matches!(relator.relation(directory), Relation::Elsewhere);
     let mut your_regions: Vec<(Region, Option<WorkMode>)> = your_claims
         .iter()
         .filter(|claim| is_related(&claim.workspace))
@@ -216,21 +209,11 @@ pub fn context(paths: &Paths, id: Option<Uuid>, workspace: &Path) -> Result<Work
         // the same directory: a session whose origin (or any declaration
         // target) sits in this worktree or a sibling worktree of this
         // repository is visible, with or without a declaration.
-        let origin_relation = relation_of(
-            &record.workspace,
-            &workspace,
-            location.git_worktree.as_ref(),
-            location.git_common_dir.as_ref(),
-        );
+        let origin_relation = relator.relation(&record.workspace);
         let mut declared_relation = Relation::Elsewhere;
         let mut related: Vec<DeclarationView> = Vec::new();
         for claim in &declarations {
-            let claim_relation = relation_of(
-                &claim.workspace,
-                &workspace,
-                location.git_worktree.as_ref(),
-                location.git_common_dir.as_ref(),
-            );
+            let claim_relation = relator.relation(&claim.workspace);
             declared_relation = best_relation(declared_relation, claim_relation);
             if !matches!(claim_relation, Relation::Elsewhere) {
                 related.push(declaration_view(claim, record, now));
@@ -525,7 +508,77 @@ fn location_of(workspace: &Path) -> WorkspaceLocation {
     }
 }
 
-/// Relates one candidate directory (an origin workspace or a declaration
+/// Relates candidate directories (origin workspaces and declaration targets)
+/// to the queried directory using git facts: subdirectories of the same
+/// checkout share the worktree root, sibling worktrees share only the common
+/// dir, and everything else is elsewhere.
+///
+/// `context` runs from engine hooks after every tool call of every session
+/// and walks every session record, so asking git twice per candidate forked
+/// thousands of processes per call on a busy host. The relator instead asks
+/// git once for the queried repository's worktree roots: a candidate that is
+/// exactly one of those roots is classified without git, a candidate outside
+/// all of them is elsewhere (a directory related to this repository is
+/// always inside one of its worktrees), and only subdirectories of a root
+/// (which might be a nested repository) still get a memoized `git_info`.
+struct Relator<'a> {
+    queried: &'a Path,
+    worktree: Option<&'a PathBuf>,
+    common: Option<&'a PathBuf>,
+    roots: Option<Vec<PathBuf>>,
+    cache: RefCell<HashMap<PathBuf, Relation>>,
+}
+
+impl<'a> Relator<'a> {
+    fn new(queried: &'a Path, location: &'a WorkspaceLocation) -> Self {
+        let worktree = location.git_worktree.as_ref();
+        let common = location.git_common_dir.as_ref();
+        let roots = match (worktree, common) {
+            (Some(_), Some(_)) => worktree_roots(queried),
+            _ => None,
+        };
+        Relator {
+            queried,
+            worktree,
+            common,
+            roots,
+            cache: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn relation(&self, candidate: &Path) -> Relation {
+        if candidate == self.queried {
+            return Relation::SameCheckout;
+        }
+        // Outside a git work tree nothing but the queried directory itself
+        // can relate, so no candidate needs a git lookup.
+        let (Some(worktree), Some(_)) = (self.worktree, self.common) else {
+            return Relation::Elsewhere;
+        };
+        if let Some(cached) = self.cache.borrow().get(candidate) {
+            return *cached;
+        }
+        let relation = match &self.roots {
+            Some(roots) if roots.iter().any(|root| root == candidate) => {
+                if candidate == worktree.as_path() {
+                    Relation::SameCheckout
+                } else {
+                    Relation::RelatedWorktree
+                }
+            }
+            Some(roots) if !roots.iter().any(|root| candidate.starts_with(root)) => {
+                Relation::Elsewhere
+            }
+            _ => relation_of(candidate, self.queried, self.worktree, self.common),
+        };
+        self.cache
+            .borrow_mut()
+            .insert(candidate.to_path_buf(), relation);
+        relation
+    }
+}
+
+/// Per-directory fallback for `Relator`: relates one candidate directory (an origin workspace or a declaration
 /// target) to the queried directory using git facts: subdirectories of the
 /// same checkout share the worktree root, sibling worktrees share only the
 /// common dir, and everything else is elsewhere.

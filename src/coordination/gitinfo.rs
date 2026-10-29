@@ -38,6 +38,31 @@ pub(crate) fn git_info(directory: &Path) -> Option<GitInfo> {
     })
 }
 
+/// Every checkout root of the repository `directory` belongs to, from one
+/// `git worktree list --porcelain -z` (main worktree included, canonicalized
+/// like `git_info`). `None` when git cannot answer (not a repository, or a
+/// `git` without `-z`): callers then fall back to per-directory `git_info`.
+/// One call answers "which worktree is this?" for any number of candidate
+/// directories, instead of two `git` processes per candidate.
+pub(crate) fn worktree_roots(directory: &Path) -> Option<Vec<PathBuf>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let roots = text
+        .split('\0')
+        .filter_map(|field| field.strip_prefix("worktree "))
+        .filter_map(|root| canonicalize_against(Path::new(root), directory))
+        .collect();
+    Some(roots)
+}
+
 fn rev_parse(directory: &Path, args: &[&str]) -> Option<PathBuf> {
     let output = Command::new("git")
         .arg("-C")
