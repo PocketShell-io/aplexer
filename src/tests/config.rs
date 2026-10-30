@@ -539,3 +539,198 @@ fn antigravity_builtin_launches_the_google_cli() {
     let config = load_config_text("").unwrap();
     assert_eq!(config.engines["antigravity"].command, vec!["agy"]);
 }
+
+#[test]
+fn zcodex_engine_and_profile_launches_inject_codex_home() {
+    let config = load_config_text(
+        r#"
+        [engines.zcodex]
+        command = ["/opt/bin/zcodex", "-c", "check_for_update_on_startup=false"]
+
+        [profiles.zcodex]
+        engine = "codex"
+        executable = "/opt/bin/zcodex"
+        "#,
+    )
+    .unwrap();
+    let ws = std::env::temp_dir();
+    let expected_home = crate::paths::home_dir()
+        .unwrap()
+        .join(".zcodex")
+        .display()
+        .to_string();
+
+    let by_engine = config
+        .resolve(
+            Vec::new(),
+            Some("zcodex"),
+            None,
+            &ws,
+            None,
+            &BTreeMap::new(),
+            &Limits::default(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        by_engine.env.get("CODEX_HOME").map(String::as_str),
+        Some(expected_home.as_str())
+    );
+
+    let by_profile = config
+        .resolve(
+            Vec::new(),
+            None,
+            Some("zcodex"),
+            &ws,
+            None,
+            &BTreeMap::new(),
+            &Limits::default(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        by_profile.env.get("CODEX_HOME").map(String::as_str),
+        Some(expected_home.as_str())
+    );
+}
+
+#[test]
+fn discovery_ignore_profiles_filters_discovered_but_keeps_explicit_profiles() {
+    let config = load_config_text(
+        r#"
+        [discovery]
+        ignore_profiles = ["godex", ".zodex", "zlaude"]
+
+        [profiles.zlaude]
+        engine = "claude"
+        "#,
+    )
+    .unwrap();
+    assert!(!config.profiles.contains_key("godex"));
+    assert!(!config.profiles.contains_key("zodex"));
+    assert!(
+        config.profiles.contains_key("zlaude"),
+        "explicit [profiles.zlaude] entry must survive discovery filtering"
+    );
+}
+
+#[test]
+fn deprecated_shortcut_engines_migrate_to_canonical_engine_profile_and_model_flags() {
+    let config = load_config_text(
+        r#"
+        [profiles.codex-orin]
+        engine = "codex"
+        [profiles.codex-orin.env]
+        CODEX_HOME = "/tmp/orin-codex-home"
+        "#,
+    )
+    .unwrap();
+    let ws = std::env::temp_dir();
+
+    let cases: &[(&str, &str, Option<&str>, &[&str])] = &[
+        (
+            "argon",
+            "antigravity",
+            None,
+            &["agy", "--model", "gemini-4-argon-high"],
+        ),
+        (
+            "flash",
+            "antigravity",
+            None,
+            &["agy", "--model", "gemini-3.8-flash-high"],
+        ),
+        ("opus", "claude", None, &["claude", "--model", "opus"]),
+        ("sonnet", "claude", None, &["claude", "--model", "sonnet"]),
+        (
+            "astra",
+            "codex",
+            None,
+            &[
+                "codex",
+                "-c",
+                "check_for_update_on_startup=false",
+                "-m",
+                "gpt-6-astra",
+            ],
+        ),
+        (
+            "sol",
+            "codex",
+            None,
+            &[
+                "codex",
+                "-c",
+                "check_for_update_on_startup=false",
+                "-m",
+                "gpt-6.1-sol",
+            ],
+        ),
+        (
+            "luna",
+            "codex",
+            None,
+            &[
+                "codex",
+                "-c",
+                "check_for_update_on_startup=false",
+                "-m",
+                "gpt-6-luna",
+                "-c",
+                "model_reasoning_effort=max",
+            ],
+        ),
+        (
+            "codex-orin",
+            "codex",
+            Some("codex-orin"),
+            &["codex", "-c", "check_for_update_on_startup=false"],
+        ),
+    ];
+
+    for (shortcut, expected_engine, expected_profile, expected_argv) in cases {
+        let launch = config
+            .resolve(
+                Vec::new(),
+                Some(shortcut),
+                None,
+                &ws,
+                None,
+                &BTreeMap::new(),
+                &Limits::default(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(launch.engine, *expected_engine, "shortcut {shortcut}");
+        assert_eq!(
+            launch.profile.as_deref(),
+            *expected_profile,
+            "shortcut {shortcut}"
+        );
+        let expected_vec: Vec<String> = expected_argv.iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(launch.command, expected_vec, "shortcut {shortcut}");
+        assert_eq!(
+            engine_family(shortcut),
+            *expected_engine,
+            "engine_family({shortcut})"
+        );
+    }
+
+    let orin = config
+        .resolve(
+            Vec::new(),
+            Some("codex-orin"),
+            None,
+            &ws,
+            None,
+            &BTreeMap::new(),
+            &Limits::default(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        orin.env.get("CODEX_HOME").map(String::as_str),
+        Some("/tmp/orin-codex-home")
+    );
+}

@@ -198,6 +198,10 @@ impl Config {
         }
         let user_defined_shell = user.engines.contains_key("shell");
         self.engines.extend(user.engines);
+        // `self.profiles` holds only auto-discovered entries here; filter
+        // them before the user's explicit profiles are laid over.
+        self.profiles.retain(|id, _| user.discovery.allows(id));
+        self.discovery = user.discovery;
         self.profiles.extend(user.profiles);
         self.shell = user.shell;
         self.powershell_execution_policy = user.powershell_execution_policy;
@@ -220,18 +224,54 @@ impl Config {
         limits: &Limits,
         history_bytes: Option<usize>,
     ) -> Result<ResolvedLaunch> {
+        let mut shortcut_migration = None;
+        let effective_engine_name = match engine_name {
+            Some(name) if !self.engines.contains_key(name) => {
+                if let Some(shortcut) = deprecated_shortcut_engine(name) {
+                    eprintln!(
+                        "warning: engine {name:?} is deprecated; migrating to canonical --engine {}{}{}",
+                        shortcut.canonical_engine,
+                        shortcut
+                            .default_profile
+                            .map(|p| format!(" --profile {p}"))
+                            .unwrap_or_default(),
+                        if shortcut.model_args.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" -- {}", shortcut.model_args.join(" "))
+                        }
+                    );
+                    shortcut_migration = Some(shortcut);
+                    Some(shortcut.canonical_engine)
+                } else {
+                    Some(name)
+                }
+            }
+            other => other,
+        };
         let selected_profile = profile_name
             .map(str::to_owned)
+            .or_else(|| {
+                shortcut_migration
+                    .as_ref()
+                    .and_then(|s| s.default_profile.map(str::to_owned))
+            })
             .or_else(|| self.default_profile.clone());
         let profile = match selected_profile.as_deref() {
-            Some(name) => Some(
-                self.profiles
-                    .get(name)
-                    .ok_or_else(|| anyhow!("unknown profile {name}"))?,
-            ),
+            Some(name) => match self.profiles.get(name) {
+                Some(p) => Some(p),
+                None if profile_name.is_none()
+                    && shortcut_migration
+                        .as_ref()
+                        .is_some_and(|s| s.default_profile == Some(name)) =>
+                {
+                    None
+                }
+                None => return Err(anyhow!("unknown profile {name}")),
+            },
             None => None,
         };
-        let selected_engine = engine_name
+        let selected_engine = effective_engine_name
             .map(str::to_owned)
             .or_else(|| profile.and_then(|p| p.engine.clone()))
             .or_else(|| self.default_engine.clone())
@@ -245,13 +285,43 @@ impl Config {
             .engines
             .get(&selected_engine)
             .ok_or_else(|| anyhow!("unknown engine {selected_engine}"))?;
-        let command = build_argv(direct, engine, profile);
+        let direct_was_empty = direct.is_empty();
+        let mut command = build_argv(direct, engine, profile);
+        if direct_was_empty {
+            if let Some(shortcut) = &shortcut_migration {
+                command.extend(shortcut.model_args.iter().map(|s| (*s).to_owned()));
+            }
+        }
         if command.is_empty() {
             bail!("engine {selected_engine} has no command");
         }
         let mut merged_env = engine.env.clone();
         if let Some(p) = profile {
             merged_env.extend(p.env.clone());
+        }
+        // zcodex keeps its sessions and trust under ~/.zcodex; launching it
+        // as an engine (`--engine zcodex`) or profile (`--profile zcodex`)
+        // must record the same CODEX_HOME so transcript lookup (locate.rs)
+        // and trust.rs agree.
+        if (selected_engine == "zcodex" || selected_profile.as_deref() == Some("zcodex"))
+            && !merged_env.contains_key("CODEX_HOME")
+        {
+            if let Ok(home) = crate::paths::home_dir() {
+                merged_env.insert(
+                    "CODEX_HOME".into(),
+                    home.join(".zcodex").display().to_string(),
+                );
+            }
+        }
+        if selected_profile.as_deref() == Some("codex-orin")
+            && !merged_env.contains_key("CODEX_HOME")
+        {
+            if let Ok(home) = crate::paths::home_dir() {
+                merged_env.insert(
+                    "CODEX_HOME".into(),
+                    home.join(".codex-orin").display().to_string(),
+                );
+            }
         }
         merged_env.extend(env_overrides.clone());
         let merged_limits = merge_limits(
@@ -321,5 +391,62 @@ fn merge_limits(base: Limits, overrides: &Limits) -> Limits {
         pids: overrides.pids.or(base.pids),
         cpu_quota_us: overrides.cpu_quota_us.or(base.cpu_quota_us),
         cpu_period_us: overrides.cpu_period_us.or(base.cpu_period_us),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DeprecatedShortcutEngine {
+    pub canonical_engine: &'static str,
+    pub default_profile: Option<&'static str>,
+    pub model_args: &'static [&'static str],
+}
+
+/// Retired model-shortcut and account-shortcut engines (`argon`, `flash`,
+/// `opus`, `sonnet`, `astra`, `sol`, `luna`, `codex-orin`) map onto their
+/// canonical `(engine, profile, model_args)` when no explicit `[engines.<id>]`
+/// override is present.
+pub(crate) fn deprecated_shortcut_engine(name: &str) -> Option<DeprecatedShortcutEngine> {
+    match name {
+        "argon" => Some(DeprecatedShortcutEngine {
+            canonical_engine: "antigravity",
+            default_profile: None,
+            model_args: &["--model", "gemini-4-argon-high"],
+        }),
+        "flash" => Some(DeprecatedShortcutEngine {
+            canonical_engine: "antigravity",
+            default_profile: None,
+            model_args: &["--model", "gemini-3.8-flash-high"],
+        }),
+        "opus" => Some(DeprecatedShortcutEngine {
+            canonical_engine: "claude",
+            default_profile: None,
+            model_args: &["--model", "opus"],
+        }),
+        "sonnet" => Some(DeprecatedShortcutEngine {
+            canonical_engine: "claude",
+            default_profile: None,
+            model_args: &["--model", "sonnet"],
+        }),
+        "astra" => Some(DeprecatedShortcutEngine {
+            canonical_engine: "codex",
+            default_profile: None,
+            model_args: &["-m", "gpt-6-astra"],
+        }),
+        "sol" => Some(DeprecatedShortcutEngine {
+            canonical_engine: "codex",
+            default_profile: None,
+            model_args: &["-m", "gpt-6.1-sol"],
+        }),
+        "luna" => Some(DeprecatedShortcutEngine {
+            canonical_engine: "codex",
+            default_profile: None,
+            model_args: &["-m", "gpt-6-luna", "-c", "model_reasoning_effort=max"],
+        }),
+        "codex-orin" => Some(DeprecatedShortcutEngine {
+            canonical_engine: "codex",
+            default_profile: Some("codex-orin"),
+            model_args: &[],
+        }),
+        _ => None,
     }
 }

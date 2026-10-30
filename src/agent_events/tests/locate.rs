@@ -308,3 +308,35 @@ fn stamp_mtime(path: &Path, mtime: std::time::SystemTime) {
 fn mtime_now_minus_ms(ms: u64) -> std::time::SystemTime {
     std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(crate::now_ms() - ms)
 }
+
+#[test]
+fn zcodex_without_codex_home_resolves_dot_zcodex_sessions_like_trust_rs() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let proj = home.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let cwd_str = proj.display().to_string();
+
+    let wrong = codex_rollout(
+        &home.join(".codex").join("sessions"),
+        "codex-rollout.jsonl",
+        &cwd_str,
+        "from-codex",
+    );
+    let expected = codex_rollout(
+        &home.join(".zcodex").join("sessions"),
+        "zcodex-rollout.jsonl",
+        &cwd_str,
+        "from-zcodex",
+    );
+    let _ = wrong;
+
+    let candidates = transcript_candidates_in_home(
+        "zcodex",
+        &proj,
+        crate::now_ms(),
+        &BTreeMap::new(),
+        Some(home),
+    );
+    assert_eq!(candidates, vec![expected]);
+}

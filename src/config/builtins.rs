@@ -16,7 +16,9 @@ use super::{Config, EngineConfig};
 /// "A real config").
 pub fn engine_family(engine: &str) -> &str {
     match engine {
-        "zcodex" => "codex",
+        "zcodex" | "codex-orin" | "astra" | "sol" | "luna" => "codex",
+        "opus" | "sonnet" => "claude",
+        "argon" | "flash" => "antigravity",
         other => other,
     }
 }

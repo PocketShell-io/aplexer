@@ -120,3 +120,33 @@ pub(crate) fn discover_profiles() -> BTreeMap<String, ProfileConfig> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Config, DiscoveryConfig};
+
+    #[test]
+    fn discovery_filter_defaults_allow_everything() {
+        let d = DiscoveryConfig::default();
+        assert!(d.enabled);
+        assert!(d.allows("zlaude"));
+    }
+
+    #[test]
+    fn discovery_filter_drops_ignored_ids_with_or_without_dot() {
+        let user: Config =
+            toml::from_str("[discovery]\nignore_profiles = [\"godex\", \".zodex\", \"zlaude\"]\n")
+                .unwrap();
+        let d = user.discovery;
+        assert!(!d.allows("godex"));
+        assert!(!d.allows("zodex"));
+        assert!(!d.allows("zlaude"));
+        assert!(d.allows("zcodex"));
+    }
+
+    #[test]
+    fn discovery_can_be_disabled() {
+        let user: Config = toml::from_str("[discovery]\nenabled = false\n").unwrap();
+        assert!(!user.discovery.allows("anything"));
+    }
+}

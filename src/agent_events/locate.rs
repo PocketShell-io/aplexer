@@ -213,7 +213,18 @@ fn discover_fresh(
         }
     }
     // 3. The cwd+mtime heuristic over the session's family.
-    let candidates = transcript_candidates(engine, &record.cwd, record.created_at_ms, &record.env);
+    let lookup_engine =
+        if record.profile.as_deref() == Some("zcodex") && !record.env.contains_key("CODEX_HOME") {
+            "zcodex"
+        } else {
+            engine
+        };
+    let candidates = transcript_candidates(
+        lookup_engine,
+        &record.cwd,
+        record.created_at_ms,
+        &record.env,
+    );
     match candidates.len() {
         1 => {
             let path = candidates.into_iter().next().expect("one candidate");
@@ -412,8 +423,37 @@ pub fn transcript_candidates(
     created_at_ms: u64,
     env: &BTreeMap<String, String>,
 ) -> Vec<PathBuf> {
+    transcript_candidates_in_home(
+        engine,
+        cwd,
+        created_at_ms,
+        env,
+        crate::agent_kind::user_home().as_deref(),
+    )
+}
+
+pub(crate) fn transcript_candidates_in_home(
+    engine: &str,
+    cwd: &Path,
+    created_at_ms: u64,
+    env: &BTreeMap<String, String>,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
     match engine_family(engine) {
         "claude" => claude_transcript_candidates(cwd, created_at_ms, env),
+        "codex" if engine == "zcodex" && !env.contains_key("CODEX_HOME") => {
+            // Records from before launch injected CODEX_HOME: zcodex's
+            // sessions live under ~/.zcodex (as trust.rs assumes), never
+            // the ~/.codex fallback.
+            let mut env = env.clone();
+            if let Some(home) = home {
+                env.insert(
+                    "CODEX_HOME".into(),
+                    home.join(".zcodex").display().to_string(),
+                );
+            }
+            codex_transcript_candidates(cwd, created_at_ms, &env)
+        }
         "codex" => codex_transcript_candidates(cwd, created_at_ms, env),
         "grok" => grok_transcript_candidates(cwd, created_at_ms, env),
         _ => Vec::new(),

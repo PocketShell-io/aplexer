@@ -92,6 +92,45 @@ pub struct ProfileConfig {
     #[serde(default)]
     pub limits: Limits,
 }
+/// `[discovery]`: controls which sibling profile dirs under `$HOME` are
+/// auto-registered as profiles (see `config::discovery`). An explicit
+/// `[profiles.<id>]` entry is never filtered.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoveryConfig {
+    /// `false` turns profile auto-discovery off entirely.
+    #[serde(default = "default_discovery_enabled")]
+    pub enabled: bool,
+    /// Discovered profile ids to drop, e.g. `["godex", "zodex", "zlaude"]`
+    /// for legacy `~/.godex` dirs. A leading dot is accepted.
+    #[serde(default)]
+    pub ignore_profiles: Vec<String>,
+}
+
+fn default_discovery_enabled() -> bool {
+    true
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ignore_profiles: Vec::new(),
+        }
+    }
+}
+
+impl DiscoveryConfig {
+    /// Whether a discovered profile id survives this filter.
+    pub(crate) fn allows(&self, id: &str) -> bool {
+        self.enabled
+            && !self
+                .ignore_profiles
+                .iter()
+                .any(|ignored| ignored.trim_start_matches('.') == id)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -105,6 +144,8 @@ pub struct Config {
     pub engines: BTreeMap<String, EngineConfig>,
     #[serde(default)]
     pub profiles: BTreeMap<String, ProfileConfig>,
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
     /// Keep a durable record for a session whose workload finished.
     ///
     /// Default `false`: a session that ends -- `exit`, Ctrl-D at a shell,
