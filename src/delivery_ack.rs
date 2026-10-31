@@ -155,7 +155,7 @@ const SCREEN_FAMILIES: [&str; 3] = ["claude", "codex", "opencode"];
 
 /// The screen model that verifies an engine's own deliveries: `None` when
 /// its family has none (`shell`, a private wrapper) and sniffing decides.
-pub(crate) fn known_family(engine: &str) -> Option<&'static str> {
+pub fn known_family(engine: &str) -> Option<&'static str> {
     let family = crate::engine_family(engine);
     SCREEN_FAMILIES
         .iter()
@@ -166,11 +166,18 @@ pub(crate) fn known_family(engine: &str) -> Option<&'static str> {
 /// Which known family's TUI a screen draws. The composers are distinctive
 /// (a bordered claude prompt, a codex chevron, opencode bars), so a drawn
 /// input box matches exactly one family.
-pub(crate) fn sniff_family(screen: &str) -> Option<&'static str> {
+pub fn sniff_family(screen: &str) -> Option<&'static str> {
     SCREEN_FAMILIES
         .iter()
         .copied()
         .find(|family| parse_screen(family, screen).is_some())
+}
+
+/// Resolve the screen-model family for `engine`, falling back to sniffing
+/// `screen` when `engine` has no model of its own (`shell` wrapping an
+/// agent TUI).
+pub fn resolve_family(engine: &str, screen: &str) -> Option<&'static str> {
+    known_family(engine).or_else(|| (!engine.is_empty()).then(|| sniff_family(screen)).flatten())
 }
 
 /// Whether composer text is the submitted payload: an engine paste marker
@@ -395,6 +402,146 @@ fn claude_spinner(line: &str) -> bool {
     rest.split_whitespace()
         .next()
         .is_some_and(|verb| verb.ends_with('…'))
+}
+
+/// `✻ Brewed for 2s · done 2:55 PM`, `✻ Cooked for 19s`.
+fn claude_finished_status(line: &str) -> bool {
+    let mut chars = line.trim_start().chars();
+    let Some(glyph) = chars.next() else {
+        return false;
+    };
+    if !matches!(glyph, '·' | '✢' | '✳' | '✶' | '✻' | '✽' | '*') || chars.next() != Some(' ')
+    {
+        return false;
+    }
+    let rest: String = chars.collect();
+    rest.contains(" for ")
+}
+
+fn is_claude_stop_hooks(family: &str, view: &ScreenView) -> bool {
+    if family != "claude" {
+        return false;
+    }
+    let status_rows = &view.above[view.above.len().saturating_sub(6)..];
+    status_rows
+        .iter()
+        .any(|line| line.contains("running Stop hooks"))
+}
+
+fn is_status_line(family: &str, line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    match family {
+        "claude" => claude_spinner(line) || claude_finished_status(line),
+        "codex" => {
+            trimmed.starts_with("• Working (")
+                || trimmed.starts_with("Worked for ")
+                || trimmed.contains("esc to interrupt")
+        }
+        _ => false,
+    }
+}
+
+fn transcript_without_status(family: &str, above: &[String]) -> Vec<String> {
+    let status_start = above.len().saturating_sub(6);
+    above
+        .iter()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let trimmed = line.trim_end();
+            if trimmed.trim().is_empty() {
+                return None;
+            }
+            if i >= status_start && is_status_line(family, trimmed) {
+                return None;
+            }
+            Some(trimmed.to_string())
+        })
+        .collect()
+}
+
+/// Whether `plain`'s input box is empty or holds only a faint/grey ghost
+/// suggestion on `screen`.
+pub fn composer_is_empty_or_ghost(engine: &str, plain: &str, screen: &vt100::Screen) -> bool {
+    match parse_screen(engine, plain).map(|view| view.composer) {
+        Some(Composer::Empty) => true,
+        Some(Composer::Holds(_)) => styled_composer_is_ghost(engine, screen),
+        None => false,
+    }
+}
+
+/// Whether `plain`/`screen` shows a ready, non-busy prompt with an empty
+/// (or ghost-suggestion-only) input box.
+pub fn screen_is_ready_idle(engine: &str, plain: &str, screen: &vt100::Screen) -> bool {
+    let Some(family) = resolve_family(engine, plain) else {
+        return false;
+    };
+    is_ready(family, plain)
+        && !is_busy(family, plain)
+        && composer_is_empty_or_ghost(family, plain, screen)
+}
+
+/// Whether `plain`/`screen` shows a fresh interactive session at an empty
+/// initial prompt (ready, not busy, empty/ghost composer, and no submitted
+/// prompt or turn output in `above`).
+pub fn screen_is_fresh_empty_prompt(engine: &str, plain: &str, screen: &vt100::Screen) -> bool {
+    let Some(family) = resolve_family(engine, plain) else {
+        return false;
+    };
+    if !screen_is_ready_idle(family, plain, screen) {
+        return false;
+    }
+    let Some(view) = parse_screen(family, plain) else {
+        return false;
+    };
+    !view.above.iter().any(|line| {
+        let trimmed = line.trim_start();
+        match family {
+            "claude" => {
+                trimmed.starts_with(['❯', '●', '✻', '✢', '✳', '✶', '✽']) || claude_spinner(line)
+            }
+            "codex" => trimmed.starts_with(['›', '•']) || trimmed.starts_with("Worked for "),
+            "opencode" => trimmed.starts_with(['┃', '▣']),
+            _ => true,
+        }
+    })
+}
+
+/// Whether the transition from `before_plain` to `after_plain` (`after_screen`)
+/// is a redraw-only update on an idle prompt (such as Claude's post-Stop
+/// status/footer repaint or background ghost-suggestion draw), rather than
+/// turn activity, transcript output, or user typing.
+pub fn is_idle_prompt_redraw(
+    engine: &str,
+    before_plain: &str,
+    before_composer_empty_or_ghost: bool,
+    after_plain: &str,
+    after_screen: &vt100::Screen,
+) -> bool {
+    let Some(family) = resolve_family(engine, after_plain) else {
+        return false;
+    };
+    let (Some(before_view), Some(after_view)) = (
+        parse_screen(family, before_plain),
+        parse_screen(family, after_plain),
+    ) else {
+        return false;
+    };
+    if !before_composer_empty_or_ghost {
+        return false;
+    }
+    if !is_ready(family, after_plain)
+        || !composer_is_empty_or_ghost(family, after_plain, after_screen)
+    {
+        return false;
+    }
+    if is_busy(family, after_plain) && !is_claude_stop_hooks(family, &after_view) {
+        return false;
+    }
+    transcript_without_status(family, &before_view.above)
+        == transcript_without_status(family, &after_view.above)
 }
 
 /// How many times the payload's tail shows in the transcript above the input

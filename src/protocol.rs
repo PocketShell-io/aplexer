@@ -197,6 +197,13 @@ pub enum Operation {
         /// a record it does not own.
         #[serde(default)]
         engine_session_id: Option<String>,
+        /// The `hook_event_name` the engine's hook payload carries on stdin
+        /// (e.g. `"SessionStart"`, `"UserPromptSubmit"`, `"Stop"`), when
+        /// present. Additive like `event_ms`: lets the worker distinguish a
+        /// `SessionStart` bootstrap report on a fresh empty prompt from a
+        /// turn-starting `UserPromptSubmit`/`PreToolUse` report.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hook_event: Option<String>,
     },
     /// `a agent <token>` / `a agent --clear`: pin which agent this session
     /// reports (`SessionRecord::agent_override`), or unpin to return to

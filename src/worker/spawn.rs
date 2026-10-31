@@ -619,15 +619,31 @@ pub(super) fn run_pty_reader(
                 let _ = tx.send(LifeEvent::PtyEof);
                 break;
             }
-            Ok(n) => {
-                runtime.last_activity_ms.store(now_ms(), Ordering::Relaxed);
-                if let Err(error) = runtime.output.append(&buffer[..n]) {
+            Ok(n) => match runtime.output.append(&buffer[..n]) {
+                Ok(outcome) => {
+                    if outcome.activity {
+                        runtime.last_activity_ms.store(now_ms(), Ordering::Relaxed);
+                    }
+                    if outcome.fresh_empty_prompt
+                        && runtime
+                            .awaiting_initial_prompt
+                            .swap(false, Ordering::SeqCst)
+                    {
+                        if let Err(error) = runtime.promote_initial_prompt_idle() {
+                            log_best_effort(&format!(
+                                "aplexer worker: promote initial prompt idle: {error:#}"
+                            ));
+                        }
+                    }
+                }
+                Err(error) => {
+                    runtime.last_activity_ms.store(now_ms(), Ordering::Relaxed);
                     // Hub lock poison is the only remaining append error;
                     // history write failures stay on history_persistence_error.
                     // Never treat either as a PTY/workload failure.
                     log_best_effort(&format!("aplexer worker: append output: {error:#}"));
                 }
-            }
+            },
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             // Linux reports a closed PTY slave as EIO.
             #[cfg(unix)]

@@ -107,7 +107,8 @@ pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()
     // report without a session name, which bypasses the worker's session
     // fence (the pre-fence behavior).
     let hook_payload: Option<serde_json::Value> = if matches!(state, ReportedState::GatedIdle)
-        || (record.engine == "claude" && !io::stdin().is_terminal())
+        || (matches!(aplexer::engine_family(&record.engine), "claude" | "codex")
+            && !io::stdin().is_terminal())
     {
         let mut payload = String::new();
         let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload);
@@ -115,7 +116,15 @@ pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()
     } else {
         None
     };
-    let engine_session_id = hook_payload.as_ref().and_then(engine_session_id_of);
+    let engine_session_id = (record.engine == "claude")
+        .then(|| hook_payload.as_ref().and_then(engine_session_id_of))
+        .flatten();
+    let hook_event = hook_payload
+        .as_ref()
+        .and_then(|p| p.get("hook_event_name"))
+        .and_then(|v| v.as_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
     // Claude's gated Stop mode: the decision comes from the engine's own
     // hook payload on stdin -- the event name, the engine session, the
     // parent-scoped `background_tasks` registry and `stop_hook_active` --
@@ -157,6 +166,7 @@ pub(crate) fn cmd_state_report(paths: &Paths, state: ReportedState) -> Result<()
             state: state.as_str().to_string(),
             event_ms: Some(event_ms),
             engine_session_id,
+            hook_event,
         },
         None,
     )?;

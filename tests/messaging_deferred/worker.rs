@@ -25,6 +25,20 @@ mod fake_worker {
 
     impl Worker {
         pub(crate) fn start(record: &SessionRecord, lose_response: bool) -> Self {
+            Self::start_with_screen(
+                record,
+                lose_response,
+                b"\x1b[?2004h".to_vec(),
+                b"\x1b[?2004h".to_vec(),
+            )
+        }
+
+        pub(crate) fn start_with_screen(
+            record: &SessionRecord,
+            lose_response: bool,
+            plain_screen: Vec<u8>,
+            styled_screen: Vec<u8>,
+        ) -> Self {
             // The Unix socket lives under the runtime dir; a Windows pipe name has no
             // parent directory.
             #[cfg(unix)]
@@ -34,7 +48,16 @@ mod fake_worker {
             listener.set_nonblocking(true).unwrap();
             let stop = Arc::new(AtomicBool::new(false));
             let (signal, record) = (stop.clone(), record.clone());
-            let thread = thread::spawn(move || serve(listener, signal, record, lose_response));
+            let thread = thread::spawn(move || {
+                serve(
+                    listener,
+                    signal,
+                    record,
+                    lose_response,
+                    plain_screen,
+                    styled_screen,
+                )
+            });
             Self { stop, thread }
         }
 
@@ -49,6 +72,8 @@ mod fake_worker {
         stop: Arc<AtomicBool>,
         record: SessionRecord,
         lose_response: bool,
+        plain_screen: Vec<u8>,
+        styled_screen: Vec<u8>,
     ) -> Vec<Vec<u8>> {
         let mut writes = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -58,7 +83,14 @@ mod fake_worker {
                     stream
                         .set_read_timeout(Some(Duration::from_secs(3)))
                         .unwrap();
-                    respond(&mut stream, &record, &mut writes, lose_response);
+                    respond(
+                        &mut stream,
+                        &record,
+                        &mut writes,
+                        lose_response,
+                        &plain_screen,
+                        &styled_screen,
+                    );
                 }
                 Ok(None) => thread::sleep(Duration::from_millis(5)),
                 Err(error) => panic!("{error}"),
@@ -95,6 +127,8 @@ mod fake_worker {
         record: &SessionRecord,
         writes: &mut Vec<Vec<u8>>,
         lose_response: bool,
+        plain_screen: &[u8],
+        styled_screen: &[u8],
     ) {
         let request: Request = frame_json(read_frame(stream).unwrap().unwrap()).unwrap();
         assert_eq!(request.session_id, Some(record.id));
@@ -104,13 +138,42 @@ mod fake_worker {
                 &Response::ok(request.request_id, serde_json::to_value(record).unwrap()),
             )
             .unwrap(),
-            Operation::CaptureScreen { .. } => {
+            Operation::CaptureScreen { plain } => {
+                let sent_enter = writes.iter().any(|w| w == b"\r");
+                let sent_paste = !writes.is_empty();
+                let dynamic_plain: Option<Vec<u8>> = if plain && plain_screen != b"\x1b[?2004h" {
+                    let rule = "\u{2500}".repeat(48);
+                    if sent_enter {
+                        Some(
+                            format!(
+                                "❯ unchanged message\n\n✻ Cooked for 2s\n{rule}\n❯ \n{rule}\n  ⏵⏵ bypass permissions on"
+                            )
+                            .into_bytes(),
+                        )
+                    } else if sent_paste {
+                        Some(
+                            format!(
+                                "✻ Cooked for 2s\n{rule}\n❯ [Pasted text #1 +5 lines]\n{rule}\n  ⏵⏵ bypass permissions on"
+                            )
+                            .into_bytes(),
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let payload = dynamic_plain.as_deref().unwrap_or(if plain {
+                    plain_screen
+                } else {
+                    styled_screen
+                });
                 write_json(
                     stream,
-                    &Response::ok(request.request_id, json!({"bytes": 8})),
+                    &Response::ok(request.request_id, json!({"bytes": payload.len()})),
                 )
                 .unwrap();
-                write_frame(stream, FrameKind::Data, b"\x1b[?2004h").unwrap();
+                write_frame(stream, FrameKind::Data, payload).unwrap();
             }
             Operation::Send { bytes } => {
                 record_input(stream, request.request_id, bytes, writes, lose_response)

@@ -644,6 +644,11 @@ impl ScreenTracker {
         self.parser.screen().contents()
     }
 
+    /// Read-only access to the live `vt100::Screen` grid.
+    pub fn screen(&self) -> &vt100::Screen {
+        self.parser.screen()
+    }
+
     /// The reattach payload (design doc section 6.2), in order:
     ///
     /// 1. `\x1b[?1049h` -- only if the live screen is on the alternate

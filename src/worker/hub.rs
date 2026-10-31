@@ -27,12 +27,24 @@ pub(super) enum AttachPayload {
     Tail(Option<usize>),
 }
 
+pub(super) const SYNC_ACTIVITY_MAX_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct AppendOutcome {
+    pub(super) activity: bool,
+    pub(super) fresh_empty_prompt: bool,
+}
+
 pub(super) struct HubInner {
     pub(super) history: History,
     pub(super) history_persistence_error: Option<String>,
     pub(super) history_retry_at: Instant,
     pub(super) history_retry_delay: Duration,
     pub(super) screen: screen::ScreenTracker,
+    pub(super) engine: String,
+    pub(super) settled_plain: String,
+    pub(super) settled_composer_empty_or_ghost: bool,
+    pub(super) sync_bytes: usize,
     pub(super) subscribers: HashMap<u64, SubscriberSender>,
     pub(super) next_id: u64,
     pub(super) terminal: Option<OutputEvent>,
@@ -95,6 +107,10 @@ impl OutputHub {
                 history_retry_at: Instant::now(),
                 history_retry_delay: HISTORY_RETRY_INITIAL,
                 screen: screen::ScreenTracker::try_new(rows, cols)?,
+                engine: String::new(),
+                settled_plain: String::new(),
+                settled_composer_empty_or_ghost: false,
+                sync_bytes: 0,
                 subscribers: HashMap::new(),
                 next_id: 1,
                 terminal: None,
@@ -103,11 +119,29 @@ impl OutputHub {
             finalized: AtomicBool::new(false),
         })
     }
+    pub(super) fn with_engine(self, engine: String) -> Self {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.engine = engine;
+        }
+        self
+    }
     /// Whether the session's durable state is being (or has been) removed.
     pub(super) fn finalized(&self) -> bool {
         self.finalized.load(Ordering::SeqCst)
     }
-    pub(super) fn append(&self, data: &[u8]) -> Result<()> {
+    pub(super) fn screen_is_fresh_empty_prompt(&self) -> bool {
+        let Ok(inner) = lock(&self.inner) else {
+            return false;
+        };
+        let plain = inner.screen.contents();
+        crate::delivery_ack::screen_is_fresh_empty_prompt(
+            &inner.engine,
+            &plain,
+            inner.screen.screen(),
+        )
+    }
+    pub(super) fn append(&self, data: &[u8]) -> Result<AppendOutcome> {
+        let chunk_len = data.len();
         let mut inner = lock(&self.inner)?;
         if let Err(error) = inner.history.append(data) {
             // History is best-effort: a full disk must not look like a
@@ -162,7 +196,43 @@ impl OutputHub {
                 subscriber.try_event(OutputEvent::Layout(change))
             });
         }
-        Ok(())
+        let in_sync = (inner.screen.in_synchronized_update() || !inner.screen.at_escape_boundary())
+            && inner.sync_bytes.saturating_add(chunk_len) < SYNC_ACTIVITY_MAX_BYTES;
+        if in_sync {
+            inner.sync_bytes = inner.sync_bytes.saturating_add(chunk_len);
+            return Ok(AppendOutcome {
+                activity: false,
+                fresh_empty_prompt: false,
+            });
+        }
+        inner.sync_bytes = 0;
+        let after_plain = inner.screen.contents();
+        let family = crate::delivery_ack::resolve_family(&inner.engine, &after_plain);
+        let after_composer_empty_or_ghost = family.is_some_and(|fam| {
+            crate::delivery_ack::composer_is_empty_or_ghost(
+                fam,
+                &after_plain,
+                inner.screen.screen(),
+            )
+        });
+        let redraw_only = crate::delivery_ack::is_idle_prompt_redraw(
+            &inner.engine,
+            &inner.settled_plain,
+            inner.settled_composer_empty_or_ghost,
+            &after_plain,
+            inner.screen.screen(),
+        );
+        let fresh_empty_prompt = crate::delivery_ack::screen_is_fresh_empty_prompt(
+            &inner.engine,
+            &after_plain,
+            inner.screen.screen(),
+        );
+        inner.settled_plain = after_plain;
+        inner.settled_composer_empty_or_ghost = after_composer_empty_or_ghost;
+        Ok(AppendOutcome {
+            activity: !redraw_only,
+            fresh_empty_prompt,
+        })
     }
     pub(super) fn retirement_output(&self) -> crate::retired::RetiredOutput {
         use crate::retired::{RetiredOutput, RETIRED_OUTPUT_MAX_BYTES};

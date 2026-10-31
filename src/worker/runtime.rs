@@ -199,6 +199,10 @@ pub(super) struct WorkerRuntime {
     /// thread piggybacks on that same tick to persist this into
     /// `SessionRecord::last_activity_ms`, and only when it actually changed.
     pub(super) last_activity_ms: AtomicU64,
+    /// True while a fresh interactive session has not yet drawn its initial
+    /// empty prompt (or is waiting for it after `SessionStart`), so the first
+    /// ready empty prompt frame promotes `reported_state` to `"idle"`.
+    pub(super) awaiting_initial_prompt: AtomicBool,
 }
 
 impl WorkerRuntime {
@@ -714,13 +718,41 @@ impl WorkerRuntime {
     /// apply and (re)bind, so a resumed or newly-started conversation
     /// takes over at its first hook. Reports without a name (legacy
     /// clients, other engines) bypass this fence too.
+    pub(super) fn promote_initial_prompt_idle(&self) -> Result<()> {
+        let now = now_ms().max(self.last_activity_ms.load(Ordering::Relaxed));
+        self.update_record(|r| {
+            if matches!(
+                r.reported_state.as_deref(),
+                None | Some("working") | Some("idle")
+            ) {
+                r.reported_state = Some("idle".into());
+                r.reported_state_at_ms = Some(now);
+            }
+        })
+        .map(drop)
+    }
+
     pub(super) fn report_state(
         &self,
         state: String,
         event_ms: Option<u64>,
         engine_session_id: Option<String>,
+        hook_event: Option<String>,
     ) -> Result<SessionRecord> {
         validate_reported_state(&state)?;
+        let fresh_empty_prompt = self.output.screen_is_fresh_empty_prompt();
+        let is_session_start = hook_event.as_deref() == Some("SessionStart");
+        if is_session_start {
+            self.awaiting_initial_prompt
+                .store(!fresh_empty_prompt, Ordering::SeqCst);
+        } else if state != "working" || hook_event.is_some() || fresh_empty_prompt {
+            self.awaiting_initial_prompt.store(false, Ordering::SeqCst);
+        }
+        let state = if is_session_start && state == "working" && fresh_empty_prompt {
+            "idle".to_string()
+        } else {
+            state
+        };
         let mut stale = false;
         let mut foreign_session = false;
         let mut unstamped_after_bound = false;
@@ -750,7 +782,8 @@ impl WorkerRuntime {
                 return;
             }
             r.reported_state = Some(state);
-            r.reported_state_at_ms = Some(now_ms());
+            r.reported_state_at_ms =
+                Some(now_ms().max(self.last_activity_ms.load(Ordering::Relaxed)));
             if event_ms.is_some() {
                 r.reported_state_event_ms = event_ms;
             }
@@ -1465,6 +1498,7 @@ mod tests {
             record_persistence_error: Mutex::new(None),
             active_connections: Arc::new(AtomicUsize::new(0)),
             last_activity_ms: AtomicU64::new(0),
+            awaiting_initial_prompt: AtomicBool::new(false),
         }
     }
 
@@ -1475,24 +1509,24 @@ mod tests {
 
         // A newer prompt's working report is the record's truth.
         runtime
-            .report_state("working".into(), Some(1000), Some("conv-a".into()))
+            .report_state("working".into(), Some(1000), Some("conv-a".into()), None)
             .unwrap();
         // A delayed Stop from the earlier turn (older stamp) refuses...
         assert!(runtime
-            .report_state("idle".into(), Some(500), Some("conv-a".into()))
+            .report_state("idle".into(), Some(500), Some("conv-a".into()), None)
             .unwrap_err()
             .to_string()
             .contains("not newer"));
         // ...an equal-stamp report (unordered at ms resolution) refuses...
         assert!(runtime
-            .report_state("idle".into(), Some(1000), Some("conv-a".into()))
+            .report_state("idle".into(), Some(1000), Some("conv-a".into()), None)
             .unwrap_err()
             .to_string()
             .contains("not newer"));
         // ...and an unstamped legacy report over stamped truth refuses,
         // none of them touching the record.
         assert!(runtime
-            .report_state("idle".into(), None, Some("conv-a".into()))
+            .report_state("idle".into(), None, Some("conv-a".into()), None)
             .unwrap_err()
             .to_string()
             .contains("no engine event stamp"));
@@ -1508,7 +1542,7 @@ mod tests {
 
         // First evidence binds; the conversation's own final Stop idles.
         runtime
-            .report_state("idle".into(), Some(100), Some("conv-a".into()))
+            .report_state("idle".into(), Some(100), Some("conv-a".into()), None)
             .unwrap();
         assert_eq!(
             runtime.record().unwrap().reported_state.as_deref(),
@@ -1516,7 +1550,7 @@ mod tests {
         );
         // A nested/foreign conversation's Stop never idles the record...
         assert!(runtime
-            .report_state("idle".into(), Some(200), Some("conv-b".into()))
+            .report_state("idle".into(), Some(200), Some("conv-b".into()), None)
             .unwrap_err()
             .to_string()
             .contains("different engine session"));
@@ -1528,10 +1562,10 @@ mod tests {
         // hook applies and rebinds, and its own later Stop is then the
         // genuine final boundary.
         runtime
-            .report_state("working".into(), Some(300), Some("conv-b".into()))
+            .report_state("working".into(), Some(300), Some("conv-b".into()), None)
             .unwrap();
         runtime
-            .report_state("idle".into(), Some(400), Some("conv-b".into()))
+            .report_state("idle".into(), Some(400), Some("conv-b".into()), None)
             .unwrap();
         let record = runtime.record().unwrap();
         assert_eq!(record.reported_state.as_deref(), Some("idle"));

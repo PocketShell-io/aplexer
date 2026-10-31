@@ -559,11 +559,13 @@ pub(super) fn bring_up(
         validate_existing_history_node(&record.history_path)?;
         let history = History::open(record.history_path.clone(), record.history_bytes)?;
         startup_checkpoint("before_output_hub")?;
-        let output = OutputHub::new(history, rows, cols, paths.screen_txt(id))?;
+        let output = OutputHub::new(history, rows, cols, paths.screen_txt(id))?
+            .with_engine(record.engine.clone());
         record.phase = Phase::Running;
         record.updated_at_ms = now_ms();
         record.error = None;
         startup.failure_record = record.clone();
+        let awaiting_initial_prompt = crate::delivery_ack::known_family(&record.engine).is_some();
         let runtime = Arc::new(WorkerRuntime {
             id,
             paths: paths.clone(),
@@ -588,6 +590,7 @@ pub(super) fn bring_up(
             record_persistence_error: Mutex::new(None),
             active_connections: Arc::new(AtomicUsize::new(0)),
             last_activity_ms: AtomicU64::new(0),
+            awaiting_initial_prompt: AtomicBool::new(awaiting_initial_prompt),
         });
         start_worker_threads(
             Arc::clone(&runtime),

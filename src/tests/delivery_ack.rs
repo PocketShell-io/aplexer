@@ -696,3 +696,162 @@ fn ghost_text_without_styled_evidence_still_refuses() {
     assert_eq!((tui.pastes, tui.enters), (0, 0));
     assert!(r.detail.contains("refusing to append"), "{}", r.detail);
 }
+
+#[test]
+fn fresh_empty_prompt_matches_only_initial_ready_screens() {
+    for engine in ENGINES {
+        let ready = fixture(engine, "ready");
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(ready.replace('\n', "\r\n").as_bytes());
+        assert!(
+            screen_is_fresh_empty_prompt(engine, &ready, parser.screen()),
+            "{engine}/ready must be a fresh empty prompt"
+        );
+        for other in ["done", "busy", "pending-short"] {
+            let text = fixture(engine, other);
+            let mut parser = vt100::Parser::new(24, 80, 0);
+            parser.process(text.replace('\n', "\r\n").as_bytes());
+            assert!(
+                !screen_is_fresh_empty_prompt(engine, &text, parser.screen()),
+                "{engine}/{other} must not be a fresh empty prompt"
+            );
+        }
+    }
+    for (engine, name) in [
+        ("claude", "boot-blank"),
+        ("codex", "boot"),
+        ("zcodex", "boot"),
+        ("zcodex", "echo-only"),
+        ("opencode", "boot-blank"),
+    ] {
+        let text = fixture(engine, name);
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(text.replace('\n', "\r\n").as_bytes());
+        assert!(
+            !screen_is_fresh_empty_prompt(engine, &text, parser.screen()),
+            "{engine}/{name} must not be a fresh empty prompt"
+        );
+    }
+}
+
+#[test]
+fn claude_post_stop_status_footer_and_ghost_redraws_do_not_count_as_activity() {
+    let rule = "\u{2500}".repeat(48);
+    let stop_hooks_1 = format!(
+        "❯ Reply with ACKDONE\n\n● ACKDONE\n\n✢ Sublimating… (running Stop hooks… 1/3 · 19s)\n{rule}\n❯ \n{rule}\n  ⏵⏵ bypass permissions on · esc to interrupt"
+    );
+    let stop_hooks_2 = format!(
+        "❯ Reply with ACKDONE\n\n● ACKDONE\n\n✢ Sublimating… (running Stop hooks… 2/3 · 20s)\n{rule}\n❯ \n{rule}\n  ⏵⏵ bypass permissions on · esc to interrupt"
+    );
+    let done_plain = format!(
+        "❯ Reply with ACKDONE\n\n● ACKDONE\n\n✻ Cooked for 20s · done 3:08 PM\n{rule}\n❯ \n{rule}\n  ⏵⏵ bypass permissions on"
+    );
+    let footer_redraw = format!(
+        "❯ Reply with ACKDONE\n\n● ACKDONE\n\n✻ Cooked for 20s · done 3:08 PM\n{rule}\n❯ \n{rule}\n  ⏵⏵ bypass permissions on · ↓ 208 tokens · thinking"
+    );
+
+    let parse_plain = |text: &str| {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(text.replace('\n', "\r\n").as_bytes());
+        parser
+    };
+
+    // Stop hooks 1/3 -> 2/3 redraw: non-activity.
+    let p_stop_2 = parse_plain(&stop_hooks_2);
+    assert!(is_idle_prompt_redraw(
+        "claude",
+        &stop_hooks_1,
+        true,
+        &stop_hooks_2,
+        p_stop_2.screen(),
+    ));
+
+    // Stop hooks 2/3 -> finished status ("✻ Cooked for 20s") redraw: non-activity.
+    let p_done = parse_plain(&done_plain);
+    assert!(is_idle_prompt_redraw(
+        "claude",
+        &stop_hooks_2,
+        true,
+        &done_plain,
+        p_done.screen(),
+    ));
+
+    // Post-Stop footer redraw: non-activity.
+    let p_footer = parse_plain(&footer_redraw);
+    assert!(is_idle_prompt_redraw(
+        "claude",
+        &done_plain,
+        true,
+        &footer_redraw,
+        p_footer.screen(),
+    ));
+
+    // Post-Stop faint ghost suggestion drawn into composer: non-activity.
+    let mut p_ghost = vt100::Parser::new(24, 80, 0);
+    p_ghost.process(
+        format!(
+            "❯ Reply with ACKDONE\r\n\r\n● ACKDONE\r\n\r\n✻ Cooked for 20s · done 3:08 PM\r\n{rule}\r\n❯ \x1b[2mack the message\x1b[0m\r\n{rule}\r\n  ⏵⏵ bypass permissions on · ↓ 208 tokens"
+        )
+        .as_bytes(),
+    );
+    let ghost_plain = p_ghost.screen().contents();
+    assert!(is_idle_prompt_redraw(
+        "claude",
+        &footer_redraw,
+        true,
+        &ghost_plain,
+        p_ghost.screen(),
+    ));
+
+    // Real typed draft (default pen) in the composer IS activity.
+    let mut p_draft = vt100::Parser::new(24, 80, 0);
+    p_draft.process(
+        format!(
+            "❯ Reply with ACKDONE\r\n\r\n● ACKDONE\r\n\r\n✻ Cooked for 20s · done 3:08 PM\r\n{rule}\r\n❯ a human draft\r\n{rule}\r\n  ⏵⏵ bypass permissions on"
+        )
+        .as_bytes(),
+    );
+    let draft_plain = p_draft.screen().contents();
+    assert!(!is_idle_prompt_redraw(
+        "claude",
+        &done_plain,
+        true,
+        &draft_plain,
+        p_draft.screen(),
+    ));
+
+    // Clearing a real draft (e.g. Ctrl-C/Ctrl-U or submit) IS activity.
+    assert!(!is_idle_prompt_redraw(
+        "claude",
+        &draft_plain,
+        false,
+        &done_plain,
+        p_done.screen(),
+    ));
+
+    // A genuine turn spinner (not Stop hooks) IS activity.
+    let busy_turn = format!(
+        "❯ Reply with ACKDONE\n\n● ACKDONE\n\n✶ Stewing… (2s · ↓ 120 tokens)\n{rule}\n❯ \n{rule}\n  ⏵⏵ bypass permissions on · esc to interrupt"
+    );
+    let p_busy = parse_plain(&busy_turn);
+    assert!(!is_idle_prompt_redraw(
+        "claude",
+        &done_plain,
+        true,
+        &busy_turn,
+        p_busy.screen(),
+    ));
+
+    // New transcript output IS activity.
+    let new_transcript = format!(
+        "❯ Reply with ACKDONE\n\n● ACKDONE\n\n❯ Follow-up prompt\n\n✻ Cooked for 20s · done 3:08 PM\n{rule}\n❯ \n{rule}\n  ⏵⏵ bypass permissions on"
+    );
+    let p_new = parse_plain(&new_transcript);
+    assert!(!is_idle_prompt_redraw(
+        "claude",
+        &done_plain,
+        true,
+        &new_transcript,
+        p_new.screen(),
+    ));
+}

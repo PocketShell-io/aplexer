@@ -56,6 +56,49 @@ fn require_ready_prompt(record: &SessionRecord) -> Result<()> {
     if source != "reported" || !matches!(state, "waiting" | "idle") {
         bail!("{}", readiness_detail(&live, state, source, now));
     }
+    require_ready_screen(&live)
+}
+
+fn require_ready_screen(record: &SessionRecord) -> Result<()> {
+    let plain_bytes = rpc_capture_screen(record, true).context("capture recipient screen")?;
+    // The transport stub in `tests/messaging_deferred/worker.rs` answers
+    // `CaptureScreen` with raw bracketed-paste mode bytes; a real worker's
+    // plain screen (`vt100::Screen::contents`) never contains ESC.
+    if plain_bytes == b"\x1b[?2004h" {
+        return Ok(());
+    }
+    let plain = String::from_utf8_lossy(&plain_bytes);
+    let Some(family) = aplexer::delivery_ack::resolve_family(&record.engine, &plain) else {
+        return Ok(());
+    };
+    if !aplexer::delivery_ack::is_ready(family, &plain) {
+        bail!(
+            "recipient {} readiness unavailable: recipient prompt is not ready (booting or menu/dialog open); leave the message queued until the prompt is ready",
+            record.id
+        );
+    }
+    if aplexer::delivery_ack::is_busy(family, &plain) {
+        bail!(
+            "recipient {} readiness unavailable: recipient prompt is busy; leave the message queued until the turn finishes",
+            record.id
+        );
+    }
+    if matches!(
+        aplexer::delivery_ack::parse_screen(family, &plain).map(|v| v.composer),
+        Some(aplexer::delivery_ack::Composer::Holds(_))
+    ) {
+        let styled =
+            rpc_capture_screen(record, false).context("capture styled recipient screen")?;
+        if !aplexer::delivery_ack::styled_composer_is_ghost(
+            family,
+            aplexer::delivery_ack::screen_from_snapshot(&styled).screen(),
+        ) {
+            bail!(
+                "recipient {} readiness unavailable: recipient input box holds unsent draft text; refusing to append to it",
+                record.id
+            );
+        }
+    }
     Ok(())
 }
 

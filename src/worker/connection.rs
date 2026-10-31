@@ -176,7 +176,8 @@ fn dispatch_operation(
             state,
             event_ms,
             engine_session_id,
-        } => match runtime.report_state(state, event_ms, engine_session_id) {
+            hook_event,
+        } => match runtime.report_state(state, event_ms, engine_session_id, hook_event) {
             Ok(record) => write_json(
                 &mut stream,
                 &Response::ok(id, serde_json::to_value(record)?),
