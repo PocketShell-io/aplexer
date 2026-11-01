@@ -20,6 +20,16 @@ fn persist_record(paths: &Paths, record: &SessionRecord) {
     atomic_write_json(&paths.record(record.id), record).unwrap();
 }
 
+/// A fixture whose durable paths match what a real registry holds, so the
+/// registry readers (`list_records`, `read_session_record`) accept it once
+/// persisted.
+fn registry_fixture(paths: &Paths, ws: PathBuf, tag: &str) -> SessionRecord {
+    let mut record = SessionRecord::fixture(ws, tag);
+    record.socket_path = paths.socket(record.id);
+    record.history_path = paths.history(record.id);
+    record
+}
+
 fn oom_exit() -> ExitInfo {
     ExitInfo {
         code: Some(137),
@@ -72,7 +82,8 @@ fn predicate_flags_oom_broken_and_failed_but_not_a_plain_exit() {
 fn warning_is_write_once_and_acknowledge_removes_it() {
     let root = tempfile::tempdir().unwrap();
     let paths = test_paths(root.path());
-    let record = SessionRecord::fixture(PathBuf::from("/tmp/aplexer-warnings-test"), "boom");
+    let record = registry_fixture(&paths, PathBuf::from("/tmp/aplexer-warnings-test"), "boom");
+    persist_record(&paths, &record);
 
     assert!(record_warning(&paths, &record).unwrap());
     let first = load_warning_for(&paths, record.id).unwrap();
@@ -141,11 +152,13 @@ fn selection_matches_ws_tag_uuid_prefix_and_cwd_tag() {
     let root = tempfile::tempdir().unwrap();
     let paths = test_paths(root.path());
     let ws = PathBuf::from("/tmp/aplexer-warnings-test");
-    let mut other = SessionRecord::fixture(PathBuf::from("/elsewhere"), "boom");
+    let mut other = registry_fixture(&paths, PathBuf::from("/elsewhere"), "boom");
     other.created_at_ms = 1;
-    let record = SessionRecord::fixture(ws.clone(), "boom");
-    record_warning(&paths, &record).unwrap();
-    record_warning(&paths, &other).unwrap();
+    let record = registry_fixture(&paths, ws.clone(), "boom");
+    persist_record(&paths, &record);
+    persist_record(&paths, &other);
+    assert!(record_warning(&paths, &record).unwrap());
+    assert!(record_warning(&paths, &other).unwrap());
 
     let cwd = Some(ws.as_path());
     // workspace:tag pair
@@ -223,4 +236,77 @@ fn exiting_corpse_is_finalized_with_an_exit_record_not_reported_as_a_crash() {
     let mut running = SessionRecord::fixture(PathBuf::from("/tmp/aplexer-warnings-test"), "died");
     running.phase = Phase::Running;
     assert!(warning_for_record(&running).is_some());
+}
+
+/// The false "worker died unexpectedly while exiting (no exit recorded)"
+/// crash (Hub intake 33fde3fb): a sweep -- or the resident RPC registry's
+/// cached records -- holds a snapshot read while the worker was still
+/// finalizing (`phase: exiting`, no exit), and probes liveness only after
+/// that worker removed its record, left a finished tombstone, and exited.
+/// The snapshot alone looks `broken`; the warning write must re-read the
+/// registry and see that the session ended normally.
+#[test]
+fn exiting_snapshot_of_a_cleanly_finalized_session_warns_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let ws = PathBuf::from("/tmp/aplexer-warnings-test");
+
+    // Fast-path finalization: record removed, worker gone.
+    let mut removed = registry_fixture(&paths, ws.clone(), "hub-stopped");
+    removed.phase = Phase::Running;
+    persist_record(&paths, &removed);
+    let stale_snapshot = removed.clone();
+    fs::remove_dir_all(paths.state_session(removed.id)).unwrap();
+    assert!(
+        warning_for_record(&stale_snapshot).is_some(),
+        "precondition: the stale snapshot alone reads as broken"
+    );
+    assert!(!record_warning(&paths, &stale_snapshot).unwrap());
+    assert!(load_warning_for(&paths, removed.id).is_none());
+
+    // Kept-record finalization (`keep_exited`, retained stop): the worker
+    // rewrote its record as Exited with a clean exit before exiting.
+    let mut kept = registry_fixture(&paths, ws.clone(), "kept");
+    kept.phase = Phase::Exiting;
+    let stale_snapshot = kept.clone();
+    kept.phase = Phase::Exited;
+    kept.exit = Some(ExitInfo {
+        code: Some(0),
+        signal: None,
+        oom_killed: false,
+        exited_at_ms: crate::util::now_ms(),
+    });
+    persist_record(&paths, &kept);
+    assert!(!record_warning(&paths, &stale_snapshot).unwrap());
+    assert!(load_warning_for(&paths, kept.id).is_none());
+
+    // Same race in the `running` phase (a workload that exits on its own
+    // between snapshot and probe).
+    let running = registry_fixture(&paths, ws, "ran-out");
+    assert!(!record_warning(&paths, &running).unwrap());
+    assert!(load_warnings(&paths).is_empty());
+}
+
+/// The re-read must not hide a real dead-worker crash: a worker that died
+/// in the `running` phase (no stop was ever accepted) is still warned.
+#[test]
+fn worker_that_died_while_running_without_finalizing_still_warns() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let record = registry_fixture(
+        &paths,
+        PathBuf::from("/tmp/aplexer-warnings-test"),
+        "sigkilled",
+    );
+    persist_record(&paths, &record);
+
+    assert!(record_warning(&paths, &record).unwrap());
+    let warning = load_warning_for(&paths, record.id).unwrap();
+    assert_eq!(warning.kind, WarningKind::Crash);
+    assert!(
+        warning.detail.contains("while running"),
+        "{}",
+        warning.detail
+    );
+    assert_eq!(sweep_warnings(&paths), 0, "already recorded");
 }

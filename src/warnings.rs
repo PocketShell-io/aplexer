@@ -34,7 +34,7 @@ use crate::persist::{atomic_write_json, FileLock};
 use crate::record::{observed_state, ExitInfo};
 use crate::registry::read_record;
 use crate::util::now_ms;
-use crate::{list_records, Phase, SessionRecord};
+use crate::{list_records, read_session_record, Phase, SessionRecord};
 
 pub const WARNINGS_SCHEMA_VERSION: u32 = 1;
 
@@ -252,6 +252,28 @@ pub fn load_warning_for(paths: &Paths, id: Uuid) -> Option<SessionWarning> {
 pub fn record_warning(paths: &Paths, record: &SessionRecord) -> Result<bool> {
     let Some((kind, detail)) = warning_for_record(record) else {
         return Ok(false);
+    };
+    // A dead-worker verdict judges a record snapshot read BEFORE the
+    // liveness probe, and a cleanly finishing worker rewrites (Exited +
+    // exit) or removes (fast path + finished tombstone) its record before
+    // its process exits. So a snapshot taken a moment before finalization
+    // plus a probe taken a moment after it reads `exiting`/`running` with
+    // no worker -- the false "died unexpectedly" warning every list sweep
+    // and the resident RPC registry's cached records used to raise for
+    // normal Hub stops. Re-read the record now, after the worker was seen
+    // dead: if it still claims an active phase with no exit, nobody
+    // finalized it and the crash is real; if it is gone or terminal, the
+    // session ended normally (or was retired) and warns nothing new.
+    let (kind, detail) = if kind == WarningKind::Crash && record.worker_phase_active() {
+        let Ok(current) = read_session_record(paths, record.id) else {
+            return Ok(false);
+        };
+        match warning_for_record(&current) {
+            Some(verdict) => verdict,
+            None => return Ok(false),
+        }
+    } else {
+        (kind, detail)
     };
     let path = warning_path(paths, record.id);
     if path.exists() || acked_path(paths, record.id).exists() {

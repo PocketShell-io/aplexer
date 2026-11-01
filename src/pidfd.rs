@@ -65,13 +65,36 @@ mod linux {
     use std::path::Path;
 
     use crate::agent_kind::DEFAULT_PROC_ROOT;
-    use crate::{io_kind, pidfd_open, process_is_zombie, process_start_time_ticks};
+    use crate::{pidfd_open, process_is_zombie, process_start_time_ticks};
+
+    /// How many times one pid's task list is re-read after a task vanished
+    /// mid-scan before the union so far is taken as its child set.
+    const VANISHED_TASK_RESCANS: usize = 3;
+
+    /// A procfs read that failed because the process or thread is gone:
+    /// ENOENT after it was reaped, ESRCH while its entry is still being torn
+    /// down. The latter used to fail a finishing session closed ("inspect
+    /// descendants: read /proc/<pid>/task: No such process").
+    fn vanished(error: &io::Error) -> bool {
+        error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+    }
+
+    /// `vanished` for an identity read that went through `anyhow`: reading
+    /// `/proc/<pid>/stat` of a process that is exiting fails ESRCH ("identify
+    /// process N: read /proc/N/stat: No such process" used to fail `a kill`).
+    fn process_gone(error: &anyhow::Error) -> bool {
+        error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<io::Error>())
+            .is_some_and(vanished)
+    }
 
     /// Every child attached to any thread of `pid`, from
     /// `<proc_root>/<pid>/task/*/children`. Reading only the thread-group
     /// leader's file can miss children forked by another thread, which would
     /// be a containment escape for multi-threaded tools. A task that vanishes
-    /// mid-read is skipped; a process with no `task` directory has no children.
+    /// mid-read is skipped (and the task list re-read); a process that is
+    /// gone has no children.
     ///
     /// `proc_root` is always the real `/proc` for containment work;
     /// `agent_kind`'s detection walk shares this exact reader so its unit tests
@@ -87,36 +110,52 @@ mod linux {
     ) -> Result<Vec<u32>> {
         check(deadline, "scanning process tree")?;
         let tasks_path = proc_root.join(pid.to_string()).join("task");
-        let tasks = match fs::read_dir(&tasks_path) {
-            Ok(tasks) => tasks,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(error).with_context(|| format!("read {}", tasks_path.display()))
-            }
-        };
         let mut children = HashSet::new();
-        for task in tasks {
-            check(deadline, "scanning process tree")?;
-            let Ok(task) = task else { continue };
-            let Some(tid) = task
-                .file_name()
-                .to_str()
-                .and_then(|name| name.parse::<u32>().ok())
-            else {
-                continue;
-            };
-            let path = tasks_path.join(tid.to_string()).join("children");
-            let text = match fs::read_to_string(&path) {
-                Ok(text) => text,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+        // A thread that exits mid-scan hands its children to a surviving
+        // thread of the same group, possibly one this pass already read, so
+        // a pass that saw a task vanish is repeated (bounded) and unioned.
+        for _ in 0..VANISHED_TASK_RESCANS {
+            let tasks = match fs::read_dir(&tasks_path) {
+                Ok(tasks) => tasks,
+                // The whole process exited between being listed as a child
+                // and this read: ENOENT once reaped, ESRCH while procfs
+                // still holds the dying entry. Either way it has no
+                // children left -- they were reparented to the subreaper.
+                Err(error) if vanished(&error) => return Ok(children.into_iter().collect()),
                 Err(error) => {
-                    return Err(error).with_context(|| format!("read {}", path.display()))
+                    return Err(error).with_context(|| format!("read {}", tasks_path.display()))
                 }
             };
-            children.extend(
-                text.split_whitespace()
-                    .filter_map(|value| value.parse::<u32>().ok()),
-            );
+            let mut task_vanished = false;
+            for task in tasks {
+                check(deadline, "scanning process tree")?;
+                let Ok(task) = task else { continue };
+                let Some(tid) = task
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.parse::<u32>().ok())
+                else {
+                    continue;
+                };
+                let path = tasks_path.join(tid.to_string()).join("children");
+                let text = match fs::read_to_string(&path) {
+                    Ok(text) => text,
+                    Err(error) if vanished(&error) => {
+                        task_vanished = true;
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| format!("read {}", path.display()))
+                    }
+                };
+                children.extend(
+                    text.split_whitespace()
+                        .filter_map(|value| value.parse::<u32>().ok()),
+                );
+            }
+            if !task_vanished {
+                break;
+            }
         }
         Ok(children.into_iter().collect())
     }
@@ -196,7 +235,7 @@ mod linux {
             check(deadline, "opening process handle")?;
             let start_time_ticks = match process_start_time_ticks(pid) {
                 Ok(value) => value,
-                Err(error) if io_kind(&error) == Some(io::ErrorKind::NotFound) => return Ok(None),
+                Err(error) if process_gone(&error) => return Ok(None),
                 Err(error) => return Err(error).with_context(|| format!("identify process {pid}")),
             };
             check(deadline, "opening process handle")?;
@@ -214,7 +253,7 @@ mod linux {
                     pidfd,
                 })),
                 Ok(_) => Ok(None),
-                Err(error) if io_kind(&error) == Some(io::ErrorKind::NotFound) => Ok(None),
+                Err(error) if process_gone(&error) => Ok(None),
                 Err(error) => Err(error).with_context(|| format!("recheck process {pid} identity")),
             }
         }
@@ -298,6 +337,22 @@ mod linux {
         fn a_gone_pid_opens_to_none() {
             // A pid nobody can hold: beyond pid_max.
             assert!(PidHandle::open(u32::MAX - 1, None).unwrap().is_none());
+        }
+
+        /// A process caught mid-exit makes procfs answer ESRCH, not ENOENT;
+        /// both mean "gone" to the walks and the identity reads, while any
+        /// other failure stays an error (fail closed).
+        #[test]
+        fn esrch_from_a_dying_process_reads_as_gone() {
+            let esrch = io::Error::from_raw_os_error(libc::ESRCH);
+            assert!(vanished(&esrch));
+            assert!(vanished(&io::Error::from(io::ErrorKind::NotFound)));
+            assert!(!vanished(&io::Error::from_raw_os_error(libc::EACCES)));
+            let wrapped = anyhow::Error::new(esrch).context("read /proc/1/stat");
+            assert!(process_gone(&wrapped));
+            let denied = anyhow::Error::new(io::Error::from_raw_os_error(libc::EACCES))
+                .context("read /proc/1/stat");
+            assert!(!process_gone(&denied));
         }
     }
 }
@@ -514,6 +569,18 @@ mod macos_impl {
     use std::path::Path;
 
     /// Direct children of `pid` (the `/proc` root is ignored on macOS).
+    /// How many times one pid's task list is re-read after a task vanished
+    /// mid-scan before the union so far is taken as its child set.
+    const VANISHED_TASK_RESCANS: usize = 3;
+
+    /// A procfs read that failed because the process or thread is gone:
+    /// ENOENT after it was reaped, ESRCH while its entry is still being torn
+    /// down. The latter used to fail a finishing session closed ("inspect
+    /// descendants: read /proc/<pid>/task: No such process").
+    pub(crate) fn vanished(error: &io::Error) -> bool {
+        error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+    }
+
     pub(crate) fn direct_child_pids_in(_proc_root: &Path, pid: u32) -> Result<Vec<u32>> {
         Ok(macos::direct_children_of(pid))
     }
