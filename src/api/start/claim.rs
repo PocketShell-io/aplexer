@@ -44,7 +44,7 @@ pub(super) fn resolve_launch(
     )?;
     if req.command.is_empty() {
         if let Some(model) = req.model.as_deref() {
-            push_model_arg(&mut launch.command, model)?;
+            apply_model(&mut launch, model)?;
         }
         if !req.no_skip_permissions {
             launch
@@ -73,17 +73,57 @@ pub(super) fn resolve_launch(
     Ok((workspace, launch))
 }
 
-/// Append `--model <model>` as one engine argument.
+/// Select `model` for the resolved engine launch.
 ///
-/// The value is a single model id: empty, whitespace, controls, and a
-/// leading dash are rejected so the flag cannot become a second option.
-pub(crate) fn push_model_arg(command: &mut Vec<String>, model: &str) -> Result<()> {
+/// Most engines take `--model <id>`. opencode's top-level TUI command has no
+/// `--model` flag (only `opencode run` does), so passing it makes the process
+/// print usage and exit 1 at once, and the session vanishes from `a list`.
+/// For opencode the model goes through `OPENCODE_CONFIG_CONTENT`, the inline
+/// config opencode merges over its files, which every version honours.
+pub(crate) fn apply_model(launch: &mut ResolvedLaunch, model: &str) -> Result<()> {
+    let is_opencode = launch
+        .command
+        .first()
+        .and_then(|program| Path::new(program).file_stem())
+        .is_some_and(|stem| stem == "opencode");
+    if !is_opencode {
+        return push_model_arg(&mut launch.command, model);
+    }
+    validate_model_id(model)?;
+    let mut config = match launch.env.get(OPENCODE_CONFIG_ENV) {
+        Some(existing) if !existing.trim().is_empty() => serde_json::from_str(existing)
+            .ok()
+            .filter(serde_json::Value::is_object)
+            .ok_or_else(|| {
+                anyhow!("{OPENCODE_CONFIG_ENV} is not a JSON object; cannot add --model")
+            })?,
+        _ => serde_json::json!({}),
+    };
+    config["model"] = serde_json::Value::String(model.to_owned());
+    launch
+        .env
+        .insert(OPENCODE_CONFIG_ENV.to_owned(), config.to_string());
+    Ok(())
+}
+
+const OPENCODE_CONFIG_ENV: &str = "OPENCODE_CONFIG_CONTENT";
+
+fn validate_model_id(model: &str) -> Result<()> {
     if model.is_empty()
         || model.starts_with('-')
         || model.chars().any(|c| c.is_control() || c.is_whitespace())
     {
         bail!("--model must be one model id, with no spaces or leading dash");
     }
+    Ok(())
+}
+
+/// Append `--model <model>` as one engine argument.
+///
+/// The value is a single model id: empty, whitespace, controls, and a
+/// leading dash are rejected so the flag cannot become a second option.
+pub(crate) fn push_model_arg(command: &mut Vec<String>, model: &str) -> Result<()> {
+    validate_model_id(model)?;
     command.push("--model".to_owned());
     command.push(model.to_owned());
     Ok(())
@@ -286,7 +326,60 @@ pub(crate) fn retire_reclaimed_holder(
 
 #[cfg(test)]
 mod model_arg_tests {
-    use super::push_model_arg;
+    use super::{apply_model, push_model_arg, OPENCODE_CONFIG_ENV};
+    use crate::ResolvedLaunch;
+
+    fn launch(command: &[&str]) -> ResolvedLaunch {
+        ResolvedLaunch {
+            engine: "x".into(),
+            profile: None,
+            command: command.iter().map(|s| s.to_string()).collect(),
+            cwd: ".".into(),
+            env: Default::default(),
+            env_unset: vec![],
+            skip_permissions_argv: vec![],
+            limits: Default::default(),
+            history_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn opencode_model_goes_through_inline_config_not_a_flag() {
+        let mut l = launch(&["/usr/bin/opencode"]);
+        apply_model(&mut l, "opencode-go/muse-spark-1.3-contributor").unwrap();
+        assert_eq!(l.command, vec!["/usr/bin/opencode".to_string()]);
+        let cfg: serde_json::Value = serde_json::from_str(&l.env[OPENCODE_CONFIG_ENV]).unwrap();
+        assert_eq!(cfg["model"], "opencode-go/muse-spark-1.3-contributor");
+    }
+
+    #[test]
+    fn opencode_model_merges_into_existing_inline_config() {
+        let mut l = launch(&["opencode"]);
+        l.env.insert(
+            OPENCODE_CONFIG_ENV.into(),
+            r#"{"theme":"x","model":"old"}"#.into(),
+        );
+        apply_model(&mut l, "p/m").unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(&l.env[OPENCODE_CONFIG_ENV]).unwrap();
+        assert_eq!(
+            (cfg["theme"].as_str(), cfg["model"].as_str()),
+            (Some("x"), Some("p/m"))
+        );
+        l.env.insert(OPENCODE_CONFIG_ENV.into(), "not json".into());
+        assert!(apply_model(&mut l, "p/m").is_err());
+        assert!(apply_model(&mut launch(&["opencode"]), "--bad").is_err());
+    }
+
+    #[test]
+    fn other_engines_still_get_the_model_flag() {
+        let mut l = launch(&["codex"]);
+        apply_model(&mut l, "gpt-5.4").unwrap();
+        assert_eq!(
+            l.command,
+            vec!["codex".to_string(), "--model".into(), "gpt-5.4".into()]
+        );
+        assert!(l.env.is_empty());
+    }
 
     #[test]
     fn model_is_one_argument_before_later_flags() {
