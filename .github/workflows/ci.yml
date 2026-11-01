@@ -51,6 +51,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_LINT_VERSION }}
           components: rustfmt, clippy
+          targets: x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
@@ -94,6 +95,11 @@ jobs:
       # quarantining them can never help a collapsed suite clear the floor.
       - name: Run the local gate
         run: scripts/validate.sh
+
+      # Compile macOS cfg-gated code from Linux so missing imports and other
+      # platform-only errors are caught by the main CI lane.
+      - name: Check macOS target
+        run: cargo check --locked --target x86_64-apple-darwin
 
   windows:
     name: Validate (Windows)

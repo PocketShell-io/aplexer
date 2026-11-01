@@ -566,6 +566,7 @@ mod macos_impl {
     use crate::sys::macos;
     use anyhow::{bail, Context, Result};
     use std::collections::{HashSet, VecDeque};
+    use std::io;
     use std::path::Path;
 
     /// Direct children of `pid` (the `/proc` root is ignored on macOS).
