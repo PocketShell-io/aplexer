@@ -196,3 +196,31 @@ fn selection_matches_ws_tag_uuid_prefix_and_cwd_tag() {
     // No selector at all: everything.
     assert_eq!(select_warnings(&paths, None, None, None, None).len(), 2);
 }
+
+#[test]
+fn exiting_corpse_is_finalized_with_an_exit_record_not_reported_as_a_crash() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = test_paths(root.path());
+    let mut record = SessionRecord::fixture(PathBuf::from("/tmp/aplexer-warnings-test"), "stopped");
+    record.socket_path = paths.socket(record.id);
+    record.history_path = paths.history(record.id);
+    // `a kill`/Hub stop accepted, worker torn down with the scope before it
+    // could finalize: Exiting, no live worker or leader, no exit record.
+    record.phase = Phase::Exiting;
+    persist_record(&paths, &record);
+
+    assert!(warning_for_record(&record).is_none(), "not a crash");
+    assert_eq!(sweep_warnings(&paths), 0);
+    assert!(load_warnings(&paths).is_empty());
+
+    let stored = crate::registry::read_record(&paths.record(record.id)).unwrap();
+    assert_eq!(stored.phase, Phase::Exited);
+    assert!(stored.exit.is_some(), "exit record written");
+    assert_eq!(stored.containment_empty, Some(false), "no false proof");
+    assert!(!stored.containment_proven_empty());
+
+    // A dead worker in any other active phase is still a real crash.
+    let mut running = SessionRecord::fixture(PathBuf::from("/tmp/aplexer-warnings-test"), "died");
+    running.phase = Phase::Running;
+    assert!(warning_for_record(&running).is_some());
+}

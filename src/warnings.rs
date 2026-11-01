@@ -30,8 +30,9 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::paths::{canonical_workspace, ensure_private_dir, Paths};
-use crate::persist::atomic_write_json;
-use crate::record::observed_state;
+use crate::persist::{atomic_write_json, FileLock};
+use crate::record::{observed_state, ExitInfo};
+use crate::registry::read_record;
 use crate::util::now_ms;
 use crate::{list_records, Phase, SessionRecord};
 
@@ -102,7 +103,13 @@ impl SessionWarning {
 ///    worker's lifecycle at finalize;
 /// 2. `observed_state` == `broken` -- the record still claims an active
 ///    phase but the worker process is gone past the startup window, so it
-///    died without recording an exit;
+///    died without recording an exit -- unless the phase is `exiting` and
+///    the workload leader is gone too: `Exiting` is written only when a
+///    stop/kill was accepted or the workload already ended, so a worker
+///    that vanished in that window (its scope/cgroup torn down together
+///    with the workload by `a kill`, a Hub stop, systemd) is a session
+///    that ended, not one that crashed ([`finalize_exiting_corpse`] gives
+///    it the exit record the worker never got to write);
 /// 3. `Phase::Failed` -- the worker lived long enough to record a fatal
 ///    error (`record.error` carries the reason).
 ///
@@ -120,6 +127,9 @@ pub fn warning_for_record(record: &SessionRecord) -> Option<(WarningKind, String
                 ),
             ));
         }
+    }
+    if is_finished_exiting_corpse(record) {
+        return None;
     }
     if observed_state(
         &record.phase,
@@ -146,6 +156,49 @@ pub fn warning_for_record(record: &SessionRecord) -> Option<(WarningKind, String
         ));
     }
     None
+}
+
+/// An `Exiting` record whose worker AND workload leader are both gone and
+/// that never got an exit record: a deliberate stop (or a natural workload
+/// exit) whose worker was torn down before it could finalize.
+fn is_finished_exiting_corpse(record: &SessionRecord) -> bool {
+    record.phase == Phase::Exiting
+        && record.exit.is_none()
+        && !record.worker_alive()
+        && !record.workload_leader_alive()
+}
+
+/// Write the exit record a worker died before writing, for a record that
+/// [`is_finished_exiting_corpse`]: phase `Exited`, an exit with no code or
+/// signal known, and `containment_empty` explicitly NOT proven (the worker
+/// that would have proven it is gone), so `a prune`/`a kill` still verify
+/// containment before reclaiming. Re-reads under the registry lock and
+/// refuses on a changed generation, so it never clobbers a live worker's
+/// write. Returns whether a record was written.
+pub fn finalize_exiting_corpse(paths: &Paths, record: &SessionRecord) -> Result<bool> {
+    if !is_finished_exiting_corpse(record) {
+        return Ok(false);
+    }
+    let _registry = FileLock::exclusive(&paths.registry_lock(), false)?;
+    let Ok(mut current) = read_record(&paths.record(record.id)) else {
+        return Ok(false);
+    };
+    if current.created_at_ms != record.created_at_ms || !is_finished_exiting_corpse(&current) {
+        return Ok(false);
+    }
+    current.phase = Phase::Exited;
+    if current.containment_empty != Some(true) {
+        current.containment_empty = Some(false);
+    }
+    current.exit = Some(ExitInfo {
+        code: None,
+        signal: None,
+        oom_killed: false,
+        exited_at_ms: now_ms(),
+    });
+    current.updated_at_ms = now_ms();
+    atomic_write_json(&paths.record(record.id), &current)?;
+    Ok(true)
 }
 
 fn warning_path(paths: &Paths, id: Uuid) -> PathBuf {
@@ -245,7 +298,12 @@ pub fn record_warning_best_effort(paths: &Paths, record: &SessionRecord) -> bool
 /// the swept record is the evidence.
 pub fn sweep_warnings(paths: &Paths) -> usize {
     let mut created = 0;
-    for record in list_records(paths).unwrap_or_default() {
+    for mut record in list_records(paths).unwrap_or_default() {
+        if matches!(finalize_exiting_corpse(paths, &record), Ok(true)) {
+            if let Ok(updated) = read_record(&paths.record(record.id)) {
+                record = updated;
+            }
+        }
         if record_warning_best_effort(paths, &record) {
             created += 1;
         }
