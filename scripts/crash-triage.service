@@ -1,0 +1,7 @@
+[Unit]
+Description=Auto-triage aplexer crash/OOM warnings (ack benign, file Hub intake for real)
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 %h/git/aplexer/scripts/crash-triage.py
+Nice=19
