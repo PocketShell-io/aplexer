@@ -445,17 +445,37 @@ mod windows_tests {
     #[test]
     fn image_name_of_a_live_child_classifies() {
         // `cmd` is not an agent, but the walk must read it without panicking.
+        // The child gets its own session job with APLEXER_SESSION_ID set --
+        // exactly how aplexer launches real session workers -- so the walk's
+        // job-fallback step can only ever see this child's subtree. Anchoring
+        // at the test process instead would make "found nothing"
+        // nondeterministic: sibling tests spawn live fake-agent children into
+        // the same process, and on a managed host (Hub worker) the harness's
+        // own agents share the ambient session job.
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let session_id = format!(
+            "detect-cmd-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let job = crate::sys::windows::job::Job::create(
+            &session_id,
+            &crate::sys::windows::job::JobLimits::default(),
+        )
+        .unwrap();
         let mut child = std::process::Command::new("cmd")
             .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+            .env("APLEXER_SESSION_ID", &session_id)
             .spawn()
             .unwrap();
-        let found = detect_agent(
-            Path::new("/proc"),
-            std::process::id(),
-            &ProfileVariants::default(),
-        );
+        job.assign_pid(child.id()).unwrap();
+        let found = detect_agent(Path::new("/proc"), child.id(), &ProfileVariants::default());
         let _ = child.kill();
         let _ = child.wait();
-        assert!(found.is_none());
+        drop(job);
+        assert!(
+            found.is_none(),
+            "a cmd/ping child in its own session job must not classify as an agent (found {found:?})"
+        );
     }
 }
