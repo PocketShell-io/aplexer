@@ -1653,7 +1653,8 @@ fn the_external_reap_anchor_rejects_the_startup_timeout_path() {
          and left no conclusive cleanup record; startup containment for \
          918dac95-6ae4-4fe9-8c4f-5c90c04da34c could not be confirmed; preserved runtime and \
          durable state\n";
-    let startup_timeout = "a: startup failed: startup timeout: worker did not become ready within 1000 ms; \
+    let startup_timeout =
+        "a: startup failed: startup timeout: worker did not become ready within 1000 ms; \
          rollback also failed: worker 2906416 exited before independent containment cleanup \
          and left no conclusive cleanup record; startup containment for \
          c32a2859-082d-44b8-b5d8-ca56202de138 could not be confirmed; preserved runtime and \
@@ -1734,9 +1735,7 @@ fn zero_timeout_start_reports_startup_timeout_with_tombstone_and_warning() {
     );
     // And a crash warning with the same diagnosis, visible to `a warnings`.
     let mut warned = false;
-    for entry in
-        fs::read_dir(harness.state_dir.path().join("warnings")).expect("read warnings")
-    {
+    for entry in fs::read_dir(harness.state_dir.path().join("warnings")).expect("read warnings") {
         let entry = entry.expect("read warning entry");
         if !entry.path().extension().is_some_and(|ext| ext == "json") {
             continue;

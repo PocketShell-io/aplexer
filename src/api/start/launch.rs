@@ -302,9 +302,9 @@ pub(super) fn record_startup_timeout_evidence(
         None,
         Some(&detail),
     );
-    if let Err(error) = crate::warnings::record_startup_timeout_warning(
-        paths, id, workspace, tag, engine, &detail,
-    ) {
+    if let Err(error) =
+        crate::warnings::record_startup_timeout_warning(paths, id, workspace, tag, engine, &detail)
+    {
         eprintln!("a: could not record startup-timeout warning for session {id}: {error:#}");
     }
 }

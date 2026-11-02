@@ -141,12 +141,7 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
                             "startup timeout: worker did not become ready within {timeout_ms} ms; startup containment could not be confirmed, runtime and durable state preserved"
                         );
                         if let Err(error) = crate::warnings::record_startup_timeout_warning(
-                            paths,
-                            id,
-                            &workspace,
-                            &tag,
-                            &engine,
-                            &detail,
+                            paths, id, &workspace, &tag, &engine, &detail,
                         ) {
                             eprintln!(
                                 "a: could not record startup-timeout warning for session {id}: {error:#}"
