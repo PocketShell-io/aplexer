@@ -57,6 +57,45 @@ Invoke-Recorded 'build-tools' 'python' @('-m', 'pip', 'install', '--disable-pip-
 Invoke-Recorded 'native-exe' 'cargo' @('build', '--locked', '--release', '--bins', '--target', $Target)
 $exe = (Resolve-Path "target/$Target/release/aplexer.exe").Path
 Invoke-Recorded 'exe-version' $exe @('--version')
+
+# Native session-lifecycle proof with Job Object containment receipts
+# (Hub intake 65e755be, AC2's native path): isolated state dirs, one real
+# cmd workload; list --json shows containment_empty=false while the
+# workload lives, and a verified stop with --keep-record prints
+# containment_empty=true. `doctor` is receipt-only: its engine-resolution
+# check is warning-severity for not-installed engines, so a bare runner
+# with zero agents installed still passes every required check.
+$proofDir = Join-Path $outDir 'session-proof'
+New-Item -ItemType Directory (Join-Path $proofDir 'state') -Force | Out-Null
+New-Item -ItemType Directory (Join-Path $proofDir 'run') -Force | Out-Null
+$env:APLEXER_STATE_DIR = Join-Path $proofDir 'state'
+$env:APLEXER_RUNTIME_DIR = Join-Path $proofDir 'run'
+try {
+    Invoke-Recorded 'doctor' $exe @('doctor')
+    $startOut = & $exe --json start --workspace $proofDir --tag proof -- cmd.exe /c 'ping -n 30 127.0.0.1'
+    $startCode = $LASTEXITCODE
+    if ($startCode -ne 0) { throw "proof session start exited $startCode" }
+    $session = $startOut | ConvertFrom-Json
+    $alive = @(& $exe --json list | ConvertFrom-Json | Where-Object { $_.id -eq $session.id })
+    if ($alive.Count -ne 1 -or $alive[0].containment_empty -ne $false) {
+        throw 'live session is not reported as job-contained (containment_empty=false)'
+    }
+    $stopOut = & $exe --json kill $session.id --signal TERM --grace-ms 5000 --keep-record
+    $stopCode = $LASTEXITCODE
+    if ($stopCode -ne 0) { throw "proof session stop exited $stopCode" }
+    $stopped = $stopOut | ConvertFrom-Json
+    if (-not $stopped.containment_empty) { throw 'containment_empty receipt missing after verified stop' }
+    @{session=$session.id; workspace=$proofDir;
+      alive_containment_empty=$alive[0].containment_empty;
+      stop=@{state=$stopped.state; containment_empty=$stopped.containment_empty; record_removed=$stopped.record_removed};
+      exe=$exe} | ConvertTo-Json -Depth 5 |
+        Set-Content -Encoding utf8 (Join-Path $outDir 'session-proof.json')
+}
+finally {
+    Remove-Item Env:APLEXER_STATE_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:APLEXER_RUNTIME_DIR -ErrorAction SilentlyContinue
+}
+
 New-Item -ItemType Directory (Join-Path $outDir 'native') | Out-Null
 Copy-Item $exe (Join-Path $outDir 'native/aplexer.exe')
 $platform = if ($Target -like 'x86_64*') { 'windows-amd64' } else { 'windows-arm64' }
