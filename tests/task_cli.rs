@@ -860,7 +860,7 @@ fn agy_print_prompt_follows_all_engine_and_permission_options() {
     let harness = Harness::new();
     let engine_dir = TempDir::new().unwrap();
     // Model agy's parser: -p consumes the very next argument, even a flag.
-    let fake = workload::toml_path(&workload::write_executable(
+    let fake_path = workload::write_executable(
         engine_dir.path(),
         "agy",
         r#"#!/bin/sh
@@ -876,6 +876,12 @@ while [ "$#" -gt 0 ]; do
 done
 exit 43
 "#,
+    );
+    let fake = workload::toml_path(&fake_path);
+    let wrapper = workload::toml_path(&workload::write_executable(
+        engine_dir.path(),
+        "agy-wrapper",
+        &format!("#!/bin/sh\nexec {fake_path:?} \"$@\"\n"),
     ));
     fs::write(
         harness.paths().config_file,
@@ -892,12 +898,16 @@ task_argv = ["-p"]
 
 # An arbitrary agy engine can inherit print mode from its executable.
 [engines.flash]
-command = ["{fake}", "--model", "flash"]
+command = ["{wrapper}", "--model", "flash"]
 skip_permissions_argv = ["--dangerously-skip-permissions"]
 
 [profiles.agy-account]
 engine = "antigravity"
 args = ["--model", "profile-model"]
+
+[profiles.agy-wrapper]
+engine = "antigravity"
+command = ["{wrapper}", "--model", "profile-wrapper"]
 "#
         ),
     )
@@ -909,6 +919,7 @@ args = ["--model", "profile-model"]
         ("argon", None),
         ("flash", None),
         ("antigravity", Some("agy-account")),
+        ("antigravity", Some("agy-wrapper")),
     ] {
         for skip in [true, false] {
             let output_dir = cwd.path().join(format!("{engine}-{profile:?}-{skip}"));
@@ -956,6 +967,75 @@ args = ["--model", "profile-model"]
             );
         }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn profile_command_replaces_agy_detection_with_effective_executable() {
+    let harness = Harness::new();
+    let engine_dir = TempDir::new().unwrap();
+    let configured_agy = workload::toml_path(&workload::write_executable(
+        engine_dir.path(),
+        "agy",
+        &workload::fake_engine_script(true),
+    ));
+    let profile_opencode = workload::toml_path(&workload::write_executable(
+        engine_dir.path(),
+        "opencode-profile",
+        &workload::fake_engine_script(true),
+    ));
+    fs::write(
+        harness.paths().config_file,
+        format!(
+            r#"
+[engines.opencode]
+command = ["{configured_agy}", "--model", "base-model"]
+skip_permissions_argv = ["--auto"]
+
+[profiles.opencode-profile]
+engine = "opencode"
+command = ["{profile_opencode}", "--model", "profile-model"]
+"#
+        ),
+    )
+    .unwrap();
+    let cwd = TempDir::new().unwrap();
+    let prompt_path = write_prompt(cwd.path(), "profile prompt");
+    let output_dir = cwd.path().join("result");
+    let run = task_run(&harness)
+        .args([
+            "task",
+            "run",
+            "--engine",
+            "opencode",
+            "--profile",
+            "opencode-profile",
+            "--prompt-file",
+            &prompt_path,
+            "--cwd",
+            cwd.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.to_str().unwrap(),
+            "--no-notify",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let log = stdout_log(&output_dir);
+    assert!(
+        log.lines().any(|line| line == "argv[0]=run"),
+        "profile command must keep OpenCode's run subcommand before profile options: {log}"
+    );
+    assert!(log.lines().any(|line| line == "argv[1]=--model"), "{log}");
+    assert!(log.lines().any(|line| line == "argv[3]=--auto"), "{log}");
+    assert!(
+        log.lines().any(|line| line == "argv[4]=profile prompt"),
+        "{log}"
+    );
 }
 
 #[test]

@@ -53,12 +53,7 @@ pub(crate) fn cmd_task(paths: &Paths, args: TaskRunArgs, json_output: bool) -> R
             .and_then(|program| Path::new(program).file_stem())
             .is_some_and(|stem| stem == "agy")
     };
-    let is_agy = engine == "antigravity"
-        || agy_command(&launch.command)
-        || config
-            .engines
-            .get(&engine)
-            .is_some_and(|entry| agy_command(&entry.command));
+    let is_agy = agy_command(&launch.command) || aplexer::engine_family(&engine) == "antigravity";
     let task_engine = if is_agy { "antigravity" } else { &engine };
 
     // The noninteractive mode argv: engine config wins, built-in family
