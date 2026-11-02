@@ -530,6 +530,7 @@ fn prune_ages_expired_tombstones_and_leaves_archives() {
         finished_at_ms: 0,
         cause: aplexer::retired::TombstoneCause::Pruned,
         exit: None,
+        error: None,
         created_at_ms: None,
         containment_empty: None,
         output: None,
