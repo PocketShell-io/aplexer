@@ -15,7 +15,6 @@ use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -157,7 +156,10 @@ fn poll_pre_pid_record(state: &Path, timeout: Duration) -> Option<Value> {
                 }
             }
         }
-        thread::sleep(Duration::from_millis(1));
+        // No sleep: the pre-PID window is the short span between the
+        // launcher's first write and the worker registering its pid, and a
+        // sleeping poller samples it too coarsely on a fast or a loaded
+        // host. A busy loop at least doubles as the timeout check.
     }
     None
 }
@@ -171,8 +173,7 @@ fn capture_pre_pid_record(kill_start: bool) -> Value {
             child: Some(child),
             state: harness.state.path().to_path_buf(),
         };
-        let Some(record) = poll_pre_pid_record(harness.state.path(), Duration::from_millis(500))
-        else {
+        let Some(record) = poll_pre_pid_record(harness.state.path(), Duration::from_secs(5)) else {
             continue;
         };
         assert_eq!(record["phase"], "starting", "{record}");
