@@ -244,7 +244,11 @@ pub(crate) fn resolve_switch_target(
 /// How long `Ctrl-b c` waits for the new session's workload to come up before
 /// giving up -- `a start`'s own `--startup-timeout-ms` default, because this
 /// chord is `a new` with the CLI trip removed and must not be quietly less
-/// patient than typing it.
+/// patient than typing it. Windows matches the 120 s Hub default (intake
+/// 7cc124d9); Unix keeps the 10 s bound.
+#[cfg(windows)]
+pub(crate) const NEW_SESSION_STARTUP_TIMEOUT_MS: u64 = 120_000;
+#[cfg(not(windows))]
 pub(crate) const NEW_SESSION_STARTUP_TIMEOUT_MS: u64 = 10_000;
 
 /// `Ctrl-b c`'s half of the chord: create another session in the attached

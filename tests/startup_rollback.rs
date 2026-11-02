@@ -259,10 +259,10 @@ fn inherited_descriptor_count() -> libc::rlim_t {
 /// SIGKILL land inside the SIGTERM grace:
 ///
 /// ```text
-/// a: startup failed: worker did not become ready within 1000 ms; rollback also
-/// failed: worker N exited before independent containment cleanup and left no
-/// conclusive cleanup record; startup containment for <id> could not be
-/// confirmed; preserved runtime and durable state
+/// a: startup failed: startup timeout: worker did not become ready within 1000 ms;
+/// rollback also failed: worker N exited before independent containment cleanup
+/// and left no conclusive cleanup record; startup containment for <id> could not
+/// be confirmed; preserved runtime and durable state
 /// ```
 ///
 /// Only the readiness loop's own `worker exited during startup: <status>` arm
@@ -1653,7 +1653,7 @@ fn the_external_reap_anchor_rejects_the_startup_timeout_path() {
          and left no conclusive cleanup record; startup containment for \
          918dac95-6ae4-4fe9-8c4f-5c90c04da34c could not be confirmed; preserved runtime and \
          durable state\n";
-    let startup_timeout = "a: startup failed: worker did not become ready within 1000 ms; \
+    let startup_timeout = "a: startup failed: startup timeout: worker did not become ready within 1000 ms; \
          rollback also failed: worker 2906416 exited before independent containment cleanup \
          and left no conclusive cleanup record; startup containment for \
          c32a2859-082d-44b8-b5d8-ca56202de138 could not be confirmed; preserved runtime and \
@@ -1671,4 +1671,85 @@ fn the_external_reap_anchor_rejects_the_startup_timeout_path() {
         !observed_external_worker_reap(startup_timeout),
         "the anchor must reject the startup-timeout path it used to be satisfied by"
     );
+}
+
+/// Intake 7cc124d9 AC1/AC2: a start that hits the startup timeout reports
+/// `startup timeout` explicitly and leaves a diagnosable `startup_timeout`
+/// tombstone plus a crash warning, instead of vanishing silently.
+///
+/// A zero timeout is deterministic (the readiness loop checks the deadline
+/// first), so this runs in the default lane with no fault-injection hooks.
+#[test]
+fn zero_timeout_start_reports_startup_timeout_with_tombstone_and_warning() {
+    let harness = Harness::new();
+    let workspace = TempDir::new().expect("workspace tempdir");
+    let workspace = workspace.path().to_str().expect("UTF-8 workspace");
+    let output = harness.run(&[
+        "start",
+        "--workspace",
+        workspace,
+        "--tag",
+        "timeout-evidence",
+        "--startup-timeout-ms",
+        "0",
+        "--",
+        "/bin/sleep",
+        "30",
+    ]);
+    assert!(
+        !output.status.success(),
+        "zero-timeout start succeeded unexpectedly"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("startup timeout:"),
+        "timeout was not reported explicitly: {stderr}"
+    );
+    // The rolled-back session must leave a StartupTimeout tombstone carrying
+    // the cause, not a silent absence.
+    let mut tombstones = Vec::new();
+    for entry in fs::read_dir(harness.state_dir.path().join("retired-sessions"))
+        .expect("read retired-sessions")
+    {
+        let entry = entry.expect("read retired entry");
+        if let Ok(text) = fs::read_to_string(entry.path().join("tombstone.json")) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                tombstones.push(value);
+            }
+        }
+    }
+    assert_eq!(
+        tombstones.len(),
+        1,
+        "expected one timeout tombstone, found {}",
+        tombstones.len()
+    );
+    assert_eq!(tombstones[0]["cause"], "startup_timeout");
+    assert!(
+        tombstones[0]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("startup timeout:")),
+        "tombstone lacks a diagnosable cause: {}",
+        tombstones[0]
+    );
+    // And a crash warning with the same diagnosis, visible to `a warnings`.
+    let mut warned = false;
+    for entry in
+        fs::read_dir(harness.state_dir.path().join("warnings")).expect("read warnings")
+    {
+        let entry = entry.expect("read warning entry");
+        if !entry.path().extension().is_some_and(|ext| ext == "json") {
+            continue;
+        }
+        let text = fs::read(entry.path()).expect("read warning");
+        let value: serde_json::Value = serde_json::from_slice(&text).expect("parse warning");
+        if value["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("startup timeout:"))
+        {
+            warned = true;
+        }
+    }
+    assert!(warned, "no startup-timeout warning was filed");
+    harness.assert_no_session_artifacts();
 }

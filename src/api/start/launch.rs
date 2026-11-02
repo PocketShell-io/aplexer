@@ -202,6 +202,10 @@ pub(super) fn spawn_worker_process(
 /// Poll until the worker proves readiness (`probe_worker_ready`), finishes
 /// cleanly on its own (`exited_worker_outcome`), records a startup failure,
 /// or the startup budget runs out.
+///
+/// A timeout bails with an explicit `startup timeout:` prefix (intake
+/// 7cc124d9): the caller matches on it to leave a tombstone and a warning,
+/// so the rolled-back start is never a silent vanish.
 pub(super) fn await_worker_ready(
     paths: &Paths,
     req: &StartRequest,
@@ -219,7 +223,7 @@ pub(super) fn await_worker_ready(
         // independent of whether the worker wins the scheduling race.
         if started.elapsed() >= timeout {
             bail!(
-                "worker did not become ready within {} ms",
+                "startup timeout: worker did not become ready within {} ms",
                 req.startup_timeout_ms
             );
         }
@@ -269,6 +273,39 @@ pub(super) fn await_worker_ready(
         // launcher idle time on top of it. Short-lived and infrequent --
         // one wait per `a start`.
         thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Evidence for a startup-timeout rollback that deleted the starting
+/// record: a `StartupTimeout` tombstone carrying the diagnosable cause plus
+/// a crash warning with the same detail, so `a kill <id>` answers
+/// `startup_timeout` and `a warnings`/`a list` show it (intake 7cc124d9).
+/// Best-effort: a missing tombstone/warning only degrades later diagnosis,
+/// it never fails the start that is already failing.
+pub(super) fn record_startup_timeout_evidence(
+    paths: &Paths,
+    id: Uuid,
+    workspace: &Path,
+    tag: &str,
+    engine: &str,
+    timeout_ms: u64,
+) {
+    let detail = format!(
+        "startup timeout: worker did not become ready within {timeout_ms} ms; worker tree terminated, session rolled back"
+    );
+    crate::retired::write_finished_tombstone_with_error(
+        paths,
+        id,
+        workspace,
+        tag,
+        crate::retired::TombstoneCause::StartupTimeout,
+        None,
+        Some(&detail),
+    );
+    if let Err(error) = crate::warnings::record_startup_timeout_warning(
+        paths, id, workspace, tag, engine, &detail,
+    ) {
+        eprintln!("a: could not record startup-timeout warning for session {id}: {error:#}");
     }
 }
 

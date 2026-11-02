@@ -267,13 +267,14 @@ pub(crate) fn reap_sweep(paths: &Paths, wait_for_terminating: bool) -> Result<Pr
         }
         match reap_session_state(paths, record.id)? {
             ReapResult::Removed { containment_proven } => {
-                aplexer::retired::write_finished_tombstone(
+                aplexer::retired::write_finished_tombstone_with_error(
                     paths,
                     record.id,
                     &record.workspace,
                     &record.tag,
                     aplexer::retired::TombstoneCause::Pruned,
                     record.exit.as_ref(),
+                    record.error.as_deref(),
                 );
                 outcome.removed.push(record.id);
                 if !containment_proven {

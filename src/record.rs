@@ -54,6 +54,15 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// a query-time reader can only use the default; a start given a longer
 /// timeout than this simply reads `broken` for the remainder of its own
 /// window, which is the conservative direction.
+///
+/// Windows hosts default to 120 s: the Hub-managed profile wraps the engine
+/// in a provisioning step that is slow under CPU saturation, and the 10 s
+/// Unix default retired sessions whose engine would have started (intake
+/// 7cc124d9). Unix keeps the 10 s bound so a crashed start stays prunable
+/// without a two-minute wait.
+#[cfg(windows)]
+pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 120_000;
+#[cfg(not(windows))]
 pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 10_000;
 
 pub fn validate_tag(tag: &str) -> Result<()> {

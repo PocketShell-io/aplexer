@@ -1235,9 +1235,15 @@ One exception, and the reason `state` can be trusted where `phase` +
 `worker_alive` cannot: a session's record is persisted with `worker_pid:
 null` before its worker registers, so a healthy `a start` has a dead-looking
 worker for its first tens of milliseconds. A `Starting` record younger than
-`--startup-timeout-ms` (default 10000, `DEFAULT_STARTUP_TIMEOUT_MS`) is
-therefore `starting`, not `broken`; older than that, it is the crashed-start
-record `a prune` can reap and becomes `broken`. Age is the only difference
+`DEFAULT_STARTUP_TIMEOUT_MS` (10000 on Unix, 120000 on Windows, where the
+Hub-managed provisioning step is slow under CPU saturation -- intake
+7cc124d9) is therefore `starting`, not `broken`; older than that, it is the
+crashed-start record `a prune` can reap and becomes `broken`. A start given
+a longer `--startup-timeout-ms` than the default simply reads `broken` for
+the remainder of its own window, which is the conservative direction, and a
+start that hits its own timeout fails with an explicit `startup timeout:`
+error plus a `startup_timeout` tombstone and a crash warning -- never a
+silent vanish. Age is the only difference
 between those two records, so a consumer must not re-derive this rule from
 `phase` and `worker_alive` -- that is what `state` is for. `a doctor` uses
 the same bound and does not report a session still inside the startup window

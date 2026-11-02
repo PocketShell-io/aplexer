@@ -19,7 +19,10 @@ pub(crate) use claim::{claim_holder_pair, retire_reclaimed_holder};
 use claim::{claim_pair, resolve_launch};
 pub(super) use connect::connect_startup_control;
 use connect::*;
-use launch::{await_worker_ready, commit_replacement, spawn_worker_process, write_initial_record};
+use launch::{
+    await_worker_ready, commit_replacement, record_startup_timeout_evidence, spawn_worker_process,
+    write_initial_record,
+};
 use supersede::*;
 pub use tag::pick_fresh_tag;
 pub use trust::{prepare_workspace_trust, prepare_workspace_trust_in_roots};
@@ -95,6 +98,9 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
     let command = worker_command(id, req.python.as_deref())?;
     let _registry = FileLock::exclusive(&paths.registry_lock(), false)?;
     let claim = claim_pair(paths, req, &workspace)?;
+    let engine = launch.engine.clone();
+    let tag = claim.tag.clone();
+    let timeout_ms = req.startup_timeout_ms;
     let mut startup = LaunchGuard::new(paths, id);
     let result = (|| -> Result<SessionRecord> {
         let (record, _launch_environment_guard) = write_initial_record(
@@ -110,11 +116,48 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
     })();
     match result {
         Ok(record) => commit_replacement(paths, &mut startup, claim, record),
-        Err(start_error) => match startup.rollback() {
-            Ok(()) => Err(start_error),
-            Err(rollback_error) => Err(anyhow!(
-                "startup failed: {start_error:#}; rollback also failed: {rollback_error:#}"
-            )),
-        },
+        Err(start_error) => {
+            let timed_out = format!("{start_error:#}").contains("startup timeout:");
+            match startup.rollback() {
+                Ok(()) => {
+                    // The starting record is gone: without a tombstone and a
+                    // warning this is exactly the vanished session of intake
+                    // 7cc124d9. Leave both, both naming the startup timeout
+                    // explicitly, so the retire is never silent.
+                    if timed_out {
+                        record_startup_timeout_evidence(
+                            paths, id, &workspace, &tag, &engine, timeout_ms,
+                        );
+                    }
+                    Err(start_error)
+                }
+                Err(rollback_error) => {
+                    // State was preserved, so the record itself is the
+                    // evidence -- but file the timeout warning too, so the
+                    // cause reads `startup timeout` rather than a generic
+                    // dead-worker line.
+                    if timed_out {
+                        let detail = format!(
+                            "startup timeout: worker did not become ready within {timeout_ms} ms; startup containment could not be confirmed, runtime and durable state preserved"
+                        );
+                        if let Err(error) = crate::warnings::record_startup_timeout_warning(
+                            paths,
+                            id,
+                            &workspace,
+                            &tag,
+                            &engine,
+                            &detail,
+                        ) {
+                            eprintln!(
+                                "a: could not record startup-timeout warning for session {id}: {error:#}"
+                            );
+                        }
+                    }
+                    Err(anyhow!(
+                        "startup failed: {start_error:#}; rollback also failed: {rollback_error:#}"
+                    ))
+                }
+            }
+        }
     }
 }

@@ -295,6 +295,39 @@ pub fn record_warning(paths: &Paths, record: &SessionRecord) -> Result<bool> {
     Ok(true)
 }
 
+/// Materialize a crash warning for a startup-timeout rollback (intake
+/// 7cc124d9). The record itself is gone -- rollback deleted it after
+/// terminating the worker tree -- so `record_warning`'s re-read guard cannot
+/// run; the timeout is the diagnosis, stated explicitly. Write-if-absent
+/// like every other warning path.
+pub fn record_startup_timeout_warning(
+    paths: &Paths,
+    id: Uuid,
+    workspace: &Path,
+    tag: &str,
+    engine: &str,
+    detail: &str,
+) -> Result<bool> {
+    let path = warning_path(paths, id);
+    if path.exists() || acked_path(paths, id).exists() {
+        return Ok(false);
+    }
+    ensure_private_dir(&paths.warnings_dir())?;
+    let warning = SessionWarning {
+        schema_version: WARNINGS_SCHEMA_VERSION,
+        session: id,
+        workspace: workspace.to_path_buf(),
+        tag: tag.to_string(),
+        engine: engine.to_string(),
+        kind: WarningKind::Crash,
+        detail: detail.to_string(),
+        created_at_ms: now_ms(),
+    };
+    atomic_write_json(&path, &warning)
+        .with_context(|| format!("write startup-timeout warning for session {id}"))?;
+    Ok(true)
+}
+
 /// `record_warning` for call sites that must not fail the command they run
 /// inside (`a list`'s sweep, the worker's finalization): a warning that
 /// cannot be written is reported on stderr and the command continues.

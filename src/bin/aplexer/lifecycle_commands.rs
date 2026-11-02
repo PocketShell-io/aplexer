@@ -4,14 +4,17 @@ pub(crate) fn remove_session_state(paths: &Paths, record: &SessionRecord) -> Res
     // The tombstone goes in before the removal so a kill that resolves its
     // target after this point answers "already finished" instead of
     // "no matching session" (issue #2665). Best-effort: a missing tombstone
-    // only degrades that later kill back to today's failure.
-    aplexer::retired::write_finished_tombstone(
+    // only degrades that later kill back to today's failure. The record's
+    // error rides along so a worker that died without an exit (intake
+    // 7cc124d9) still leaves its diagnosable cause behind.
+    aplexer::retired::write_finished_tombstone_with_error(
         paths,
         record.id,
         &record.workspace,
         &record.tag,
         aplexer::retired::TombstoneCause::Finished,
         record.exit.as_ref(),
+        record.error.as_deref(),
     );
     let _registry = FileLock::exclusive(&paths.registry_lock(), false)?;
     fs::remove_dir_all(paths.state_session(record.id))?;

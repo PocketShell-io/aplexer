@@ -50,7 +50,9 @@ pub const TOMBSTONE_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
 
 /// Why the session's durable record was removed. The workload itself always
 /// ended before any of these -- by exiting, by its kill, or by being
-/// provably dead already -- which is what makes "already finished" honest.
+/// provably dead already -- which is what makes "already finished" honest,
+/// except for `StartupTimeout`: there the launcher gave up waiting and
+/// terminated the worker tree, so the engine may never have started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TombstoneCause {
@@ -61,6 +63,11 @@ pub enum TombstoneCause {
     Forgotten,
     /// `a prune` (or the default list's sweep) reaped a dead session.
     Pruned,
+    /// `a start` hit its startup timeout and rolled the starting session
+    /// back: the worker was terminated before it proved readiness (intake
+    /// 7cc124d9). Never written silently -- the launcher also reports
+    /// `startup timeout` on stderr and files a crash warning.
+    StartupTimeout,
 }
 
 impl TombstoneCause {
@@ -69,6 +76,7 @@ impl TombstoneCause {
             TombstoneCause::Finished => "finished",
             TombstoneCause::Forgotten => "forgotten",
             TombstoneCause::Pruned => "pruned",
+            TombstoneCause::StartupTimeout => "startup_timeout",
         }
     }
 }
@@ -87,6 +95,12 @@ pub struct FinishedTombstone {
     /// unknown). Old tombstones predate this field and parse as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<ExitInfo>,
+    /// Diagnosable cause when there is no exit to carry it: the record's
+    /// `error` at removal time (`startup timeout: ...`, `worker died ...`),
+    /// or the kill signal/source. `None` on clean finishes and old
+    /// tombstones; never fabricated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,7 +121,23 @@ pub fn write_finished_tombstone(
     cause: TombstoneCause,
     exit: Option<&ExitInfo>,
 ) {
-    let result = write_finished_tombstone_checked(paths, id, workspace, tag, cause, exit);
+    write_finished_tombstone_with_error(paths, id, workspace, tag, cause, exit, None);
+}
+
+/// `write_finished_tombstone` plus the record's diagnosable `error` (intake
+/// 7cc124d9: a worker that dies without an exit record must leave its cause
+/// -- signal/kill source/startup timeout -- in the tombstone, not just in a
+/// record that prune is about to delete).
+pub fn write_finished_tombstone_with_error(
+    paths: &Paths,
+    id: Uuid,
+    workspace: &Path,
+    tag: &str,
+    cause: TombstoneCause,
+    exit: Option<&ExitInfo>,
+    error: Option<&str>,
+) {
+    let result = write_finished_tombstone_checked(paths, id, workspace, tag, cause, exit, error);
     if let Err(error) = result {
         eprintln!("a: could not write finished-tombstone for session {id}: {error:#}");
     }
@@ -120,6 +150,7 @@ fn write_finished_tombstone_checked(
     tag: &str,
     cause: TombstoneCause,
     exit: Option<&ExitInfo>,
+    error: Option<&str>,
 ) -> Result<()> {
     let dir = paths.retired_session(id);
     // A supersede archive owns this id when a full record was retired into
@@ -142,6 +173,7 @@ fn write_finished_tombstone_checked(
         finished_at_ms: now_ms(),
         cause,
         exit: exit.cloned(),
+        error: error.map(str::to_string),
         created_at_ms: None,
         containment_empty: None,
         output: None,
@@ -306,6 +338,9 @@ pub fn tombstone_kill_json(tombstone: &FinishedTombstone) -> serde_json::Value {
             "exited_at_ms": exit.exited_at_ms,
         });
     }
+    if let Some(error) = &tombstone.error {
+        value["error"] = json!(error);
+    }
     value
 }
 
@@ -336,6 +371,7 @@ pub(crate) fn write_worker_receipt(
         finished_at_ms: now_ms(),
         cause: TombstoneCause::Finished,
         exit: Some(exit.clone()),
+        error: None,
         created_at_ms: Some(record.created_at_ms),
         containment_empty: Some(true),
         output: Some(output),

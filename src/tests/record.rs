@@ -250,6 +250,25 @@ fn recorded_cgroup_observed_empty_tracks_a_real_delegated_cgroup() {
     assert_eq!(containment_reap_verdict(&record), ContainmentReap::Proven);
 }
 
+/// Intake 7cc124d9 AC3: the Hub-managed Windows default startup budget is at
+/// least 120 s, so provisioning under a saturated CPU does not time out a
+/// session whose engine would have started. Unix keeps the 10 s bound so a
+/// crashed start stays prunable without a two-minute wait.
+#[test]
+fn startup_default_meets_windows_hub_floor() {
+    #[cfg(windows)]
+    assert!(
+        DEFAULT_STARTUP_TIMEOUT_MS >= 120_000,
+        "Windows default {} ms is below the 120 s Hub floor",
+        DEFAULT_STARTUP_TIMEOUT_MS
+    );
+    #[cfg(not(windows))]
+    assert_eq!(
+        DEFAULT_STARTUP_TIMEOUT_MS, 10_000,
+        "Unix default changed; the 120 s floor is Windows-only"
+    );
+}
+
 /// `state` is derived from both facts and rewrites neither.
 #[test]
 fn observed_state_reports_broken_only_for_a_contradicted_phase() {
