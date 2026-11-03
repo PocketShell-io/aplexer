@@ -91,7 +91,11 @@ impl Harness {
             .map(|entry| entry.path().join("tombstone.json"))
             .filter(|path| path.is_file())
             .collect::<Vec<_>>();
-        assert_eq!(tombstones.len(), 1, "expected one startup-failure tombstone");
+        assert_eq!(
+            tombstones.len(),
+            1,
+            "expected one startup-failure tombstone"
+        );
         let tombstone: Value = serde_json::from_slice(
             &fs::read(&tombstones[0]).expect("read startup-failure tombstone"),
         )
@@ -111,7 +115,11 @@ impl Harness {
             .map(|entry| entry.path())
             .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
             .collect::<Vec<_>>();
-        assert_eq!(warning_paths.len(), 1, "expected one startup-failure warning");
+        assert_eq!(
+            warning_paths.len(),
+            1,
+            "expected one startup-failure warning"
+        );
         let warning: Value = serde_json::from_slice(
             &fs::read(&warning_paths[0]).expect("read startup-failure warning"),
         )
@@ -1469,12 +1477,14 @@ fn externally_reaped_worker_preserves_ambiguous_containment_evidence() {
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         .collect::<Vec<_>>();
     assert_eq!(warning_paths.len(), 1, "expected one external-kill warning");
-    let warning: Value = serde_json::from_slice(
-        &fs::read(&warning_paths[0]).expect("read external-kill warning"),
-    )
-    .expect("parse external-kill warning");
+    let warning: Value =
+        serde_json::from_slice(&fs::read(&warning_paths[0]).expect("read external-kill warning"))
+            .expect("parse external-kill warning");
     let warning_detail = warning["detail"].as_str().unwrap_or_default();
-    assert!(warning_detail.contains("startup failure"), "{warning_detail}");
+    assert!(
+        warning_detail.contains("startup failure"),
+        "{warning_detail}"
+    );
     assert!(warning_detail.contains("signal: 9"), "{warning_detail}");
     assert!(
         record_path.exists(),

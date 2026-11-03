@@ -171,9 +171,11 @@ pub fn diagnostic_error_for_record(record: &SessionRecord) -> Option<String> {
     if let Some((_, detail)) = warning_for_record(record) {
         return Some(detail);
     }
-    if record.exit.as_ref().is_some_and(|exit| {
-        exit.code.is_none() && exit.signal.is_none() && !exit.oom_killed
-    }) {
+    if record
+        .exit
+        .as_ref()
+        .is_some_and(|exit| exit.code.is_none() && exit.signal.is_none() && !exit.oom_killed)
+    {
         return Some(
             "worker exit was observed, but no exit code or termination signal was recorded; the kill source is unknown"
                 .to_string(),
