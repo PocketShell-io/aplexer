@@ -387,6 +387,12 @@ pub(super) fn commit_replacement(
     }
 
     if let (Some(existing), Some(archived)) = (claim.superseded, archived) {
+        // Preserve the crash evidence before the archive is deleted: the
+        // warning must materialize while the record still exists (its
+        // re-read guard), and the tombstone after the archive is gone.
+        // Otherwise a reclaim deletes the last live record of a SIGKILLed
+        // worker with no diagnosis left behind (intake 5246e591).
+        let diagnostic_error = preserve_reclaimed_evidence(paths, &existing);
         if let Err(error) = cleanup_superseded_archive(&archived) {
             bail!(
                 "replacement {} is ready and manageable by UUID, but superseded session {} cleanup failed; its remaining evidence is retained at {}: {error:#}",
@@ -396,6 +402,7 @@ pub(super) fn commit_replacement(
             );
         }
         let _ = fs::remove_dir_all(paths.runtime_session(existing.id));
+        write_reclaimed_tombstone(paths, &existing, diagnostic_error.as_deref());
         // Say plainly when the pair was taken from a record whose
         // worker never proved its containment domain empty, exactly
         // as `a prune` reports the same class of removal. The

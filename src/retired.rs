@@ -61,7 +61,9 @@ pub enum TombstoneCause {
     Finished,
     /// `a forget --force` removed the record.
     Forgotten,
-    /// `a prune` (or the default list's sweep) reaped a dead session.
+    /// `a prune` (or the default list's sweep) reaped a dead session -- or a
+    /// `start`/`rename` reclaimed its `workspace+tag` from one, which is the
+    /// same destruction and clears the same bar (intake 5246e591).
     Pruned,
     /// `a start` hit its startup timeout and rolled the starting session
     /// back: the worker was terminated before it proved readiness (intake

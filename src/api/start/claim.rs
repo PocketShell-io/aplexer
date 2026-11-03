@@ -306,6 +306,10 @@ pub(crate) fn retire_reclaimed_holder(
     holder: &SessionRecord,
     verdict: ContainmentReap,
 ) -> Result<()> {
+    // Preserve the crash evidence before the archive is deleted (intake
+    // 5246e591): the warning while the record still exists, the tombstone
+    // after the archive is gone -- same as `commit_replacement`.
+    let diagnostic_error = preserve_reclaimed_evidence(paths, holder);
     let archived = archive_reclaimed_predecessor(paths, holder)?;
     if let Err(error) = cleanup_superseded_archive(&archived) {
         bail!(
@@ -315,6 +319,7 @@ pub(crate) fn retire_reclaimed_holder(
         );
     }
     let _ = fs::remove_dir_all(paths.runtime_session(holder.id));
+    write_reclaimed_tombstone(paths, holder, diagnostic_error.as_deref());
     if verdict == ContainmentReap::NoRemainingHandle {
         eprintln!(
             "a: reclaimed workspace+tag from broken session {} without a containment proof; its worker died without recording one and nothing addressable remained",
