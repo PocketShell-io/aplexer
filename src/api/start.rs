@@ -20,8 +20,8 @@ use claim::{claim_pair, resolve_launch};
 pub(super) use connect::connect_startup_control;
 use connect::*;
 use launch::{
-    await_worker_ready, commit_replacement, record_startup_timeout_evidence, spawn_worker_process,
-    write_initial_record,
+    await_worker_ready, commit_replacement, record_startup_failure_evidence,
+    record_startup_timeout_evidence, spawn_worker_process, write_initial_record,
 };
 use supersede::*;
 pub use tag::pick_fresh_tag;
@@ -102,6 +102,7 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
     let tag = claim.tag.clone();
     let timeout_ms = req.startup_timeout_ms;
     let mut startup = LaunchGuard::new(paths, id);
+    let mut start_record_written = false;
     let result = (|| -> Result<SessionRecord> {
         let (record, _launch_environment_guard) = write_initial_record(
             paths,
@@ -111,6 +112,7 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
             launch,
             req.labels.clone(),
         )?;
+        start_record_written = true;
         spawn_worker_process(paths, req, id, command, &mut startup)?;
         await_worker_ready(paths, req, id, record, &mut startup)
     })();
@@ -118,34 +120,51 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
         Ok(record) => commit_replacement(paths, &mut startup, claim, record),
         Err(start_error) => {
             let timed_out = format!("{start_error:#}").contains("startup timeout:");
+            let start_detail = format!("{start_error:#}");
             match startup.rollback() {
                 Ok(()) => {
                     // The starting record is gone: without a tombstone and a
                     // warning this is exactly the vanished session of intake
-                    // 7cc124d9. Leave both, both naming the startup timeout
-                    // explicitly, so the retire is never silent.
-                    if timed_out {
-                        record_startup_timeout_evidence(
-                            paths, id, &workspace, &tag, &engine, timeout_ms,
-                        );
+                    // 7cc124d9. Preserve both the launcher's timeout and a
+                    // worker's independently observed exit status.
+                    if start_record_written {
+                        if timed_out {
+                            record_startup_timeout_evidence(
+                                paths, id, &workspace, &tag, &engine, timeout_ms,
+                            );
+                        } else {
+                            record_startup_failure_evidence(
+                                paths, id, &workspace, &tag, &engine, &start_detail,
+                            );
+                        }
                     }
                     Err(start_error)
                 }
                 Err(rollback_error) => {
-                    // State was preserved, so the record itself is the
-                    // evidence -- but file the timeout warning too, so the
-                    // cause reads `startup timeout` rather than a generic
-                    // dead-worker line.
-                    if timed_out {
-                        let detail = format!(
-                            "startup timeout: worker did not become ready within {timeout_ms} ms; startup containment could not be confirmed, runtime and durable state preserved"
-                        );
-                        if let Err(error) = crate::warnings::record_startup_timeout_warning(
-                            paths, id, &workspace, &tag, &engine, &detail,
-                        ) {
-                            eprintln!(
-                                "a: could not record startup-timeout warning for session {id}: {error:#}"
-                            );
+                    // State was preserved. File a warning with the exact
+                    // startup reason and failed containment step; never
+                    // reduce a known signal to the generic dead-worker line.
+                    if start_record_written {
+                        let detail = if timed_out {
+                            format!(
+                                "startup timeout: worker did not become ready within {timeout_ms} ms; startup containment could not be confirmed, runtime and durable state preserved; rollback detail: {rollback_error:#}"
+                            )
+                        } else {
+                            format!(
+                                "startup failure: {start_detail}; startup containment could not be confirmed, runtime and durable state preserved; rollback detail: {rollback_error:#}"
+                            )
+                        };
+                        let warning = if timed_out {
+                            crate::warnings::record_startup_timeout_warning(
+                                paths, id, &workspace, &tag, &engine, &detail,
+                            )
+                        } else {
+                            crate::warnings::record_startup_failure_warning(
+                                paths, id, &workspace, &tag, &engine, &detail,
+                            )
+                        };
+                        if let Err(error) = warning {
+                            eprintln!("a: could not record startup warning for session {id}: {error:#}");
                         }
                     }
                     Err(anyhow!(

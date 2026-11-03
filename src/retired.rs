@@ -68,6 +68,10 @@ pub enum TombstoneCause {
     /// 7cc124d9). Never written silently -- the launcher also reports
     /// `startup timeout` on stderr and files a crash warning.
     StartupTimeout,
+    /// The worker failed before readiness for a reason other than the
+    /// launcher's startup timeout. The tombstone and warning carry the
+    /// observed worker error or exit signal (intake 7cc124d9).
+    StartupFailure,
 }
 
 impl TombstoneCause {
@@ -77,6 +81,7 @@ impl TombstoneCause {
             TombstoneCause::Forgotten => "forgotten",
             TombstoneCause::Pruned => "pruned",
             TombstoneCause::StartupTimeout => "startup_timeout",
+            TombstoneCause::StartupFailure => "startup_failure",
         }
     }
 }

@@ -140,10 +140,16 @@ pub fn warning_for_record(record: &SessionRecord) -> Option<(WarningKind, String
     {
         return Some((
             WarningKind::Crash,
-            format!(
-                "worker died unexpectedly while {} (no exit recorded)",
-                record.phase.name()
-            ),
+            match record.error.as_deref() {
+                Some(error) => format!(
+                    "worker died unexpectedly while {} (no exit recorded): {error}",
+                    record.phase.name()
+                ),
+                None => format!(
+                    "worker died unexpectedly while {} (no exit recorded; termination signal and kill source are unknown)",
+                    record.phase.name()
+                ),
+            },
         ));
     }
     if record.phase == Phase::Failed {
@@ -156,6 +162,30 @@ pub fn warning_for_record(record: &SessionRecord) -> Option<(WarningKind, String
         ));
     }
     None
+}
+
+/// The detail to preserve when a record is removed. For an unexpected dead
+/// worker this is the same diagnosis shown by `a warnings`; for a recovered
+/// exit with no status it records that the signal/source was unavailable.
+pub fn diagnostic_error_for_record(record: &SessionRecord) -> Option<String> {
+    if let Some((_, detail)) = warning_for_record(record) {
+        return Some(detail);
+    }
+    if record.exit.as_ref().is_some_and(|exit| {
+        exit.code.is_none() && exit.signal.is_none() && !exit.oom_killed
+    }) {
+        return Some(
+            "worker exit was observed, but no exit code or termination signal was recorded; the kill source is unknown"
+                .to_string(),
+        );
+    }
+    if is_finished_exiting_corpse(record) {
+        return Some(
+            "worker and workload disappeared after a stop/kill request; no worker exit record or signal was captured"
+                .to_string(),
+        );
+    }
+    record.error.clone()
 }
 
 /// An `Exiting` record whose worker AND workload leader are both gone and
@@ -308,6 +338,31 @@ pub fn record_startup_timeout_warning(
     engine: &str,
     detail: &str,
 ) -> Result<bool> {
+    record_startup_warning(paths, id, workspace, tag, engine, detail)
+}
+
+/// Materialize a crash warning for a worker failure before readiness. The
+/// start process captured the worker's exit status, so this warning can
+/// distinguish an external signal from the launcher's own timeout rollback.
+pub fn record_startup_failure_warning(
+    paths: &Paths,
+    id: Uuid,
+    workspace: &Path,
+    tag: &str,
+    engine: &str,
+    detail: &str,
+) -> Result<bool> {
+    record_startup_warning(paths, id, workspace, tag, engine, detail)
+}
+
+fn record_startup_warning(
+    paths: &Paths,
+    id: Uuid,
+    workspace: &Path,
+    tag: &str,
+    engine: &str,
+    detail: &str,
+) -> Result<bool> {
     let path = warning_path(paths, id);
     if path.exists() || acked_path(paths, id).exists() {
         return Ok(false);
@@ -324,7 +379,7 @@ pub fn record_startup_timeout_warning(
         created_at_ms: now_ms(),
     };
     atomic_write_json(&path, &warning)
-        .with_context(|| format!("write startup-timeout warning for session {id}"))?;
+        .with_context(|| format!("write startup warning for session {id}"))?;
     Ok(true)
 }
 

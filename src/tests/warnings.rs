@@ -1,8 +1,8 @@
 use super::*;
 use crate::record::ExitInfo;
 use crate::warnings::{
-    acknowledge_warnings, load_warning_for, load_warnings, record_warning, select_warnings,
-    sweep_warnings, warning_for_record, WarningKind,
+    acknowledge_warnings, diagnostic_error_for_record, load_warning_for, load_warnings,
+    record_warning, select_warnings, sweep_warnings, warning_for_record, WarningKind,
 };
 
 fn test_paths(root: &std::path::Path) -> Paths {
@@ -56,6 +56,15 @@ fn predicate_flags_oom_broken_and_failed_but_not_a_plain_exit() {
     let (kind, detail) = warning_for_record(&broken).unwrap();
     assert_eq!(kind, WarningKind::Crash);
     assert!(detail.contains("no exit recorded"), "{detail}");
+    assert!(
+        detail.contains("termination signal and kill source are unknown"),
+        "{detail}"
+    );
+    assert_eq!(
+        diagnostic_error_for_record(&broken).as_deref(),
+        Some(detail.as_str()),
+        "retirement must preserve the same diagnosis shown by `a warnings`"
+    );
 
     // A worker that lived to record its own failure.
     let mut failed = SessionRecord::fixture(ws.clone(), "failed");

@@ -265,6 +265,10 @@ pub(crate) fn reap_sweep(paths: &Paths, wait_for_terminating: bool) -> Result<Pr
             outcome.retained_count += 1;
             continue;
         }
+        // Reaping removes the last live record; materialize the warning
+        // first so the tombstone and `a warnings` retain the same diagnosis.
+        aplexer::warnings::record_warning_best_effort(paths, &record);
+        let diagnostic_error = aplexer::warnings::diagnostic_error_for_record(&record);
         match reap_session_state(paths, record.id)? {
             ReapResult::Removed { containment_proven } => {
                 aplexer::retired::write_finished_tombstone_with_error(
@@ -274,7 +278,7 @@ pub(crate) fn reap_sweep(paths: &Paths, wait_for_terminating: bool) -> Result<Pr
                     &record.tag,
                     aplexer::retired::TombstoneCause::Pruned,
                     record.exit.as_ref(),
-                    record.error.as_deref(),
+                    diagnostic_error.as_deref(),
                 );
                 outcome.removed.push(record.id);
                 if !containment_proven {
