@@ -14,6 +14,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$runnerLabel = if ($Target -eq 'aarch64-pc-windows-msvc') { 'windows-11-arm' } else { 'windows-2025' }
 Set-Location (Join-Path $PSScriptRoot '..')
 $outDir = Join-Path (Get-Location) 'windows-artifacts'
 New-Item -ItemType Directory -Path $outDir | Out-Null
@@ -93,7 +94,7 @@ try {
     if ($stopCode -ne 0) { throw "proof session stop exited $stopCode" }
     $stopped = $stopOut | ConvertFrom-Json
     if (-not $stopped.containment_empty) { throw 'containment_empty receipt missing after verified stop' }
-    @{runner=@{label='windows-11-arm'; os=$env:RUNNER_OS; arch=$env:RUNNER_ARCH; image=$env:ImageVersion};
+    @{runner=@{label=$runnerLabel; os=$env:RUNNER_OS; arch=$env:RUNNER_ARCH; image=$env:ImageVersion};
       session=$session.id; workspace=$proofDir;
       alive_containment_empty=$alive[0].containment_empty;
       stop=@{state=$stopped.state; containment_empty=$stopped.containment_empty; record_removed=$stopped.record_removed};
@@ -147,7 +148,7 @@ Invoke-Recorded 'cold-alias-version' $alias @('--version')
 Invoke-Recorded 'cold-native-controls' $py @('-m', 'pytest', '-q', 'python/tests')
 Copy-Item 'wheel-test/Lib/site-packages/aplexer/_native.pyd' (Join-Path $outDir 'native/_native.pyd')
 @{head=$head; tree=$tree; run=$env:GITHUB_RUN_ID; attempt=$env:GITHUB_RUN_ATTEMPT;
-    runner=@{label='windows-11-arm'; os=$env:RUNNER_OS; arch=$env:RUNNER_ARCH; image=$env:ImageVersion};
+    runner=@{label=$runnerLabel; os=$env:RUNNER_OS; arch=$env:RUNNER_ARCH; image=$env:ImageVersion};
     os=[Environment]::OSVersion.VersionString;
     target=$Target; platform=$platform; status='PASS';
     worker=@{path=$exe; sha256=(Get-FileHash $exe -Algorithm SHA256).Hash.ToLower(); selection='APLEXER_WORKER for cold-installed native client controls'};
