@@ -83,6 +83,7 @@ impl Harness {
         assert_directory_empty(&self.runtime_dir.path().join("sessions"));
     }
 
+    #[cfg(feature = "startup-test-hooks")]
     fn assert_startup_failure_evidence(&self, expected_detail: &str) {
         let retired = self.state_dir.path().join("retired-sessions");
         let tombstones = fs::read_dir(&retired)
