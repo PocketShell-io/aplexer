@@ -32,6 +32,11 @@ function Invoke-Recorded {
 Invoke-Recorded 'rustc' 'rustc' @('-vV')
 Invoke-Recorded 'cargo' 'cargo' @('-V')
 Invoke-Recorded 'python' 'python' @('--version')
+$pythonArchProbe = 'import os,platform,struct,sysconfig; p=sysconfig.get_platform(); print("machine=%s platform=%s pointer_bits=%s processor_architecture=%s process_architecture=%s"%(platform.machine(),p,struct.calcsize(chr(80))*8,os.getenv("PROCESSOR_ARCHITECTURE"),os.getenv("PROCESSOR_ARCHITEW6432")))'
+if ($Target -eq 'aarch64-pc-windows-msvc') {
+    $pythonArchProbe += '; assert p.lower().endswith("arm64"), "expected native ARM64 Python, got "+p'
+}
+Invoke-Recorded 'python-architecture' 'python' @('-c', $pythonArchProbe)
 $head = (& git rev-parse HEAD).Trim()
 $tree = (& git rev-parse 'HEAD^{tree}').Trim()
 Invoke-Recorded 'source-archive' 'git' @('archive', '--format=tar', '--output=windows-artifacts/source.tar', $head)
@@ -76,7 +81,10 @@ try {
     $startCode = $LASTEXITCODE
     if ($startCode -ne 0) { throw "proof session start exited $startCode" }
     $session = $startOut | ConvertFrom-Json
-    $alive = @(& $exe --json list | ConvertFrom-Json | Where-Object { $_.id -eq $session.id })
+    $listOut = & $exe --json list
+    $listCode = $LASTEXITCODE
+    if ($listCode -ne 0) { throw "proof session list exited $listCode" }
+    $alive = @($listOut | ConvertFrom-Json | Where-Object { $_.id -eq $session.id })
     if ($alive.Count -ne 1 -or $alive[0].containment_empty -ne $false) {
         throw 'live session is not reported as job-contained (containment_empty=false)'
     }
@@ -85,10 +93,16 @@ try {
     if ($stopCode -ne 0) { throw "proof session stop exited $stopCode" }
     $stopped = $stopOut | ConvertFrom-Json
     if (-not $stopped.containment_empty) { throw 'containment_empty receipt missing after verified stop' }
-    @{session=$session.id; workspace=$proofDir;
+    @{runner=@{label='windows-11-arm'; os=$env:RUNNER_OS; arch=$env:RUNNER_ARCH; image=$env:ImageVersion};
+      session=$session.id; workspace=$proofDir;
       alive_containment_empty=$alive[0].containment_empty;
       stop=@{state=$stopped.state; containment_empty=$stopped.containment_empty; record_removed=$stopped.record_removed};
-      exe=$exe} | ConvertTo-Json -Depth 5 |
+      exe=$exe;
+      commands=@(
+        @{argv=@($exe,'--json','start','--workspace',$proofDir,'--tag','proof','--','cmd.exe','/c','ping -n 30 127.0.0.1'); exit=$startCode; output=($startOut -join "`n")};
+        @{argv=@($exe,'--json','list'); exit=$listCode; output=($listOut -join "`n")};
+        @{argv=@($exe,'--json','kill',$session.id,'--signal','TERM','--grace-ms','5000','--keep-record'); exit=$stopCode; output=($stopOut -join "`n")}
+      )} | ConvertTo-Json -Depth 8 |
         Set-Content -Encoding utf8 (Join-Path $outDir 'session-proof.json')
 }
 finally {
@@ -111,14 +125,30 @@ $client = @(Get-ChildItem (Join-Path $outDir 'client-dist') -Filter *.whl)
 if ($cli.Count -ne 1 -or $client.Count -ne 1) { throw 'Expected exact wheel pair' }
 Invoke-Recorded 'cold-wheel-install' $py @('-m', 'pip', 'install', '--no-index', '--find-links', (Join-Path $outDir 'client-dist'), $cli[0].FullName)
 Invoke-Recorded 'cold-pytest-install' $py @('-m', 'pip', 'install', '--disable-pip-version-check', 'pytest==9.0.2')
+Invoke-Recorded 'native-python-import' $py @('-c', 'import aplexer; print("import aplexer: OK", aplexer.__file__)')
+$alias = (Resolve-Path 'wheel-test/Scripts/a.exe').Path
+$doctorDir = Join-Path $outDir 'alias-doctor'
+$doctorState = Join-Path $doctorDir 'state'
+$doctorRun = Join-Path $doctorDir 'run'
+New-Item -ItemType Directory -Path $doctorState -Force | Out-Null
+New-Item -ItemType Directory -Path $doctorRun -Force | Out-Null
+$env:APLEXER_STATE_DIR = $doctorState
+$env:APLEXER_RUNTIME_DIR = $doctorRun
+try {
+    Invoke-Recorded 'alias-doctor' $alias @('doctor')
+} finally {
+    Remove-Item Env:APLEXER_STATE_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:APLEXER_RUNTIME_DIR -ErrorAction SilentlyContinue
+}
 $env:APLEXER_RUN_IN_PLACE = '1'
 $env:APLEXER_WORKER = $exe
 Invoke-Recorded 'cold-cli-version' (Resolve-Path 'wheel-test/Scripts/aplexer.exe').Path @('--version')
-Invoke-Recorded 'cold-alias-version' (Resolve-Path 'wheel-test/Scripts/a.exe').Path @('--version')
+Invoke-Recorded 'cold-alias-version' $alias @('--version')
 Invoke-Recorded 'cold-native-controls' $py @('-m', 'pytest', '-q', 'python/tests')
 Copy-Item 'wheel-test/Lib/site-packages/aplexer/_native.pyd' (Join-Path $outDir 'native/_native.pyd')
 @{head=$head; tree=$tree; run=$env:GITHUB_RUN_ID; attempt=$env:GITHUB_RUN_ATTEMPT;
-    runner=$env:ImageVersion; os=[Environment]::OSVersion.VersionString;
+    runner=@{label='windows-11-arm'; os=$env:RUNNER_OS; arch=$env:RUNNER_ARCH; image=$env:ImageVersion};
+    os=[Environment]::OSVersion.VersionString;
     target=$Target; platform=$platform; status='PASS';
     worker=@{path=$exe; sha256=(Get-FileHash $exe -Algorithm SHA256).Hash.ToLower(); selection='APLEXER_WORKER for cold-installed native client controls'};
     cl=@{path=$compiler; version=(Get-Item $compiler).VersionInfo.FileVersion; sha256=(Get-FileHash $compiler -Algorithm SHA256).Hash.ToLower()};
