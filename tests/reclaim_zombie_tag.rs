@@ -432,10 +432,21 @@ fn start_reclaims_a_workspace_tag_held_by_a_broken_record() {
         !harness.state_dir_exists(&zombie.id),
         "reclaim left the predecessor's durable state behind"
     );
+    // The predecessor's archive is gone, but its crash evidence survives
+    // the reclaim: the ack-gated warning plus a tombstone carrying the
+    // diagnosis (intake 5246e591) -- not a second record claiming the pair.
+    let retired = harness.retired_dir(&zombie.id);
     assert!(
-        !harness.retired_dir(&zombie.id).exists(),
+        !retired.join("session.json").exists(),
         "reclaim left the predecessor's archive behind"
     );
+    let tombstone: Value = serde_json::from_str(
+        &fs::read_to_string(retired.join("tombstone.json"))
+            .expect("reclaim must leave a tombstone"),
+    )
+    .expect("tombstone JSON");
+    assert_eq!(tombstone["id"], zombie.id, "{tombstone}");
+    assert_eq!(tombstone["cause"], "pruned", "{tombstone}");
 
     // Reclaiming from a worker that never proved its containment domain
     // empty is reported, exactly as `a prune` reports the same class --

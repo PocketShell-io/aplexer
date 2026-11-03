@@ -538,10 +538,20 @@ fn rename_takes_a_workspace_tag_held_by_a_dead_record() {
         !harness.state_dir_exists(&corpse.id),
         "rename left the dead record's durable state behind"
     );
+    // The corpse's archive is gone, but its crash evidence survives the
+    // retirement as a tombstone carrying the diagnosis (intake 5246e591).
+    let retired = harness.retired_dir(&corpse.id);
     assert!(
-        !harness.retired_dir(&corpse.id).exists(),
+        !retired.join("session.json").exists(),
         "rename left the dead record's archive behind"
     );
+    let tombstone: Value = serde_json::from_str(
+        &fs::read_to_string(retired.join("tombstone.json"))
+            .expect("retirement must leave a tombstone"),
+    )
+    .expect("tombstone JSON");
+    assert_eq!(tombstone["id"], corpse.id, "{tombstone}");
+    assert_eq!(tombstone["cause"], "pruned", "{tombstone}");
 }
 
 /// A registry written while the interim fix was live can hold a pair more
@@ -582,11 +592,19 @@ fn rename_drains_a_pair_held_by_more_than_one_dead_record() {
             "rename left {}'s durable state behind",
             corpse.id
         );
+        let retired = harness.retired_dir(&corpse.id);
         assert!(
-            !harness.retired_dir(&corpse.id).exists(),
+            !retired.join("session.json").exists(),
             "rename left {}'s archive behind",
             corpse.id
         );
+        let tombstone: Value = serde_json::from_str(
+            &fs::read_to_string(retired.join("tombstone.json"))
+                .unwrap_or_else(|_| panic!("retirement must leave a tombstone for {}", corpse.id)),
+        )
+        .expect("tombstone JSON");
+        assert_eq!(tombstone["id"], corpse.id, "{tombstone}");
+        assert_eq!(tombstone["cause"], "pruned", "{tombstone}");
     }
 }
 

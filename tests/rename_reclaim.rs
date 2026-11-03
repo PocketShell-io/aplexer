@@ -522,10 +522,20 @@ fn assert_registry_matches_verdict(
                 !harness.state_dir_exists(holder_id),
                 "predecessor's durable state survived the reclaim"
             );
+            // The predecessor's archive is gone, but its crash evidence
+            // survives as a tombstone carrying the diagnosis (intake 5246e591).
+            let retired = harness.retired_dir(holder_id);
             assert!(
-                !harness.retired_dir(holder_id).exists(),
+                !retired.join("session.json").exists(),
                 "predecessor's archive survived the reclaim"
             );
+            let tombstone: Value = serde_json::from_str(
+                &fs::read_to_string(retired.join("tombstone.json"))
+                    .unwrap_or_else(|_| panic!("reclaim must leave a tombstone for {holder_id}")),
+            )
+            .expect("tombstone JSON");
+            assert_eq!(tombstone["id"], holder_id, "{tombstone}");
+            assert_eq!(tombstone["cause"], "pruned", "{tombstone}");
         }
         Verdict::Refused => {
             assert_eq!(
