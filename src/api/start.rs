@@ -134,7 +134,12 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
                             );
                         } else {
                             record_startup_failure_evidence(
-                                paths, id, &workspace, &tag, &engine, &start_detail,
+                                paths,
+                                id,
+                                &workspace,
+                                &tag,
+                                &engine,
+                                &start_detail,
                             );
                         }
                     }
@@ -164,7 +169,9 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
                             )
                         };
                         if let Err(error) = warning {
-                            eprintln!("a: could not record startup warning for session {id}: {error:#}");
+                            eprintln!(
+                                "a: could not record startup warning for session {id}: {error:#}"
+                            );
                         }
                     }
                     Err(anyhow!(
