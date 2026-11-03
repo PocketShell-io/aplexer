@@ -1737,7 +1737,7 @@ fn zero_timeout_start_reports_startup_timeout_with_tombstone_and_warning() {
     let mut warned = false;
     for entry in fs::read_dir(harness.state_dir.path().join("warnings")).expect("read warnings") {
         let entry = entry.expect("read warning entry");
-        if !entry.path().extension().is_some_and(|ext| ext == "json") {
+        if entry.path().extension().is_none_or(|ext| ext != "json") {
             continue;
         }
         let text = fs::read(entry.path()).expect("read warning");
