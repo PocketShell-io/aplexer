@@ -319,3 +319,186 @@ fn worker_that_died_while_running_without_finalizing_still_warns() {
     );
     assert_eq!(sweep_warnings(&paths), 0, "already recorded");
 }
+
+/// Hub intake 8c03677f (2026-11-03): 94 sessions died together when
+/// `user@1000.service` was SIGKILLed and systemd tore down the whole user
+/// slice, plus one earlier death in a `supervision.service` stop timeout.
+/// Every warning read "worker died unexpectedly ... kill source unknown"
+/// and needed journal forensics to explain. A dead worker whose recorded
+/// cgroup sits beneath a per-user manager that started *after* the session
+/// must name that teardown instead.
+fn teardown_fixture(cgroup: Option<&str>, created_at_ms: u64) -> SessionRecord {
+    let mut record =
+        SessionRecord::fixture(PathBuf::from("/tmp/aplexer-warnings-test"), "torn-down");
+    record.worker_cgroup = cgroup.map(str::to_string);
+    record.created_at_ms = created_at_ms;
+    record.updated_at_ms = created_at_ms;
+    record
+}
+
+// Pinned clocks for the attribution tests: the session started an hour
+// before "now"; a manager boot is either an hour after the session
+// (teardown) or a minute before it (predates the session).
+const TEARDOWN_NOW: u64 = 1_800_000_000_000;
+const TEARDOWN_CREATED: u64 = TEARDOWN_NOW - 3_600_000;
+const TEARDOWN_BOOT_NEWER: u64 = TEARDOWN_CREATED + 3_600_000;
+const TEARDOWN_BOOT_OLDER: u64 = TEARDOWN_CREATED - 60_000;
+
+fn user_manager_cgroup() -> String {
+    "/user.slice/user-1000.slice/user@1000.service/app.slice/aplexer-workload-x.scope".to_string()
+}
+
+#[test]
+fn manager_teardown_is_attributed_not_hidden() {
+    let record = teardown_fixture(Some(&user_manager_cgroup()), TEARDOWN_CREATED);
+    let (kind, detail) =
+        crate::warnings::warning_for_record_at(&record, TEARDOWN_NOW, Some(TEARDOWN_BOOT_NEWER))
+            .expect("dead worker still warns");
+    assert_eq!(kind, WarningKind::Crash, "teardown deaths stay crashes");
+    assert!(detail.contains("while running"), "{detail}");
+    assert!(detail.contains("no exit recorded"), "{detail}");
+    assert!(
+        detail.contains("per-user systemd manager user@1000.service"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("tearing down every session beneath it together"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn manager_teardown_attribution_preserves_worker_error_context() {
+    let mut record = teardown_fixture(Some(&user_manager_cgroup()), TEARDOWN_CREATED);
+    record.error = Some("workload OOM score adjusted".to_string());
+    let (_, detail) =
+        crate::warnings::warning_for_record_at(&record, TEARDOWN_NOW, Some(TEARDOWN_BOOT_NEWER))
+            .expect("dead worker still warns");
+    assert!(detail.contains("workload OOM score adjusted"), "{detail}");
+    assert!(detail.contains("user@1000.service"), "{detail}");
+}
+
+#[test]
+fn older_manager_boot_keeps_the_generic_diagnosis() {
+    let record = teardown_fixture(Some(&user_manager_cgroup()), TEARDOWN_CREATED);
+    let (_, detail) =
+        crate::warnings::warning_for_record_at(&record, TEARDOWN_NOW, Some(TEARDOWN_BOOT_OLDER))
+            .expect("dead worker still warns");
+    assert!(
+        detail.contains("termination signal and kill source are unknown"),
+        "{detail}"
+    );
+    assert!(!detail.contains("per-user systemd manager"), "{detail}");
+}
+
+#[test]
+fn manager_boot_within_skew_margin_stays_generic() {
+    // A boot 1s after session start is clock truncation, not evidence of a
+    // teardown (see MANAGER_BOOT_SKEW_MS): never attribute on it.
+    let record = teardown_fixture(Some(&user_manager_cgroup()), TEARDOWN_CREATED);
+    let (_, detail) = crate::warnings::warning_for_record_at(
+        &record,
+        TEARDOWN_NOW,
+        Some(TEARDOWN_CREATED + 1_000),
+    )
+    .expect("dead worker still warns");
+    assert!(!detail.contains("per-user systemd manager"), "{detail}");
+}
+
+#[test]
+fn missing_or_zero_manager_boot_stays_generic() {
+    let record = teardown_fixture(Some(&user_manager_cgroup()), TEARDOWN_CREATED);
+    for boot in [None, Some(0)] {
+        let (_, detail) = crate::warnings::warning_for_record_at(&record, TEARDOWN_NOW, boot)
+            .expect("dead worker still warns");
+        assert!(
+            detail.contains("termination signal and kill source are unknown"),
+            "{detail}"
+        );
+        assert!(!detail.contains("per-user systemd manager"), "{detail}");
+    }
+}
+
+#[test]
+fn teardown_attribution_requires_the_user_manager_placement() {
+    // A login-session worker (survives `systemctl --user exit`) killed
+    // while its manager is new died some other way: stay generic.
+    let mut record = teardown_fixture(
+        Some("/user.slice/user-1000.slice/session-8.scope"),
+        TEARDOWN_CREATED,
+    );
+    assert_eq!(
+        crate::placement::classify_cgroup_path(record.worker_cgroup.as_deref().unwrap()),
+        crate::placement::CgroupPlacement::LoginSession
+    );
+    let (_, detail) =
+        crate::warnings::warning_for_record_at(&record, TEARDOWN_NOW, Some(TEARDOWN_BOOT_NEWER))
+            .expect("dead worker still warns");
+    assert!(!detail.contains("per-user systemd manager"), "{detail}");
+
+    // No recorded cgroup at all: nothing to attribute.
+    record.worker_cgroup = None;
+    let (_, detail) =
+        crate::warnings::warning_for_record_at(&record, TEARDOWN_NOW, Some(TEARDOWN_BOOT_NEWER))
+            .expect("dead worker still warns");
+    assert!(!detail.contains("per-user systemd manager"), "{detail}");
+}
+
+#[test]
+fn failed_phase_is_not_manager_attributed() {
+    // A worker that lived to record its own failure was not torn down with
+    // a manager: the Failed arm never attributes.
+    let mut record = teardown_fixture(Some(&user_manager_cgroup()), TEARDOWN_CREATED);
+    record.phase = Phase::Failed;
+    record.error = Some("agent exited with failure".to_string());
+    let (_, detail) =
+        crate::warnings::warning_for_record_at(&record, TEARDOWN_NOW, Some(TEARDOWN_BOOT_NEWER))
+            .expect("failed worker still warns");
+    assert!(detail.contains("agent exited with failure"), "{detail}");
+    assert!(!detail.contains("per-user systemd manager"), "{detail}");
+}
+
+/// The live lookup behind the attribution: returns the manager's boot or
+/// `None` (no systemd, no such user, wedged bus) without ever failing
+/// hard. A returned boot must be sane: after 2020 and not in the future.
+#[cfg(target_os = "linux")]
+#[test]
+fn live_user_manager_lookup_is_sane_or_absent() {
+    let uid = unsafe { libc::getuid() };
+    match crate::user_manager_started_ms(uid) {
+        None => {}
+        Some(boot_ms) => {
+            assert!(boot_ms > 1_600_000_000_000, "boot {boot_ms} predates 2020");
+            assert!(
+                boot_ms <= crate::util::now_ms() + 60_000,
+                "boot {boot_ms} is impossibly far in the future"
+            );
+        }
+    }
+}
+
+/// End to end through the production predicate: a record that predates any
+/// real manager boot is attributed exactly when the live lookup resolves
+/// one, and stays generic otherwise. Deterministic on systemd and
+/// non-systemd hosts alike because the session start (epoch 0) predates
+/// every real boot past the skew margin.
+#[cfg(target_os = "linux")]
+#[test]
+fn live_predicate_attributes_when_the_manager_postdates_the_session() {
+    let uid = unsafe { libc::getuid() };
+    let cgroup = format!("/user.slice/user-{uid}.slice/user@{uid}.service/app.slice");
+    let record = teardown_fixture(Some(&cgroup), 0);
+    let boot = crate::user_manager_started_ms(uid);
+    let (kind, detail) = warning_for_record(&record).expect("dead worker still warns");
+    assert_eq!(kind, WarningKind::Crash);
+    match boot {
+        Some(_) => assert!(
+            detail.contains("per-user systemd manager"),
+            "manager boot resolved but unattributed: {detail}"
+        ),
+        None => assert!(
+            !detail.contains("per-user systemd manager"),
+            "no manager boot but attributed: {detail}"
+        ),
+    }
+}

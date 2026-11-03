@@ -226,3 +226,36 @@ fn start_warning_fires_only_for_the_user_manager_subtree() {
     .is_none());
     assert!(start_placement_warning(&record_with_worker_cgroup(None)).is_none());
 }
+
+/// The uid behind a `user-<uid>.slice` component, for asking the right
+/// per-user manager about its own boot (crash teardown attribution). Only
+/// the slice component counts: `user.slice` alone and non-user domains
+/// name no manager.
+#[test]
+fn uid_parses_from_the_user_slice_component() {
+    assert_eq!(
+        user_manager_uid_from_cgroup("/user.slice/user-1000.slice/user@1000.service/app.slice"),
+        Some(1000)
+    );
+    assert_eq!(
+        user_manager_uid_from_cgroup("/user.slice/user-0.slice/user@0.service"),
+        Some(0)
+    );
+    assert_eq!(
+        user_manager_uid_from_cgroup("/user.slice/user-1000.slice/session-8.scope"),
+        Some(1000)
+    );
+    assert_eq!(user_manager_uid_from_cgroup("/user.slice"), None);
+    assert_eq!(
+        user_manager_uid_from_cgroup("/system.slice/foo.service"),
+        None
+    );
+    assert_eq!(user_manager_uid_from_cgroup("/init.scope"), None);
+    assert_eq!(user_manager_uid_from_cgroup("/"), None);
+    assert_eq!(user_manager_uid_from_cgroup(""), None);
+    // A non-numeric slice is refused, not guessed.
+    assert_eq!(
+        user_manager_uid_from_cgroup("/user.slice/user-abc.slice/user@abc.service"),
+        None
+    );
+}
