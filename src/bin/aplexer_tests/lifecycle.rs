@@ -698,6 +698,31 @@ fn remove_session_state_carries_record_exit_into_tombstone() {
 }
 
 #[test]
+fn removal_preserves_unexpected_worker_death_in_warning_and_tombstone() {
+    let mut record = mk_record("/ws/receipt", "worker-died", Phase::Running);
+    record.worker_pid = None;
+    record.workload_pid = None;
+    record.exit = None;
+    record.error = None;
+    record.created_at_ms = 1;
+    let (paths, _state_dir, _runtime_dir) = seeded_registry(&mut record);
+
+    remove_session_state(&paths, &record).unwrap();
+
+    let stored = aplexer::retired::read_finished_tombstone(&paths, record.id)
+        .expect("removal must leave a tombstone");
+    let diagnosis = stored.error.expect("tombstone must explain missing exit evidence");
+    assert!(diagnosis.contains("no exit recorded"), "{diagnosis}");
+    assert!(
+        diagnosis.contains("termination signal and kill source are unknown"),
+        "{diagnosis}"
+    );
+    let warning = aplexer::warnings::load_warning_for(&paths, record.id)
+        .expect("removal must leave a crash warning");
+    assert_eq!(warning.detail, diagnosis);
+}
+
+#[test]
 fn generic_removal_does_not_downgrade_worker_evidence() {
     let mut record = mk_record("/ws/retired-output", "receipt", Phase::Exited);
     let (paths, _state_dir, _runtime_dir) = seeded_registry(&mut record);

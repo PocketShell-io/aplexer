@@ -665,6 +665,8 @@ pub fn forget_session(paths: &Paths, selector: &str, force: bool) -> Result<Valu
         .with_context(|| format!("refusing to forget session {}", current.id))?;
 
     let containment_proven_empty = current.containment_proven_empty();
+    crate::warnings::record_warning_best_effort(paths, &current);
+    let diagnostic_error = crate::warnings::diagnostic_error_for_record(&current);
     // Durable state first, runtime dir second -- the order `a prune` uses
     // and the order the worker's own startup relies on: it acquires the
     // worker lock (in the runtime dir) and only then reads the record, so
@@ -677,7 +679,7 @@ pub fn forget_session(paths: &Paths, selector: &str, force: bool) -> Result<Valu
         &current.tag,
         crate::retired::TombstoneCause::Forgotten,
         current.exit.as_ref(),
-        current.error.as_deref(),
+        diagnostic_error.as_deref(),
     );
     fs::remove_dir_all(paths.state_session(current.id))
         .with_context(|| format!("remove forgotten session {} durable state", current.id))?;

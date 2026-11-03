@@ -1243,7 +1243,12 @@ a longer `--startup-timeout-ms` than the default simply reads `broken` for
 the remainder of its own window, which is the conservative direction, and a
 start that hits its own timeout fails with an explicit `startup timeout:`
 error plus a `startup_timeout` tombstone and a crash warning -- never a
-silent vanish. Age is the only difference
+silent vanish. A worker that exits before readiness for another reason leaves
+a `startup_failure` tombstone and crash warning with the observed failure or
+process exit status. When a later reaper finds a dead worker with no exit
+marker or recorded error, both its warning and tombstone explicitly say that
+the termination signal and kill source were not captured; removal must not
+erase the last available diagnosis. Age is the only difference
 between those two records, so a consumer must not re-derive this rule from
 `phase` and `worker_alive` -- that is what `state` is for. `a doctor` uses
 the same bound and does not report a session still inside the startup window

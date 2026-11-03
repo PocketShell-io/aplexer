@@ -83,6 +83,47 @@ impl Harness {
         assert_directory_empty(&self.runtime_dir.path().join("sessions"));
     }
 
+    fn assert_startup_failure_evidence(&self, expected_detail: &str) {
+        let retired = self.state_dir.path().join("retired-sessions");
+        let tombstones = fs::read_dir(&retired)
+            .expect("read retired sessions")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("tombstone.json"))
+            .filter(|path| path.is_file())
+            .collect::<Vec<_>>();
+        assert_eq!(tombstones.len(), 1, "expected one startup-failure tombstone");
+        let tombstone: Value = serde_json::from_slice(
+            &fs::read(&tombstones[0]).expect("read startup-failure tombstone"),
+        )
+        .expect("parse startup-failure tombstone");
+        assert_eq!(tombstone["cause"], "startup_failure");
+        assert!(
+            tombstone["error"]
+                .as_str()
+                .is_some_and(|detail| detail.contains(expected_detail)),
+            "tombstone did not preserve {expected_detail:?}: {tombstone}"
+        );
+
+        let warnings = self.state_dir.path().join("warnings");
+        let warning_paths = fs::read_dir(&warnings)
+            .expect("read warnings")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .collect::<Vec<_>>();
+        assert_eq!(warning_paths.len(), 1, "expected one startup-failure warning");
+        let warning: Value = serde_json::from_slice(
+            &fs::read(&warning_paths[0]).expect("read startup-failure warning"),
+        )
+        .expect("parse startup-failure warning");
+        assert!(
+            warning["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains(expected_detail)),
+            "warning did not preserve {expected_detail:?}: {warning}"
+        );
+    }
+
     /// A dead-but-listed predecessor: clean natural exits now delete their
     /// record, so reclaim/archive tests plant a finished leftover (the same
     /// shape Failed/OOM keep) instead of waiting for `true` to linger.
@@ -1421,6 +1462,20 @@ fn externally_reaped_worker_preserves_ambiguous_containment_evidence() {
         stderr.contains("could not be confirmed"),
         "unexpected stderr: {stderr}"
     );
+    let warning_paths = fs::read_dir(harness.state_dir.path().join("warnings"))
+        .expect("read startup warnings")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect::<Vec<_>>();
+    assert_eq!(warning_paths.len(), 1, "expected one external-kill warning");
+    let warning: Value = serde_json::from_slice(
+        &fs::read(&warning_paths[0]).expect("read external-kill warning"),
+    )
+    .expect("parse external-kill warning");
+    let warning_detail = warning["detail"].as_str().unwrap_or_default();
+    assert!(warning_detail.contains("startup failure"), "{warning_detail}");
+    assert!(warning_detail.contains("signal: 9"), "{warning_detail}");
     assert!(
         record_path.exists(),
         "ambiguous durable containment evidence was deleted"
@@ -1548,6 +1603,7 @@ fn clean_worker_exit_without_terminal_record_still_fails_startup() {
         stderr.contains("worker exited during startup"),
         "unexpected stderr: {stderr}"
     );
+    harness.assert_startup_failure_evidence("worker exited during startup");
     harness.assert_no_session_artifacts();
 }
 
@@ -1587,6 +1643,7 @@ fn nonzero_worker_exit_still_fails_startup() {
         stderr.contains("worker exited during startup") && stderr.contains("exit status: 9"),
         "unexpected stderr: {stderr}"
     );
+    harness.assert_startup_failure_evidence("exit status: 9");
     harness.assert_no_session_artifacts();
 }
 

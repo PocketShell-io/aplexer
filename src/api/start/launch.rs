@@ -309,6 +309,35 @@ pub(super) fn record_startup_timeout_evidence(
     }
 }
 
+/// Evidence for a worker failure before readiness that was not the
+/// launcher's own startup timeout. `await_worker_ready` can still observe
+/// the child exit status here (including an external signal), so preserve
+/// that distinction before rollback removes the starting record.
+pub(super) fn record_startup_failure_evidence(
+    paths: &Paths,
+    id: Uuid,
+    workspace: &Path,
+    tag: &str,
+    engine: &str,
+    detail: &str,
+) {
+    let detail = format!("startup failure: {detail}");
+    crate::retired::write_finished_tombstone_with_error(
+        paths,
+        id,
+        workspace,
+        tag,
+        crate::retired::TombstoneCause::StartupFailure,
+        None,
+        Some(&detail),
+    );
+    if let Err(error) = crate::warnings::record_startup_failure_warning(
+        paths, id, workspace, tag, engine, &detail,
+    ) {
+        eprintln!("a: could not record startup-failure warning for session {id}: {error:#}");
+    }
+}
+
 /// The replacement is ready: retire the predecessor (if any), hand the
 /// worker to the detached reaper, and only then delete the predecessor's
 /// archive. Any failure before the hand-off rolls the replacement back so
