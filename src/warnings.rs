@@ -22,7 +22,11 @@
 //! best-effort and writes write-if-absent (the earliest detection time
 //! wins), so concurrent `a` processes cannot corrupt or re-date a warning.
 
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -116,7 +120,29 @@ impl SessionWarning {
 /// A plain `Exited` record -- including a signal-terminated workload from
 /// `a kill` -- warns nothing: that is a session ending, not a session
 /// crashing.
+///
+/// A `broken` record whose worker cgroup sat beneath a per-user systemd
+/// manager that restarted *after* the session started gets its detail
+/// attributed to that teardown (see [`attribute_manager_teardown`]): the
+/// worker did not crash on its own, systemd killed the whole domain
+/// together, and the next triage must not need journal forensics to say so.
+/// The kind stays `Crash` -- sessions really died with unsaved work -- only
+/// the misattribution ("died unexpectedly ... kill source unknown") is
+/// fixed.
 pub fn warning_for_record(record: &SessionRecord) -> Option<(WarningKind, String)> {
+    warning_for_record_at(record, now_ms(), manager_boot_for(record))
+}
+
+/// The shared warning predicate with injected clocks: `now` is the wall
+/// clock the liveness window is read against, and `manager_started_ms` is
+/// the owning per-user manager's boot when the record's cgroup names one
+/// (see [`crate::user_manager_started_ms`]). Production passes the live
+/// values; tests pin both without touching systemd or `/proc`.
+pub fn warning_for_record_at(
+    record: &SessionRecord,
+    now: u64,
+    manager_started_ms: Option<u64>,
+) -> Option<(WarningKind, String)> {
     if let Some(exit) = &record.exit {
         if exit.oom_killed {
             return Some((
@@ -135,21 +161,22 @@ pub fn warning_for_record(record: &SessionRecord) -> Option<(WarningKind, String
         &record.phase,
         record.worker_alive(),
         record.created_at_ms,
-        now_ms(),
+        now,
     ) == "broken"
     {
+        let base = match record.error.as_deref() {
+            Some(error) => format!(
+                "worker died unexpectedly while {} (no exit recorded): {error}",
+                record.phase.name()
+            ),
+            None => format!(
+                "worker died unexpectedly while {} (no exit recorded; termination signal and kill source are unknown)",
+                record.phase.name()
+            ),
+        };
         return Some((
             WarningKind::Crash,
-            match record.error.as_deref() {
-                Some(error) => format!(
-                    "worker died unexpectedly while {} (no exit recorded): {error}",
-                    record.phase.name()
-                ),
-                None => format!(
-                    "worker died unexpectedly while {} (no exit recorded; termination signal and kill source are unknown)",
-                    record.phase.name()
-                ),
-            },
+            attribute_manager_teardown(record, base, manager_started_ms),
         ));
     }
     if record.phase == Phase::Failed {
@@ -162,6 +189,99 @@ pub fn warning_for_record(record: &SessionRecord) -> Option<(WarningKind, String
         ));
     }
     None
+}
+
+/// The manager boot for a record, best-effort and cached per process: the
+/// uid parsed from the recorded worker cgroup, resolved once through
+/// [`crate::user_manager_started_ms`]. A stale cache entry can only *miss*
+/// an attribution (fall back to the generic detail), never invent one -- a
+/// cached boot always predates a manager restart that happened after the
+/// lookup -- so no invalidation is needed. Off Linux there are no per-user
+/// systemd managers, and the answer is always `None`.
+#[cfg(target_os = "linux")]
+fn manager_boot_for(record: &SessionRecord) -> Option<u64> {
+    static BOOT: OnceLock<Mutex<HashMap<u32, Option<u64>>>> = OnceLock::new();
+    let uid = record
+        .worker_cgroup
+        .as_deref()
+        .and_then(crate::placement::user_manager_uid_from_cgroup)?;
+    let cache = BOOT.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(boot) = cache.lock().ok().and_then(|cache| cache.get(&uid).copied()) {
+        return boot;
+    }
+    let boot = crate::user_manager_started_ms(uid);
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(uid, boot);
+    }
+    boot
+}
+
+/// Off Linux there are no per-user systemd managers: no boot, no
+/// attribution, the generic detail stands.
+#[cfg(not(target_os = "linux"))]
+fn manager_boot_for(_record: &SessionRecord) -> Option<u64> {
+    None
+}
+
+/// Clock-skew margin for the teardown attribution: the manager boot must
+/// postdate the session start by more than this. Both clocks are wall time
+/// from the same machine (session start from `now_ms`, manager boot from
+/// kernel `btime` plus a monotonic offset), so seconds of disagreement are
+/// impossible; the margin only guards second-resolution truncation, never a
+/// real ordering.
+const MANAGER_BOOT_SKEW_MS: u64 = 5_000;
+
+/// Attribute a dead-worker crash to the per-user systemd manager teardown
+/// that killed it, when that is provable from the record alone: the
+/// recorded worker cgroup classifies as the manager's own failure domain
+/// ([`CgroupPlacement::UserManager`]) *and* that manager started after the
+/// session (past the skew margin). Anything else -- no cgroup, another
+/// placement, no (or an older) manager boot, a zeroed timestamp -- leaves
+/// the detail untouched, so an unprovable cause never reads as a proven
+/// one.
+fn attribute_manager_teardown(
+    record: &SessionRecord,
+    base: String,
+    manager_started_ms: Option<u64>,
+) -> String {
+    let Some(boot_ms) = manager_started_ms.filter(|boot_ms| *boot_ms != 0) else {
+        return base;
+    };
+    let cgroup = record.worker_cgroup.as_deref();
+    if cgroup.map(crate::placement::classify_cgroup_path)
+        != Some(crate::placement::CgroupPlacement::UserManager)
+    {
+        return base;
+    }
+    if boot_ms <= record.created_at_ms.saturating_add(MANAGER_BOOT_SKEW_MS) {
+        return base;
+    }
+    let Some(uid) = cgroup.and_then(crate::placement::user_manager_uid_from_cgroup) else {
+        return base;
+    };
+    let gap_ms = boot_ms.saturating_sub(record.created_at_ms);
+    format!(
+        "{base}; the per-user systemd manager user@{uid}.service started ~{} after this session started, tearing down every session beneath it together",
+        format_duration_gap(gap_ms)
+    )
+}
+
+/// Human gap between session start and manager boot for the teardown
+/// detail: `40s`, `25m`, `14h`, `3d`. Rounds down.
+fn format_duration_gap(ms: u64) -> String {
+    let secs = ms / 1_000;
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let mins = secs / 60;
+    if mins < 60 {
+        return format!("{mins}m");
+    }
+    let hours = mins / 60;
+    if hours < 48 {
+        return format!("{hours}h");
+    }
+    format!("{}d", hours / 24)
 }
 
 /// The detail to preserve when a record is removed. For an unexpected dead

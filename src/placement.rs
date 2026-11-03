@@ -163,6 +163,21 @@ pub fn classify_process(pid: u32) -> Option<CgroupPlacement> {
         .map(classify_cgroup_path)
 }
 
+/// Extract the owning user's uid from a cgroup-v2 path, via its
+/// `user-<uid>.slice` component. Used to ask the right per-user manager
+/// when its own subtree dies (the crash warning's teardown attribution):
+/// the uid in the slice and the `user@<uid>.service` owner always agree on
+/// a normal host, and `None` (no guess) keeps the generic diagnosis.
+pub fn user_manager_uid_from_cgroup(cgroup: &str) -> Option<u32> {
+    cgroup.split('/').find_map(|component| {
+        component
+            .strip_prefix("user-")?
+            .strip_suffix(".slice")?
+            .parse::<u32>()
+            .ok()
+    })
+}
+
 /// Classify a cgroup-v2 path (the `/proc/<pid>/cgroup` `0::` form).
 ///
 /// The distinction that matters is *which service manager owns the subtree*:
