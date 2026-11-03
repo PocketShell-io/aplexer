@@ -74,6 +74,43 @@ pub(super) fn archive_reclaimed_predecessor(
     archive_superseded_session(paths, existing.id)
 }
 
+/// Preserve a reclaimed predecessor's crash evidence across the archive
+/// deletion that follows: materialize the ack-gated warning now -- while
+/// the record still exists for the re-read guard -- and return the
+/// diagnosis the tombstone must carry. No-op for a clean predecessor
+/// (including the `Exiting` corpse, which warns nothing). Mirrors what `a
+/// prune` / `a forget --force` / session removal already do (intake
+/// 7cc124d9); without it a reclaim deletes the last live record of a
+/// SIGKILLed worker with no tombstone and no warning unless a sweep
+/// happened to run first (intake 5246e591).
+pub(super) fn preserve_reclaimed_evidence(
+    paths: &Paths,
+    existing: &SessionRecord,
+) -> Option<String> {
+    crate::warnings::record_warning_best_effort(paths, existing);
+    crate::warnings::diagnostic_error_for_record(existing)
+}
+
+/// Leave the finished-tombstone for a reclaimed predecessor after its
+/// archive was deleted, so a late `a kill` learns "already finished" and
+/// the crash diagnosis survives the reclaim -- the same tombstone `a
+/// prune` leaves for the same class of removal.
+pub(super) fn write_reclaimed_tombstone(
+    paths: &Paths,
+    existing: &SessionRecord,
+    diagnostic_error: Option<&str>,
+) {
+    crate::retired::write_finished_tombstone_with_error(
+        paths,
+        existing.id,
+        &existing.workspace,
+        &existing.tag,
+        crate::retired::TombstoneCause::Pruned,
+        existing.exit.as_ref(),
+        diagnostic_error,
+    );
+}
+
 pub(super) fn restore_superseded_session(paths: &Paths, id: Uuid, archived: &Path) -> Result<()> {
     let destination = paths.state_session(id);
     fs::rename(archived, &destination).with_context(|| {
@@ -246,5 +283,68 @@ mod reclaim_tests {
             fence_pre_pid_worker(&paths, &registered).unwrap(),
             PrePidFence::Fenced(None)
         ));
+    }
+
+    /// Intake 5246e591: reclaiming a broken `Running` predecessor must leave
+    /// the same evidence `a prune` leaves -- the ack-gated warning and a
+    /// tombstone carrying the diagnosis -- instead of deleting the last
+    /// live record of a SIGKILLed worker silently.
+    #[test]
+    fn reclaim_preserves_broken_predecessor_evidence_as_warning_and_tombstone() {
+        let mut record = zombie_record();
+        let (paths, _state, _runtime) = seeded_registry(&mut record);
+
+        let diagnostic = preserve_reclaimed_evidence(&paths, &record);
+        let diagnostic = diagnostic.expect("a dead worker leaves a diagnosis");
+        assert!(diagnostic.contains("no exit recorded"), "{diagnostic}");
+
+        let archived = archive_reclaimed_predecessor(&paths, &record).expect("archive predecessor");
+        cleanup_superseded_archive(&archived).expect("delete archive");
+        write_reclaimed_tombstone(&paths, &record, Some(&diagnostic));
+
+        let warning = crate::warnings::load_warning_for(&paths, record.id)
+            .expect("reclaim must leave a crash warning");
+        assert!(
+            warning.detail.contains("while running"),
+            "{}",
+            warning.detail
+        );
+        assert_eq!(warning.detail, diagnostic, "one diagnosis everywhere");
+        let tombstone = crate::retired::read_finished_tombstone(&paths, record.id)
+            .expect("reclaim must leave a tombstone");
+        assert_eq!(tombstone.cause, crate::retired::TombstoneCause::Pruned);
+        assert_eq!(tombstone.error.as_deref(), Some(diagnostic.as_str()));
+    }
+
+    /// The `Exiting` corpse is a session that ended, not a crash: reclaiming
+    /// one warns nothing (the `src/warnings.rs` false-positive guard) but
+    /// still leaves its tombstone diagnosis.
+    #[test]
+    fn reclaim_of_an_exiting_corpse_warns_nothing_but_leaves_its_diagnosis() {
+        let mut record = zombie_record();
+        record.phase = Phase::Exiting;
+        let (paths, _state, _runtime) = seeded_registry(&mut record);
+
+        let diagnostic = preserve_reclaimed_evidence(&paths, &record);
+        let diagnostic = diagnostic.expect("the corpse still explains itself");
+        assert!(
+            crate::warnings::load_warning_for(&paths, record.id).is_none(),
+            "an Exiting corpse is not a crash"
+        );
+
+        let archived = archive_reclaimed_predecessor(&paths, &record).expect("archive predecessor");
+        cleanup_superseded_archive(&archived).expect("delete archive");
+        write_reclaimed_tombstone(&paths, &record, Some(&diagnostic));
+
+        let tombstone = crate::retired::read_finished_tombstone(&paths, record.id)
+            .expect("reclaim must leave a tombstone");
+        assert!(
+            tombstone
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("stop/kill request")),
+            "tombstone carries the corpse diagnosis: {:?}",
+            tombstone.error
+        );
     }
 }
