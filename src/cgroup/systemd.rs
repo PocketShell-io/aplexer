@@ -152,6 +152,89 @@ pub fn system_scope_escape_decision() -> Result<bool> {
     probe_system_scope_backend().map(|()| true)
 }
 
+/// Best-effort wall-clock start of one per-user systemd manager, in
+/// milliseconds since the Unix epoch. `None` on any failure: no systemd,
+/// no such user, an unreadable bus, a wedged manager, or an unparseable
+/// answer. Reads `ActiveEnterTimestampMonotonic` (microseconds since boot,
+/// trivially parseable, no locale-dependent date format) off the *system*
+/// bus -- `show` is a read-only property fetch, no privileges needed -- and
+/// adds the kernel boot time from `/proc/stat`'s `btime`.
+///
+/// Used by the crash warning's teardown attribution: when a dead worker's
+/// recorded cgroup sits beneath `user@<uid>.service` and that manager
+/// started *after* the session, the worker did not crash on its own --
+/// systemd tore the whole domain down together (Hub intake 8c03677f: 94
+/// sessions SIGKILLed in one user-slice teardown, one more in a service
+/// stop timeout). A `0`/missing timestamp means the unit never ran, and a
+/// timestamp impossibly in the future means the clocks disagree: both read
+/// as `None`, and the warning falls back to the generic diagnosis rather
+/// than attributing on bad data.
+pub fn user_manager_started_ms(uid: u32) -> Option<u64> {
+    let monotonic_us = manager_active_enter_monotonic_us(uid)?;
+    if monotonic_us == 0 {
+        return None;
+    }
+    let boot_ms = boot_time_ms()?;
+    let started_ms = boot_ms.saturating_add(monotonic_us / 1_000);
+    // Refuse impossible data: a manager that supposedly started in the
+    // future is a clock disagreement, not evidence of a teardown.
+    if started_ms > crate::now_ms().saturating_add(60_000) {
+        return None;
+    }
+    Some(started_ms)
+}
+
+/// Run the trusted `systemctl show` for one user manager with a tight
+/// deadline, mirroring the descendant-reaper discipline of
+/// [`probe_system_scope_backend`]: the caller's `SIGCHLD` handling must
+/// never eat this child's status, and a wedged bus must never stall a
+/// listing sweep (this runs inside `sweep_warnings`).
+fn manager_active_enter_monotonic_us(uid: u32) -> Option<u64> {
+    let systemctl = trusted_system_helper("systemctl").ok()?;
+    let mut child = Command::new(&systemctl)
+        .arg("show")
+        .arg(format!("user@{uid}.service"))
+        .arg("--property=ActiveEnterTimestampMonotonic")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let pid = child.id();
+    crate::worker::own_child_pid(pid);
+    let output = (|| -> Option<std::process::Output> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match child.try_wait().ok()? {
+                Some(_) => return child.wait_with_output().ok(),
+                None if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                None => thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    })();
+    crate::worker::disown_child_pid(pid);
+    let text = String::from_utf8(output?.stdout).ok()?;
+    let (_, value) = text.trim().split_once('=')?;
+    value.trim().parse::<u64>().ok()
+}
+
+/// Kernel boot time from `/proc/stat`'s `btime`, in milliseconds since the
+/// Unix epoch. `None` when the file is unreadable or has no `btime` line.
+fn boot_time_ms() -> Option<u64> {
+    let stat = fs::read_to_string("/proc/stat").ok()?;
+    for line in stat.lines() {
+        if let Some(secs) = line.strip_prefix("btime ") {
+            let secs = secs.trim().parse::<u64>().ok()?;
+            return Some(secs.saturating_mul(1_000));
+        }
+    }
+    None
+}
+
 /// Rewrite `worker` (already carrying the worker program and its initial
 /// argv from `worker_command`) so spawning it creates the worker inside a
 /// system-manager scope (`systemd-run --system --scope --collect
