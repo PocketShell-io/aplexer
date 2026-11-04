@@ -178,8 +178,16 @@ pub(super) fn handle_attach(
         move || pump_output(writer, runtime, rx, subscription, want_screen, want_record)
     });
     pump_input(&mut reader, &runtime, &writer, client_id)?;
-    let _ = reader.shutdown(std::net::Shutdown::Both);
+    close_attach_at_frame_boundary(&reader, &writer);
     Ok(())
+}
+
+/// An input-side detach must not cut the output pump's in-flight frame.
+/// Its existing stall guard bounds a writer whose peer stopped reading.
+fn close_attach_at_frame_boundary(reader: &Stream, writer: &Mutex<Stream>) {
+    if let Ok(_frame) = writer.lock() {
+        let _ = reader.shutdown(std::net::Shutdown::Both);
+    }
 }
 
 /// The output half of an established attach: relay every hub event to the
@@ -545,6 +553,41 @@ mod stall_guard_tests {
             .unwrap()
             .unwrap();
         (server, client)
+    }
+
+    #[test]
+    fn detach_waits_for_in_flight_frame_before_socket_shutdown() {
+        use std::io::Write as _;
+        let (socket, mut peer) = pair();
+        let reader = socket.try_clone().unwrap();
+        let writer = Arc::new(Mutex::new(socket));
+        let mut frame = writer.lock().unwrap();
+        // Freeze an actual output frame after its header, before its payload.
+        let payload = b"complete";
+        let transfer = FrameTransfer::new(FrameKind::Data, payload).unwrap();
+        frame.write_all(&transfer.header).unwrap();
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let shared = Arc::clone(&writer);
+        let detach = thread::spawn(move || {
+            attempt_tx.send(()).unwrap();
+            close_attach_at_frame_boundary(&reader, &shared);
+            done_tx.send(()).unwrap();
+        });
+        attempt_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "detach closed the socket while the output frame was incomplete"
+        );
+        frame.write_all(payload).unwrap();
+        drop(frame);
+        done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        detach.join().unwrap();
+        drop(writer); // Named-pipe peers observe EOF when the last server clone closes.
+        let received = read_frame(&mut peer).unwrap().unwrap();
+        assert_eq!(received.kind, FrameKind::Data);
+        assert_eq!(received.payload, payload);
+        assert!(read_frame(&mut peer).unwrap().is_none());
     }
 
     /// A socket whose peer never reads: fill it until one write blocks for a
