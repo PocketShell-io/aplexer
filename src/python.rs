@@ -128,6 +128,7 @@ fn snapshot(
     // `startup_timeout_ms` or pass the three path overrides) keep mapping.
     fresh=false,
     labels=None,
+    deadline_ms=None,
 ))]
 fn start(
     workspace: &str,
@@ -147,6 +148,7 @@ fn start(
     config: Option<&str>,
     fresh: bool,
     labels: Option<BTreeMap<String, String>>,
+    deadline_ms: Option<u64>,
 ) -> PyResult<String> {
     if let Some(ref map) = labels {
         for (k, v) in map {
@@ -172,6 +174,7 @@ fn start(
         history_bytes: None,
         no_skip_permissions,
         startup_timeout_ms,
+        deadline_ms,
         worker_rows: None,
         worker_cols: None,
         python: python.map(PathBuf::from),

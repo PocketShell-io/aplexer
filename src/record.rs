@@ -320,6 +320,12 @@ pub struct SessionRecord {
     #[serde(default)]
     pub limits: Limits,
     pub history_bytes: usize,
+    /// Worker-owned absolute workload expiry, not a startup timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
+    /// A limit-triggered teardown attempt; only empty containment proves stop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_exceeded: Option<bool>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     /// Last time the workload's PTY produced output, as observed by the
@@ -466,6 +472,8 @@ impl SessionRecord {
             env_unset: Vec::new(),
             limits: Limits::default(),
             history_bytes: 0,
+            deadline_ms: None,
+            deadline_exceeded: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             last_activity_ms: None,

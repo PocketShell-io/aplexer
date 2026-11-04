@@ -47,6 +47,8 @@ pub struct StartRequest {
     pub history_bytes: Option<usize>,
     pub no_skip_permissions: bool,
     pub startup_timeout_ms: u64,
+    /// Absolute Unix-millisecond deadline enforced by the native worker.
+    pub deadline_ms: Option<u64>,
     pub worker_rows: Option<u16>,
     pub worker_cols: Option<u16>,
     /// When set, spawn the worker as `python -m aplexer worker --id …`
@@ -111,6 +113,7 @@ fn start_session_launch(paths: &Paths, req: &StartRequest) -> Result<SessionReco
             claim.tag.clone(),
             launch,
             req.labels.clone(),
+            req.deadline_ms,
         )?;
         start_record_written = true;
         spawn_worker_process(paths, req, id, command, &mut startup)?;

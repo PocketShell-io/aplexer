@@ -168,6 +168,7 @@ fn remove_finished_state(runtime: &WorkerRuntime, exit: &crate::record::ExitInfo
                 .get("APLEXER_RETAIN_RETIRED_OUTPUT")
                 .map(String::as_str)
                 != Some("1")
+                && record.deadline_ms.is_none()
             {
                 crate::retired::write_finished_tombstone(
                     &runtime.paths,
@@ -183,7 +184,12 @@ fn remove_finished_state(runtime: &WorkerRuntime, exit: &crate::record::ExitInfo
                 &runtime.paths,
                 &record,
                 exit,
-                runtime.output.retirement_output(),
+                (record
+                    .env
+                    .get("APLEXER_RETAIN_RETIRED_OUTPUT")
+                    .map(String::as_str)
+                    == Some("1"))
+                .then(|| runtime.output.retirement_output()),
             )
         });
         match result {

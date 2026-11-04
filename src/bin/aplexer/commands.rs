@@ -399,6 +399,7 @@ pub(crate) fn cmd_start(paths: &Paths, args: StartArgs, json_output: bool) -> Re
         history_bytes: args.history_bytes,
         no_skip_permissions: args.no_skip_permissions,
         startup_timeout_ms: args.startup_timeout_ms,
+        deadline_ms: args.deadline_ms,
         worker_rows,
         worker_cols,
         python: None,

@@ -301,6 +301,7 @@ pub(crate) fn create_sibling_session(
         history_bytes: None,
         no_skip_permissions: false,
         startup_timeout_ms: NEW_SESSION_STARTUP_TIMEOUT_MS,
+        deadline_ms: None,
         worker_rows: geometry.map(|(rows, _)| rows),
         worker_cols: geometry.map(|(_, cols)| cols),
         python: None,

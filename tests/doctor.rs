@@ -37,6 +37,8 @@ fn stale_running_record(paths: &Paths) -> SessionRecord {
         env_unset: Vec::new(),
         limits: Limits::default(),
         history_bytes: 1024,
+        deadline_ms: None,
+        deadline_exceeded: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         last_activity_ms: None,

@@ -24,6 +24,12 @@ pub(super) fn resolve_launch(
     req: &StartRequest,
 ) -> Result<(PathBuf, ResolvedLaunch)> {
     validate_tag(&req.tag)?;
+    if req
+        .deadline_ms
+        .is_some_and(|deadline| deadline <= crate::now_ms())
+    {
+        bail!("runtime deadline must be in the future");
+    }
     let workspace = canonical_workspace(&req.workspace)?;
     let limits = Limits {
         memory_bytes: req.memory.as_deref().map(parse_byte_size).transpose()?,

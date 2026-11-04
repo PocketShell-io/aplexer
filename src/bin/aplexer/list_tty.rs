@@ -467,6 +467,8 @@ mod tests {
             env_unset: Vec::new(),
             limits: Limits::default(),
             history_bytes: 0,
+            deadline_ms: None,
+            deadline_exceeded: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             last_activity_ms: None,

@@ -14,6 +14,8 @@ fn mk_record(workspace: &str, tag: &str, phase: Phase) -> SessionRecord {
         env_unset: Default::default(),
         limits: Default::default(),
         history_bytes: 0,
+        deadline_ms: None,
+        deadline_exceeded: None,
         created_at_ms: 0,
         updated_at_ms: 0,
         last_activity_ms: None,

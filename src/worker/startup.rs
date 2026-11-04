@@ -424,6 +424,12 @@ pub(super) fn bring_up(
         let socket_identity: FileIdentity = (0, 0);
         startup_checkpoint("after_control_socket")?;
 
+        if record
+            .deadline_ms
+            .is_some_and(|deadline| deadline <= now_ms())
+        {
+            bail!("runtime deadline expired before workload spawn");
+        }
         let requested_size = initial_size.unwrap_or((24, 80));
         let (rows, cols) = screen::validate_worker_size(requested_size.0, requested_size.1)?;
         // A capped launch resolves its placement decision, trusted helpers,
@@ -592,6 +598,7 @@ pub(super) fn bring_up(
             last_activity_ms: AtomicU64::new(0),
             awaiting_initial_prompt: AtomicBool::new(awaiting_initial_prompt),
         });
+        runtime.start_deadline_watchdog()?;
         start_worker_threads(
             Arc::clone(&runtime),
             master_read,

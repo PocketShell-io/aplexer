@@ -524,6 +524,8 @@ fn prune_ages_expired_tombstones_and_leaves_archives() {
 
     let stale = mk_record("/ws/i2665", "stale", Phase::Exited);
     let expired = aplexer::retired::FinishedTombstone {
+        deadline_ms: None,
+        deadline_exceeded: None,
         id: stale.id,
         workspace: PathBuf::from("/ws/i2665"),
         tag: "stale".to_string(),

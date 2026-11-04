@@ -287,6 +287,8 @@ fn forget_fences_pre_pid_startup_and_refuses_held_worker_lock() {
         env_unset: Vec::new(),
         limits: Limits::default(),
         history_bytes: 4096,
+        deadline_ms: None,
+        deadline_exceeded: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         last_activity_ms: None,
