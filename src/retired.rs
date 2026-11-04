@@ -387,7 +387,14 @@ pub(crate) fn write_worker_receipt(
         cause: TombstoneCause::Finished,
         exit: Some(exit.clone()),
         deadline_ms: record.deadline_ms,
-        deadline_exceeded: record.deadline_exceeded,
+        deadline_exceeded: if record
+            .deadline_ms
+            .is_some_and(|deadline| exit.exited_at_ms >= deadline)
+        {
+            Some(true)
+        } else {
+            record.deadline_exceeded
+        },
         error: None,
         created_at_ms: Some(record.created_at_ms),
         containment_empty: Some(true),

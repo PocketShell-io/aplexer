@@ -413,6 +413,11 @@ fn record_final_state(runtime: &WorkerRuntime, exit: &ExitInfo, state: &mut Loop
             };
             r.containment_empty = Some(state.containment_empty);
             r.exit = Some(exit.clone());
+            if r.deadline_ms
+                .is_some_and(|deadline| exit.exited_at_ms >= deadline)
+            {
+                r.deadline_exceeded = Some(true);
+            }
             r.error = final_error;
         }) {
             Ok(_) => break,

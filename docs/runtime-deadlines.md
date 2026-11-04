@@ -9,7 +9,9 @@ At expiry it persists deadline_exceeded=true and invokes the existing whole
 containment kill path, retrying errors until empty. Actual exit information is
 preserved. Finished receipts retain deadline_ms, deadline_exceeded and verified
 containment_empty even without retained terminal output. Early ordinary exit
-has no exceeded marker. Existing starts without the flag remain unbounded.
+has no exceeded marker. Final containment-observation timestamps also derive
+the exceeded marker, so a descheduled watchdog cannot turn a natural late
+zero exit into timely completion. Existing starts without the flag remain unbounded.
 
 Controllers must bind this absolute deadline to persisted admission and never
 extend it on delivery retry. This is a hard termination boundary, not business

@@ -9,6 +9,10 @@ fn deadline_workload() {
     let Ok(mode) = std::env::var("APLEXER_DEADLINE_TEST") else {
         return;
     };
+    if mode == "late" {
+        std::thread::sleep(Duration::from_millis(3500));
+        return;
+    }
     if mode == "quick" {
         return;
     }
@@ -82,7 +86,10 @@ fn worker_deadline_survives_launcher_exit_and_persists_empty_containment() {
     assert_eq!(receipt.deadline_ms, Some(deadline));
     assert_eq!(receipt.deadline_exceeded, Some(true));
     assert!(receipt.exit.is_some());
-    assert!(!paths.record(id).exists());
+    while paths.record(id).exists() {
+        assert!(Instant::now() < until, "finished record was not removed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let reloaded = aplexer::retired::read_finished_tombstone(&paths, id).unwrap();
     assert_eq!(reloaded.deadline_exceeded, Some(true));
 }
@@ -156,6 +163,54 @@ fn early_exit_preserves_deadline_without_exceeded_marker() {
             break;
         }
         assert!(Instant::now() < until, "early exit did not retire");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+
+#[test]
+#[cfg(feature = "startup-test-hooks")]
+fn delayed_watchdog_cannot_hide_a_natural_exit_after_deadline() {
+    let temp = TempDir::new().unwrap();
+    let paths = Paths {
+        runtime_root: temp.path().join("runtime"),
+        state_root: temp.path().join("state"),
+        config_file: temp.path().join("config.toml"),
+    };
+    paths.ensure().unwrap();
+    let deadline = now_ms() + 2000;
+    let output = command(&paths)
+        .env("APLEXER_TEST_DELAY_DEADLINE_WATCHDOG_MS", "30000")
+        .args(["start", "--workspace"])
+        .arg(temp.path())
+        .args([
+            "--tag",
+            "late",
+            "--engine",
+            "shell",
+            "--json",
+            "--deadline-ms",
+            &deadline.to_string(),
+            "--env",
+            "APLEXER_DEADLINE_TEST=late",
+            "--",
+        ])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", "deadline_workload", "--nocapture"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let id = value["id"].as_str().unwrap().parse().unwrap();
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(receipt) = aplexer::retired::read_finished_tombstone(&paths, id) {
+            assert_eq!(receipt.exit.as_ref().unwrap().code, Some(0));
+            assert!(receipt.exit.as_ref().unwrap().exited_at_ms >= deadline);
+            assert_eq!(receipt.deadline_exceeded, Some(true));
+            assert_eq!(receipt.containment_empty, Some(true));
+            break;
+        }
+        assert!(Instant::now() < until, "late natural exit not retired");
         std::thread::sleep(Duration::from_millis(30));
     }
 }

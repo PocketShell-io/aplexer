@@ -477,6 +477,12 @@ impl WorkerRuntime {
             .name("runtime-deadline".into())
             .spawn(move || {
                 thread::sleep(due.saturating_duration_since(Instant::now()));
+                #[cfg(feature = "startup-test-hooks")]
+                if let Ok(delay) = env::var("APLEXER_TEST_DELAY_DEADLINE_WATCHDOG_MS") {
+                    if let Ok(ms) = delay.parse::<u64>() {
+                        thread::sleep(Duration::from_millis(ms));
+                    }
+                }
                 let Some(runtime) = weak.upgrade() else {
                     return;
                 };
