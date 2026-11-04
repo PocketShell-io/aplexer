@@ -457,8 +457,22 @@ pub fn worker_executable() -> Result<PathBuf> {
     let current = env::current_exe()?;
     match current.file_name().and_then(|name| name.to_str()) {
         Some("aplexer") | Some("a") => return Ok(current),
+        // Exact names published by release.yml. A downloaded CLI must not
+        // silently delegate to an older sibling/PATH worker. Keep embedded
+        // Python and other host executables on the fallback path below.
+        #[cfg(target_os = "linux")]
+        Some("aplexer-linux-amd64" | "aplexer-linux-arm64" | "a-linux-amd64" | "a-linux-arm64") => {
+            return Ok(current);
+        }
         #[cfg(windows)]
-        Some("aplexer.exe") | Some("a.exe") => return Ok(current),
+        Some(
+            "aplexer.exe"
+            | "a.exe"
+            | "aplexer-windows-amd64.exe"
+            | "aplexer-windows-arm64.exe"
+            | "a-windows-amd64.exe"
+            | "a-windows-arm64.exe",
+        ) => return Ok(current),
         _ => {}
     }
     if let Some(parent) = current.parent() {
