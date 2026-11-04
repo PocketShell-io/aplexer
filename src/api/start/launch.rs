@@ -21,6 +21,7 @@ pub(super) fn write_initial_record(
     tag: String,
     launch: ResolvedLaunch,
     labels: BTreeMap<String, String>,
+    deadline_ms: Option<u64>,
 ) -> Result<(SessionRecord, LaunchEnvironmentGuard)> {
     ensure_private_dir(&paths.state_session(id))?;
     ensure_private_dir(&paths.runtime_session(id))?;
@@ -71,6 +72,8 @@ pub(super) fn write_initial_record(
         env_unset: launch.env_unset,
         limits: launch.limits,
         history_bytes: launch.history_bytes,
+        deadline_ms,
+        deadline_exceeded: None,
         created_at_ms: now,
         updated_at_ms: now,
         last_activity_ms: None,

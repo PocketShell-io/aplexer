@@ -687,6 +687,8 @@ fn a_terminal_record_never_reports_an_agent_from_a_recycled_pid() {
             env_unset: Vec::new(),
             limits: Limits::default(),
             history_bytes: 4096,
+            deadline_ms: None,
+            deadline_exceeded: None,
             created_at_ms: 1,
             updated_at_ms: 1,
             last_activity_ms: None,

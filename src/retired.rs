@@ -102,6 +102,10 @@ pub struct FinishedTombstone {
     /// unknown). Old tombstones predate this field and parse as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<ExitInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_exceeded: Option<bool>,
     /// Diagnosable cause when there is no exit to carry it: the record's
     /// `error` at removal time (`startup timeout: ...`, `worker died ...`),
     /// or the kill signal/source. `None` on clean finishes and old
@@ -169,7 +173,9 @@ fn write_finished_tombstone_checked(
     }
     // Recovery may see active state left after successful receipt publication.
     // Never downgrade its exact native evidence to a generic removal marker.
-    if read_finished_tombstone(paths, id).is_some_and(|receipt| receipt.output.is_some()) {
+    if read_finished_tombstone(paths, id)
+        .is_some_and(|receipt| receipt.output.is_some() || receipt.deadline_ms.is_some())
+    {
         return Ok(());
     }
     ensure_private_dir(&dir)?;
@@ -180,6 +186,8 @@ fn write_finished_tombstone_checked(
         finished_at_ms: now_ms(),
         cause,
         exit: exit.cloned(),
+        deadline_ms: None,
+        deadline_exceeded: None,
         error: error.map(str::to_string),
         created_at_ms: None,
         containment_empty: None,
@@ -369,7 +377,7 @@ pub(crate) fn write_worker_receipt(
     paths: &Paths,
     record: &crate::SessionRecord,
     exit: &ExitInfo,
-    output: RetiredOutput,
+    output: Option<RetiredOutput>,
 ) -> Result<()> {
     let receipt = FinishedTombstone {
         id: record.id,
@@ -378,10 +386,19 @@ pub(crate) fn write_worker_receipt(
         finished_at_ms: now_ms(),
         cause: TombstoneCause::Finished,
         exit: Some(exit.clone()),
+        deadline_ms: record.deadline_ms,
+        deadline_exceeded: if record
+            .deadline_ms
+            .is_some_and(|deadline| exit.exited_at_ms >= deadline)
+        {
+            Some(true)
+        } else {
+            record.deadline_exceeded
+        },
         error: None,
         created_at_ms: Some(record.created_at_ms),
         containment_empty: Some(true),
-        output: Some(output),
+        output,
     };
     atomic_write_json(
         &paths.retired_session(record.id).join(TOMBSTONE_FILE),

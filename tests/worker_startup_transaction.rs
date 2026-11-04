@@ -99,6 +99,8 @@ impl Harness {
             env_unset: Vec::new(),
             limits: Limits::default(),
             history_bytes: DEFAULT_HISTORY_BYTES,
+            deadline_ms: None,
+            deadline_exceeded: None,
             created_at_ms: now_ms(),
             updated_at_ms: now_ms(),
             last_activity_ms: None,

@@ -184,6 +184,8 @@ fn start_warning_fires_only_for_the_user_manager_subtree() {
             env_unset: Vec::new(),
             limits: crate::Limits::default(),
             history_bytes: 1024,
+            deadline_ms: None,
+            deadline_exceeded: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             last_activity_ms: None,

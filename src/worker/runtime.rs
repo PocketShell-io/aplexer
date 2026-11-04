@@ -462,6 +462,49 @@ impl WorkerRuntime {
             }
         }
     }
+    /// Arm before startup commits. The worker owns this monotonic timer, so
+    /// disconnecting or crashing the launcher cannot extend the workload.
+    pub(super) fn start_deadline_watchdog(self: &Arc<Self>) -> Result<()> {
+        let Some(deadline) = self.record()?.deadline_ms else {
+            return Ok(());
+        };
+        let wait = Duration::from_millis(deadline.saturating_sub(now_ms()));
+        let due = Instant::now()
+            .checked_add(wait)
+            .ok_or_else(|| anyhow!("runtime deadline overflow"))?;
+        let weak = Arc::downgrade(self);
+        thread::Builder::new()
+            .name("runtime-deadline".into())
+            .spawn(move || {
+                thread::sleep(due.saturating_duration_since(Instant::now()));
+                #[cfg(feature = "startup-test-hooks")]
+                if let Ok(delay) = env::var("APLEXER_TEST_DELAY_DEADLINE_WATCHDOG_MS") {
+                    if let Ok(ms) = delay.parse::<u64>() {
+                        thread::sleep(Duration::from_millis(ms));
+                    }
+                }
+                let Some(runtime) = weak.upgrade() else {
+                    return;
+                };
+                loop {
+                    if matches!(runtime.workload_populated(), Ok(false)) {
+                        return;
+                    }
+                    if let Err(error) =
+                        runtime.update_record(|record| record.deadline_exceeded = Some(true))
+                    {
+                        log_best_effort(&format!("aplexer: persist runtime deadline: {error:#}"));
+                    }
+                    if let Err(error) = runtime.kill(WIRE_SIGKILL, 0) {
+                        log_best_effort(&format!("aplexer: enforce runtime deadline: {error:#}"));
+                    }
+                    thread::sleep(Duration::from_millis(250));
+                }
+            })
+            .context("start native runtime deadline guard")?;
+        Ok(())
+    }
+
     pub(super) fn kill(&self, signal: i32, grace_ms: u64) -> Result<()> {
         let grace = kill_grace_duration(grace_ms)?;
         let _serialized = lock(&self.kill_gate)?;

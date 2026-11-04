@@ -106,6 +106,9 @@ pub(crate) struct StartArgs {
     /// Give up if the workload has not started after this long
     #[arg(long, default_value_t = DEFAULT_STARTUP_TIMEOUT_MS)]
     pub(crate) startup_timeout_ms: u64,
+    /// Hard workload deadline in Unix milliseconds, independent of attached clients
+    #[arg(long)]
+    pub(crate) deadline_ms: Option<u64>,
     /// Keep the engine's confirmation/sandbox prompts. Default is to append
     /// the engine's skip-permissions argv (`--dangerously-bypass-approvals-
     /// and-sandbox` / `--dangerously-skip-permissions` / `--always-approve`).
