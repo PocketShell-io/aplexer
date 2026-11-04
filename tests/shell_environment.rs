@@ -247,3 +247,38 @@ fn workload_terminal_is_aplexers_own_not_the_launchers() {
         "explicit --env TERM did not override the default: {output}"
     );
 }
+
+#[test]
+fn workload_ignores_launcher_no_color_but_honors_explicit_session_preference() {
+    let mut harness = Harness::new();
+    let workspace = TempDir::new().unwrap();
+    let session = harness.start_from_launcher(
+        workspace.path(),
+        "launcher-no-color",
+        "shell",
+        &[],
+        &[("NO_COLOR", "1")],
+        &workload::env_report_command(&[("no-color", "NO_COLOR")], true, 30),
+    );
+    let output = harness.capture_until(&session.id.to_string(), "no-color=[");
+    let output = String::from_utf8_lossy(&output);
+    assert!(
+        output.contains("no-color=[unset]"),
+        "non-interactive launcher disabled workload colors: {output}"
+    );
+
+    let session = harness.start_from_launcher(
+        workspace.path(),
+        "explicit-no-color",
+        "shell",
+        &["NO_COLOR=1"],
+        &[("NO_COLOR", "inherited")],
+        &workload::env_report_command(&[("no-color", "NO_COLOR")], true, 30),
+    );
+    let output = harness.capture_until(&session.id.to_string(), "no-color=[");
+    let output = String::from_utf8_lossy(&output);
+    assert!(
+        output.contains("no-color=[1]"),
+        "explicit session color preference was lost: {output}"
+    );
+}
