@@ -72,6 +72,10 @@ pub(super) fn spawn_workload(
     // Same terminal declaration as the Unix path (see the long rationale there).
     set(&mut env, "TERM", Some(WORKLOAD_TERM.into()));
     set(&mut env, "COLORTERM", Some(WORKLOAD_COLORTERM.into()));
+    // Agent tool shells set NO_COLOR for their piped output. That preference
+    // belongs to the launcher, not this interactive PTY. Explicit session or
+    // profile overrides below still allow a monochrome workload.
+    set(&mut env, "NO_COLOR", None);
     set(
         &mut env,
         "TMUX",
@@ -191,6 +195,9 @@ pub(super) fn spawn_workload(
         // key replace earlier ones.
         .env("TERM", WORKLOAD_TERM)
         .env("COLORTERM", WORKLOAD_COLORTERM)
+        // Match the Windows PTY: do not leak a non-interactive launcher's
+        // color suppression into a session. Explicit launch env still wins.
+        .env_remove("NO_COLOR")
         // Agent-hint compatibility, same emulation claim as TERM above: tmux
         // is identified by `$TMUX` alone, and agent CLIs gate helpful hints
         // on it -- Claude Code, for one, only offers its `ctrl+b ctrl+b`
