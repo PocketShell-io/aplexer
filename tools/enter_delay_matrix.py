@@ -10,8 +10,10 @@ the user-level ground truth "the message was submitted and processed".
 
 Also validates the built-in `enter_settle`/`enter_delay_ms` submission
 path (`a send --enter`) end-to-end by rewriting the isolated config
-between phases: at delay 0 without settle the big-paste failure mode
-should reproduce; with settle it should not.
+between phases: the raw split-send path (paste, sleep, raw Enter) shows the
+big-paste failure mode on codex at every delay, while the framed `--enter`
+path (explicit bracketed paste) is expected to stay clean; the settle phase
+checks the margin holds for large pastes.
 
 Runs engines concurrently, one thread each, every engine against its own
 isolated APLEXER_STATE_DIR / APLEXER_RUNTIME_DIR so nothing touches a
@@ -41,8 +43,14 @@ ENGINE_DEFS = {
         "skip": '["--dangerously-skip-permissions"]',
     },
     "opencode": {
-        "command": '["/home/alexey/.nvm/versions/node/v24.13.1/bin/opencode", "--model", "opencode/muse-spark-1.3-contributor-free"]',
+        # opencode's top-level TUI has no --model flag (only `opencode run`
+        # does): baking one into the command makes the process print usage
+        # and exit at once. The model travels via `a start --model`, which
+        # aplexer forwards through OPENCODE_CONFIG_CONTENT (see
+        # api/start/claim.rs `apply_model`).
+        "command": '["/home/alexey/.nvm/versions/node/v24.13.1/bin/opencode"]',
         "skip": '["--auto"]',
+        "model": "opencode/muse-spark-1.3-contributor-free",
     },
     "antigravity": {
         "command": '["/home/alexey/.local/bin/agy", "--model", "gemini-3.8-flash-high"]',
@@ -129,8 +137,11 @@ class Engine:
 
     def start_session(self):
         self.tag = f"etd-{self.name}-{self.suffix}"
-        out = self.run(["start", "--workspace", self.work, "--tag", self.tag,
-                        "--engine", self.name], timeout=120)
+        start = ["start", "--workspace", self.work, "--tag", self.tag,
+                 "--engine", self.name]
+        if ENGINE_DEFS[self.name].get("model"):
+            start += ["--model", ENGINE_DEFS[self.name]["model"]]
+        out = self.run(start, timeout=120)
         if out.returncode != 0:
             raise RuntimeError(f"start failed: {out.stderr.strip()[:300]}")
         # Wait for the TUI to settle: two consecutive identical screens.

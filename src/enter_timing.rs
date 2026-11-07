@@ -16,6 +16,20 @@
 //! outlive the moment the composer renders the paste, so `enter_delay_ms`
 //! stays the floor even when `enter_settle` is on -- settle only ever
 //! extends the wait, never shortens it.
+//!
+//! The wall-clock gap is margin, not the mechanism, for large pastes: the
+//! load-bearing piece is the explicit bracketed paste (`ESC[200~` ...
+//! `ESC[201~`) the submission path wraps codex/opencode input in. Measured
+//! 2026-11-07 against live codex/opencode TUIs: an *unframed* raw split
+//! send (text, sleep, raw Enter) of a ~3KB paste to codex is swallowed at
+//! every delay tried, 0/21 across 0-1500ms -- no delay tunes that path to
+//! reliability. The framed `--enter` path submitted cleanly in every trial
+//! (88/88 single-Enter trials across short/multi/big3k on codex and
+//! opencode, including delay 0 and a loaded box at `loadavg ~5.6`), with
+//! the ack state machine (`delivery_ack`: Enter retries, paste resends) as
+//! the second layer. Keep the floor as insurance
+//! against box-load races (one Enter was lost at 300ms under load); do not
+//! lower it on the strength of idle-box measurements alone.
 
 /// The shipped gap for every engine family without a measured or configured
 /// entry. This is the value earlier builds hard-coded in
