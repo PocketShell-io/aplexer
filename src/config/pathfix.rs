@@ -3,7 +3,7 @@
 //!
 //! The PocketShell app drives `a start` over non-interactive SSH, where
 //! `~/.bashrc` never sources the version managers (nvm et al.) that put
-//! `codex`/`claude`/`gemini`/`opencode` on an interactive shell's PATH. An
+//! `codex`/`claude`/`opencode` on an interactive shell's PATH. An
 //! engine that resolves only through such a tool therefore works from the
 //! user's terminal and fails from the app with "not found in PATH". The
 //! durable fix is machine-local self-healing: `a doctor` compares each

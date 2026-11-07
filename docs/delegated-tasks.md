@@ -21,13 +21,14 @@ a [--json] task run --prompt-file FILE [--engine E] [--profile P] [--cwd D]
   START/RESULT records carry the prompt-free argv plus the prompt's byte
   count and SHA-256 instead of duplicating the text.
 - **Engine/profile resolution is `a start`'s**: engine id, profile (another
-  account), env, provider-key strip, skip-permissions argv. No engine
-  aliases, no shell wrappers: the configured actual executable runs.
+  account), env, provider-key strip, skip-permissions argv. The legacy
+  `gemini` engine name aliases canonical `antigravity`; no shell wrappers
+  are inserted around the resolved executable.
 - **Noninteractive argv**: per engine, either the engine's `task_argv` in
   the config file or the built-in per-family default — codex family
   (`codex`, a configured `zcodex` fork) → `exec --json --skip-git-repo-check`;
   `antigravity` (also custom engines/profiles whose executable is `agy`) → `-p`;
-  `claude`/`gemini` → `-p`; `opencode` → `run`.
+  `claude` → `-p`; `opencode` → `run`.
   An engine with neither refuses instead of guessing (set
   `[engines.<id>] task_argv = ["-p"]` in the aplexer config to teach it).
   Agy runs place permission flags and all engine/profile/caller options

@@ -1047,7 +1047,6 @@ fn non_agy_task_argv_order_is_preserved() {
             Some("--dangerously-bypass-approvals-and-sandbox"),
         ),
         ("claude", vec!["-p"], Some("--dangerously-skip-permissions")),
-        ("gemini", vec!["-p"], None),
         ("opencode", vec!["run"], Some("--auto")),
     ] {
         let (harness, engine_dir, cwd) =

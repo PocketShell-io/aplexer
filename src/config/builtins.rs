@@ -73,9 +73,7 @@ impl Config {
         // opencode's `permission` block in opencode.json is the primary
         // mechanism; this is the defense-in-depth second layer, and the two
         // must stay in sync (see `every_engine_with_a_skip_flag_declares_one`).
-        // gemini is an aplexer-only extra with no pocketshell source, so it
-        // stays empty.
-        let engines: [(&str, &[&str], &[&str]); 7] = [
+        let engines: [(&str, &[&str], &[&str]); 6] = [
             ("shell", shell_refs.as_slice(), &[]),
             (
                 "codex",
@@ -83,7 +81,6 @@ impl Config {
                 &["--dangerously-bypass-approvals-and-sandbox"],
             ),
             ("claude", &["claude"], &["--dangerously-skip-permissions"]),
-            ("gemini", &["gemini"], &[]),
             ("antigravity", &["agy"], &["--dangerously-skip-permissions"]),
             ("grok", &["grok"], &["--always-approve"]),
             ("opencode", &["opencode"], &["--auto"]),

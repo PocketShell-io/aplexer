@@ -693,17 +693,20 @@ fn doctor_fix_pins_a_builtin_engine_into_a_fresh_config_file() {
         .unwrap()
         .clone();
     assert_eq!(row["verdict"], "needs_pin", "{row}");
-    // An engine found under neither PATH is a legitimate state, not a flag:
-    // `gemini` has no fake and the controlled PATH has no real one.
-    let gemini = check["executables"]
-        .as_array()
-        .unwrap()
+    // Gemini Code Assist is no longer a built-in engine; Antigravity is the
+    // Google-family engine and is reported under its canonical name.
+    let executables = check["executables"].as_array().unwrap();
+    assert!(
+        executables.iter().all(|row| row["name"] != "gemini"),
+        "the retired Gemini CLI must not be advertised: {executables:?}"
+    );
+    let antigravity = executables
         .iter()
-        .find(|row| row["name"] == "gemini")
+        .find(|row| row["name"] == "antigravity")
         .unwrap()
         .clone();
-    assert_eq!(gemini["verdict"], "not_installed", "{gemini}");
-    assert_eq!(gemini["fixable"], false);
+    assert_eq!(antigravity["verdict"], "not_installed", "{antigravity}");
+    assert_eq!(antigravity["fixable"], false);
 
     let fixed = doctor_command(&paths, &path_value)
         .args(["--json", "doctor", "--fix"])
