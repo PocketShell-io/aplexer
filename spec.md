@@ -563,7 +563,7 @@ TOML is preferred unless migration from existing PocketShell config makes YAML m
 Launch must not depend on the invoking shell's PATH (issue #19). A session
 started by the app over non-interactive SSH never sources the version
 managers an interactive `~/.bashrc` loads, so a bare `codex`/`claude`/
-`gemini`/`opencode` in an engine command resolves in the user's terminal
+`opencode` in an engine command resolves in the user's terminal
 and fails from the app. The contract, in three parts:
 
 1. **Probe.** `a doctor`'s `engine_resolution` check resolves every

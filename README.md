@@ -6,7 +6,7 @@
 
 **Durable PTY sessions for coding agents - no daemon required.**
 
-Run `claude`, `codex`, `agy` (Antigravity), `gemini`, a plain shell, or any command. Sessions
+Run `claude`, `codex`, `agy` (Antigravity), a plain shell, or any command. Sessions
 keep running when you detach, survive a dropped connection, and stay
 addressable by *project* and *name* from any terminal.
 
@@ -315,8 +315,11 @@ a ack myrepo:review  # clear one (works after the record is pruned)
 ## Engines, profiles & configuration
 
 An **engine** is a command template: a coding agent like `claude`, `codex`,
-`gemini`, `antigravity`, `grok`, or `opencode`, or the plain `shell`. aplexer discovers
-agents on your `PATH` automatically - run `a engines` to see what it found.
+`antigravity`, `grok`, or `opencode`, or the plain `shell`. The legacy
+`--engine gemini` name aliases Antigravity (`agy`), is not listed separately
+by `a engines`, and never launches the retired Gemini Code Assist CLI. aplexer
+discovers agents on your `PATH` automatically - run `a engines` to see what it
+found.
 A **profile** is a named variant of an engine (another account, another
 config), listed with `a profiles`.
 
@@ -579,10 +582,12 @@ a work leave .                                     # idle does not release; leav
 scripts/package-coordination.py --engine all --dest /tmp/aplexer-coordination-bundles
 ```
 
-Six engines are supported: `codex`, `claude`, `grok` (Claude-compatible),
-`antigravity`, `gemini`, and `opencode`. The generator writes bundles to the
-destination you choose and never installs anything or edits user config;
-each bundle's `INSTALL.md` covers the manual steps. See
+The current launch engines are `codex`, `claude`, `grok` (Claude-compatible),
+`antigravity`, and `opencode`. The generator also retains a compatibility
+bundle for existing Gemini CLI hook installations; it is separate from the
+launch engine registry. The generator writes bundles to the destination you
+choose and never installs anything or edits user config; each bundle's
+`INSTALL.md` covers the manual steps. See
 [docs/coordination-packages.md](docs/coordination-packages.md) for layouts,
 verification, and the truthful per-engine limitations.
 
@@ -807,7 +812,7 @@ paths, cgroup-v2 delegation, config, and session records. When something
 fails, it suggests the fix (most commonly `a prune` for stale records).
 
 **"command is not executable or was not found in PATH" from the app, but it
-works in your terminal?** Your agent CLI (codex, claude, gemini, opencode)
+works in your terminal?** Your agent CLI (codex, claude, opencode)
 resolves through a version manager (nvm and friends) that only interactive
 shells load - the app drives `a start` over non-interactive SSH, which does
 not. `a doctor` flags every engine that only your shell's PATH can resolve,

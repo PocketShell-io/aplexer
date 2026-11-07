@@ -56,6 +56,57 @@ fn every_prompting_builtin_engine_declares_a_skip_permissions_flag() {
 }
 
 #[test]
+fn retired_gemini_engine_config_and_calls_resolve_to_antigravity() {
+    let config = load_config_text(
+        r#"
+        default_engine = "gemini"
+
+        [engines.gemini]
+        command = ["/opt/old-gemini/bin/gemini"]
+
+        [engines.antigravity]
+        command = ["/opt/antigravity/bin/agy"]
+        skip_permissions_argv = ["--dangerously-skip-permissions"]
+
+        [profiles.legacy-google]
+        engine = "gemini"
+        "#,
+    )
+    .unwrap();
+
+    assert!(!config.engines.contains_key("gemini"));
+    assert_eq!(config.default_engine.as_deref(), Some("antigravity"));
+    assert_eq!(
+        config.profiles["legacy-google"].engine.as_deref(),
+        Some("antigravity")
+    );
+
+    let resolve = |engine| {
+        config
+            .resolve(
+                Vec::new(),
+                engine,
+                None,
+                Path::new("/tmp"),
+                None,
+                &BTreeMap::new(),
+                &Limits::default(),
+                None,
+            )
+            .unwrap()
+    };
+    for requested_engine in [Some("gemini"), Some("antigravity"), None] {
+        let launch = resolve(requested_engine);
+        assert_eq!(launch.engine, "antigravity");
+        assert_eq!(launch.command, vec!["/opt/antigravity/bin/agy".to_string()]);
+        assert_eq!(
+            launch.skip_permissions_argv,
+            vec!["--dangerously-skip-permissions".to_string()]
+        );
+    }
+}
+
+#[test]
 fn zcodex_is_not_a_builtin_but_still_a_codex_family_variant() {
     // The codex-rs fork is one box's setup, not a shared default: no
     // built-in engine ships for it...

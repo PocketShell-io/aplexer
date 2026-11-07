@@ -135,7 +135,7 @@ That is no longer remotely true. Verified against the built binary and source:
   workload with `/proc/<pid>/environ` identity verification; **removes** finished sessions'
   state), `a rename`, `a doctor`.
 - `a engines` / `a profiles` (`--json`). Built-in engines: **`shell` (default), `claude`,
-  `codex`, `gemini`, `grok`, `opencode`**. `a engines --json` reports the command,
+  `codex`, `antigravity`, `grok`, `opencode`**. `a engines --json` reports the command,
   availability, and the effective forced `env_unset` set/count. Profile auto-discovery is a real
   port of PocketShell's
   `profiles.py` (claude/codex only, `~/.<name>` sibling dirs, marker files + name hints,
@@ -202,7 +202,7 @@ The original Phase 0 list, item by item:
 
 | Original blocker | Status on 2026-08-30 |
 | --- | --- |
-| `a engines --json` | **Resolved at the aplexer layer.** It lists `shell`, `codex`, `claude`, `gemini`, `grok`, and `opencode`, including availability plus effective `env_unset` names/counts. PocketShell's richer `EngineManifest` still carries presentation and policy fields (`family`, `label`, `provider_mark`, `usage_provider`, `enabled`). The recommended integration remains a thin PocketShell overlay rather than moving UI metadata into aplexer; that ownership boundary is a product decision, not a missing runtime capability. |
+| `a engines --json` | **Resolved at the aplexer layer.** It lists `shell`, `codex`, `claude`, `antigravity`, `grok`, and `opencode`, including availability plus effective `env_unset` names/counts. The legacy `gemini` engine name resolves to Antigravity. PocketShell's richer `EngineManifest` still carries presentation and policy fields (`family`, `label`, `provider_mark`, `usage_provider`, `enabled`). The recommended integration remains a thin PocketShell overlay rather than moving UI metadata into aplexer; that ownership boundary is a product decision, not a missing runtime capability. |
 | Provider-key `env_unset` forced union | **Resolved.** Agent `EngineConfig.env_unset` is merged with aplexer's provider-key list during `Config::resolve`, so custom agent config may add removals but cannot opt out of the safeguard. The literal `shell` engine is intentionally exempt and uses only its configured removals. |
 | `a profiles --json` | **Materially resolved.** Discovery is ported from `profiles.py` (same markers, hints, conservatism). Shape differences to adapt in the Python shim remain: aplexer's namespace is flat and keyed by directory stem (`"zlaude"`, `"godex"`) rather than per-engine `Profile.name`, and there is no `default` flag. Public profile/session JSON now filters environment metadata to recognized config-directory variables rather than exposing arbitrary launch environment. |
 | Launch-resolution command (`a launch-spec --json` / `a launch-exec`) | **Resolved.** Both hidden integration commands use `Config::resolve`, return/apply `env_set` and `env_unset`, select `skip_permissions_argv` by default, and accept `--no-skip-permissions`. The in-process Python client exposes the same resolver as `launch_spec()`. |
@@ -382,7 +382,7 @@ host". The SSH question does not arise: the host CLI and aplexer are co-located 
 Status note (2026-08-30 refresh): `a watch --jsonl` is implemented using Option 1 below, and
 `a transcript` emits conversation events in the same envelope for supported native logs. This
 part now documents the shipped mapping plus its remaining limitations. Aplexer session ids are
-UUIDv4; the built-in engine set is `shell/claude/codex/gemini/grok/opencode`. Watch `sequence`
+UUIDv4; the built-in engine set is `shell/claude/codex/antigravity/grok/opencode`. Watch `sequence`
 and `metadata.generation` counters are local to each invocation, not durable snapshot cursors.
 
 ### 2.1 What heru's format actually is (found, not inferred)
@@ -452,7 +452,7 @@ Two ways to fit lifecycle events into the closed `kind` literal:
   `metadata.generation` value is likewise a per-stream polling-cycle counter. Neither survives
   reconnect, so clients must establish a fresh `a snapshot --json` baseline before consuming a
   new stream; adding a durable/global cursor is a separate product and protocol decision.
-- `engine`: the session's aplexer engine id (`claude`, `codex`, `gemini`, `grok`, `opencode`,
+- `engine`: the session's aplexer engine id (`claude`, `codex`, `antigravity`, `grok`, `opencode`,
   or `shell`). It is a plain `str` in the model (not a literal), so aplexer ids that heru
   doesn't ship adapters for (`grok`) are wire-legal. With `a watch --all`, shell sessions use
   the shipped `"shell"` value rather than a synthetic emitting-component name.
@@ -504,7 +504,7 @@ Example lines:
   SSH channel for PocketShell). Envelope reuse only; run-lifecycle assumptions (e.g. heru's
   final `continuation` event) do not transfer.
 - **Engine vocabularies** overlap but differ: heru ships `codex, claude, copilot, gemini,
-  opencode, goz`; aplexer ships `shell, claude, codex, gemini, grok, opencode`. Wire-legal
+  opencode, goz`; aplexer ships `shell, claude, codex, antigravity, grok, opencode`. Wire-legal
   (plain `str`), but documentation/tooling that hard-codes heru's list will not know `grok` or
   the shell lifecycle source.
 - `role`, `tool_*`, `usage_delta` are meaningless for lifecycle events and are simply omitted

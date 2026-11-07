@@ -190,19 +190,34 @@ impl Config {
             .with_context(|| format!("parse {}", paths.config_file.display()))?;
         let user: Config = toml::from_str(&text)
             .with_context(|| format!("parse {}", paths.config_file.display()))?;
-        if user.default_engine.is_some() {
-            self.default_engine = user.default_engine;
+        if let Some(default_engine) = user.default_engine {
+            self.default_engine = Some(if default_engine == "gemini" {
+                "antigravity".into()
+            } else {
+                default_engine
+            });
         }
         if user.default_profile.is_some() {
             self.default_profile = user.default_profile;
         }
         let user_defined_shell = user.engines.contains_key("shell");
-        self.engines.extend(user.engines);
+        let mut user_engines = user.engines;
+        // Gemini Code Assist CLI is retired. Older config files may still
+        // pin it as an engine; discard that override so the compatibility
+        // name can only resolve to the Antigravity engine.
+        user_engines.remove("gemini");
+        self.engines.extend(user_engines);
         // `self.profiles` holds only auto-discovered entries here; filter
         // them before the user's explicit profiles are laid over.
         self.profiles.retain(|id, _| user.discovery.allows(id));
         self.discovery = user.discovery;
-        self.profiles.extend(user.profiles);
+        let mut user_profiles = user.profiles;
+        for profile in user_profiles.values_mut() {
+            if profile.engine.as_deref() == Some("gemini") {
+                profile.engine = Some("antigravity".into());
+            }
+        }
+        self.profiles.extend(user_profiles);
         self.shell = user.shell;
         self.powershell_execution_policy = user.powershell_execution_policy;
         // A bool has no "unset" value to test the way the options above
@@ -401,12 +416,18 @@ pub(crate) struct DeprecatedShortcutEngine {
     pub model_args: &'static [&'static str],
 }
 
-/// Retired model-shortcut and account-shortcut engines (`argon`, `flash`,
-/// `opus`, `sonnet`, `astra`, `sol`, `luna`, `codex-orin`) map onto their
-/// canonical `(engine, profile, model_args)` when no explicit `[engines.<id>]`
-/// override is present.
+/// Retired engine aliases and model/account shortcuts map onto their
+/// canonical `(engine, profile, model_args)` when no explicit
+/// `[engines.<id>]` override is present. `gemini` is always removed from the
+/// loaded engine map so old callers reach Antigravity rather than the
+/// deprecated Gemini Code Assist CLI.
 pub(crate) fn deprecated_shortcut_engine(name: &str) -> Option<DeprecatedShortcutEngine> {
     match name {
+        "gemini" => Some(DeprecatedShortcutEngine {
+            canonical_engine: "antigravity",
+            default_profile: None,
+            model_args: &[],
+        }),
         "argon" => Some(DeprecatedShortcutEngine {
             canonical_engine: "antigravity",
             default_profile: None,
