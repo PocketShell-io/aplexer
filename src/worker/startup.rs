@@ -592,6 +592,8 @@ pub(super) fn bring_up(
             }),
             cgroup: Mutex::new(cgroup),
             kill_gate: Mutex::new(()),
+            input_gate: Mutex::new(()),
+            input_safety: Mutex::new(InputSafety::default()),
             output,
             record_persistence_error: Mutex::new(None),
             active_connections: Arc::new(AtomicUsize::new(0)),

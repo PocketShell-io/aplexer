@@ -15,6 +15,30 @@ pub const PROTOCOL_VERSION: u16 = 1;
 
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
+/// Canonical request binding shared by strict clients and workers. Receipts
+/// retain the digest, never the submitted text.
+pub fn strict_submission_digest(
+    session_id: Uuid,
+    operation_id: Uuid,
+    tag: &str,
+    workspace: &std::path::Path,
+    created_at_ms: u64,
+    text: &str,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&(
+            session_id,
+            operation_id,
+            tag,
+            workspace,
+            created_at_ms,
+            text
+        ))?)
+    ))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FrameKind {
@@ -114,6 +138,15 @@ pub enum Operation {
     Status,
     Send {
         bytes: usize,
+    },
+    /// Fail-closed, identity-bound, idempotent agent submission. Old workers
+    /// reject this operation; clients must never fall back to Send.
+    SubmitStrict {
+        operation_id: Uuid,
+        expected_tag: String,
+        expected_workspace: PathBuf,
+        expected_created_at_ms: u64,
+        text: String,
     },
     Capture {
         max_bytes: Option<usize>,

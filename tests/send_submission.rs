@@ -8,15 +8,40 @@ use aplexer::{atomic_write_json, Phase};
 use std::io::Write;
 use std::process::Stdio;
 
+// Only IPC runtime is outside long repo-local TMPDIR. Preserve canonical
+// socket validation; the private TempDir cleans up on success or panic.
+#[cfg(target_os = "linux")]
+fn short_ipc_runtime(record: &mut aplexer::SessionRecord) -> tempfile::TempDir {
+    let root = std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }));
+    let runtime = tempfile::Builder::new()
+        .prefix("send-test-")
+        .tempdir_in(if root.is_dir() {
+            root
+        } else {
+            std::env::temp_dir()
+        })
+        .unwrap();
+    record.socket_path = runtime
+        .path()
+        .join("sessions")
+        .join(record.id.to_string())
+        .join("control.sock");
+    runtime
+}
+
 fn send(engine: &str, flags: &[&str], data: &[u8]) -> (std::process::Output, Vec<Vec<u8>>) {
     let h = support::Harness::new();
     let mut record = h.record(Phase::Running, Some(std::process::id()), b"");
     record.engine = engine.into();
+    #[cfg(target_os = "linux")]
+    let ipc_runtime = short_ipc_runtime(&mut record);
     // A settled session: an unrecognized screen gets the short readiness grace.
     record.created_at_ms = 1;
     atomic_write_json(&h.paths().record(record.id), &record).unwrap();
     let server = worker::Worker::start(&record, false);
     let mut command = h.command();
+    #[cfg(target_os = "linux")]
+    command.env("APLEXER_RUNTIME_DIR", ipc_runtime.path());
     command.args(["--json", "send", &record.id.to_string(), "--stdin"]);
     command
         .args(flags)
@@ -103,11 +128,15 @@ fn positional_text_and_piped_text_use_the_same_codex_submission() {
     let h = support::Harness::new();
     let mut record = h.record(Phase::Running, Some(std::process::id()), b"");
     record.engine = "codex".into();
+    #[cfg(target_os = "linux")]
+    let ipc_runtime = short_ipc_runtime(&mut record);
     record.created_at_ms = 1;
     atomic_write_json(&h.paths().record(record.id), &record).unwrap();
     let server = worker::Worker::start(&record, false);
-    let output = h
-        .command()
+    let mut command = h.command();
+    #[cfg(target_os = "linux")]
+    command.env("APLEXER_RUNTIME_DIR", ipc_runtime.path());
+    let output = command
         .args(["send", &record.id.to_string(), text, "--enter"])
         .output()
         .unwrap();

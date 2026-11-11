@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod hub;
+mod strict_send;
 use hub::*;
 mod termination;
 use termination::*;

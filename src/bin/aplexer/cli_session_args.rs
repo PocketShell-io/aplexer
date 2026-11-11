@@ -252,6 +252,15 @@ pub(crate) struct SendArgs {
     /// 1 failed. `--json` prints the full verdict under `delivery`.
     #[arg(long)]
     pub(crate) enter: bool,
+    /// Identity-bound fail-closed submission; never falls back to legacy Send.
+    #[arg(long, requires_all = ["enter", "expect_tag", "expect_workspace", "idempotency_key"], conflicts_with_all = ["raw", "hex", "no_ack", "wait_ack", "ready_timeout", "resends"])]
+    pub(crate) strict: bool,
+    #[arg(long, requires = "strict")]
+    pub(crate) expect_tag: Option<String>,
+    #[arg(long, requires = "strict")]
+    pub(crate) expect_workspace: Option<PathBuf>,
+    #[arg(long, requires = "strict")]
+    pub(crate) idempotency_key: Option<Uuid>,
     /// With --enter: seconds to wait for the agent to start working after
     /// submission (busy indicator, harness `working` report, or transcript
     /// activity). 0 skips the working check

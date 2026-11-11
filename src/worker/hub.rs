@@ -45,6 +45,7 @@ pub(super) struct HubInner {
     pub(super) settled_plain: String,
     pub(super) settled_composer_empty_or_ghost: bool,
     pub(super) sync_bytes: usize,
+    pub(super) render_generation: u64,
     pub(super) subscribers: HashMap<u64, SubscriberSender>,
     pub(super) next_id: u64,
     pub(super) terminal: Option<OutputEvent>,
@@ -111,6 +112,7 @@ impl OutputHub {
                 settled_plain: String::new(),
                 settled_composer_empty_or_ghost: false,
                 sync_bytes: 0,
+                render_generation: 0,
                 subscribers: HashMap::new(),
                 next_id: 1,
                 terminal: None,
@@ -150,6 +152,9 @@ impl OutputHub {
             record_history_persistence_error(&mut inner, error);
         }
         let layout = inner.screen.process(data);
+        if !data.is_empty() {
+            inner.render_generation = inner.render_generation.saturating_add(1);
+        }
         // Ordering matters and is automatic: both sends go through the same
         // per-subscriber queue under the same lock hold, so a Layout event
         // always arrives after the Data frame that caused it (design doc
@@ -270,6 +275,20 @@ impl OutputHub {
     }
     /// Plain text of the current screen (design doc section 8), for
     /// `Operation::CaptureScreen { plain: true }`.
+    /// Plain/styled readiness must describe the same rendered screen.
+    pub(super) fn strict_input_snapshot(&self) -> Result<(String, Vec<u8>, u64)> {
+        let inner = lock(&self.inner)?;
+        Ok((
+            inner.screen.contents(),
+            inner.screen.snapshot(),
+            inner.render_generation,
+        ))
+    }
+
+    pub(super) fn strict_render_generation(&self) -> Result<u64> {
+        Ok(lock(&self.inner)?.render_generation)
+    }
+
     pub(super) fn screen_contents(&self) -> Result<String> {
         let data = lock(&self.inner)?.screen.contents();
         ensure_frame_payload_size("plain screen capture", data.len())?;
