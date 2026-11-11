@@ -1,5 +1,25 @@
 //! Fail-closed submission. A durable uncertain fence precedes every input byte.
+use super::runtime::StrictDeadline;
 use super::*;
+
+#[cfg(test)]
+thread_local! {
+    // Per-test-thread delays model slow durable IO/readiness without any
+    // production fault-injection switch or cross-session interference.
+    static STAGE_DELAY: std::cell::Cell<Option<(&'static str, Duration)>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn delay_stage(stage: &str) {
+    STAGE_DELAY.with(|delay| {
+        if let Some((name, duration)) = delay.get() {
+            if name == stage {
+                delay.set(None);
+                thread::sleep(duration);
+            }
+        }
+    });
+}
 
 impl WorkerRuntime {
     #[cfg_attr(not(target_os = "linux"), allow(unreachable_code))]
@@ -9,6 +29,7 @@ impl WorkerRuntime {
         expected_tag: &str,
         expected_workspace: &Path,
         expected_created_at_ms: u64,
+        deadline_ms: u64,
         text: &str,
     ) -> Result<serde_json::Value> {
         let digest = crate::strict_submission_digest(
@@ -17,10 +38,11 @@ impl WorkerRuntime {
             expected_tag,
             expected_workspace,
             expected_created_at_ms,
+            deadline_ms,
             text,
         )?;
         let base = json!({"version":1,"session_id":self.id,"operation_id":operation_id,
-            "request_sha256":digest,"status":"refused","mutation":false,
+            "request_sha256":digest,"deadline_ms":deadline_ms,"status":"refused","mutation":false,
             "reason":"preflight_refused","landed":false,"submitted":false,"consumed":null});
         let outcome = |status: &str, reason: &str, mutation: serde_json::Value| {
             let mut value = base.clone();
@@ -61,6 +83,7 @@ impl WorkerRuntime {
                     || prior["session_id"] != self.id.to_string()
                     || prior["operation_id"] != operation_id.to_string()
                     || prior["request_sha256"] != digest
+                    || prior["deadline_ms"] != deadline_ms
                     || !matches!(
                         prior["status"].as_str(),
                         Some("uncertain" | "submitted_verified")
@@ -107,6 +130,9 @@ impl WorkerRuntime {
                 ))
             }
         }
+        let Some(deadline) = StrictDeadline::new(deadline_ms) else {
+            return Ok(outcome("refused", "deadline_expired", json!(false)));
+        };
         let record = self.record()?;
         if record.id != self.id
             || record.tag != expected_tag
@@ -124,6 +150,9 @@ impl WorkerRuntime {
         }
         if !lock(&self.terminal)?.clients.is_empty() {
             return Ok(outcome("refused", "input_client_attached", json!(false)));
+        }
+        if deadline.expired() {
+            return Ok(outcome("refused", "deadline_expired", json!(false)));
         }
         let (before, styled, generation) = self.output.strict_input_snapshot()?;
         if !self.input_is_settled_at(generation)? {
@@ -161,9 +190,14 @@ impl WorkerRuntime {
                 json!(false),
             ));
         }
+        if deadline.expired() {
+            return Ok(outcome("refused", "deadline_expired", json!(false)));
+        }
         let mut receipt = outcome("uncertain", "dispatch_fenced", json!(true));
         let persisted = (|| -> Result<()> {
             crate::atomic_write_json(&receipt_path, &receipt)?;
+            #[cfg(test)]
+            delay_stage("fsync");
             // atomic_write_json syncs the file and its record directory. Also
             // fence that existing directory's entry and the sessions entry,
             // without relying on a first-use mkdir becoming durable by luck.
@@ -179,6 +213,11 @@ impl WorkerRuntime {
             ));
         }
         // Persistence can take time: recheck current readiness before mutation.
+        if deadline.expired() {
+            receipt["reason"] = json!("deadline_expired");
+            let _ = crate::atomic_write_json(&receipt_path, &receipt);
+            return Ok(receipt);
+        }
         let (plain, styled, generation) = self.output.strict_input_snapshot()?;
         if !self.input_is_settled_at(generation)?
             || !crate::delivery_ack::screen_from_snapshot(&styled)
@@ -197,23 +236,49 @@ impl WorkerRuntime {
         }
         // One framed paste, at most one Enter, no resend or fallback. No
         // record/screen mutex is held across potentially blocking PTY writes.
-        let paste = format!("\x1b[200~{text}\x1b[201~");
-        if self.send_under_input_lease(paste.as_bytes()).is_err() {
-            receipt["reason"] = json!("paste_uncertain");
+        #[cfg(test)]
+        delay_stage("paste");
+        if deadline.expired() {
+            receipt["reason"] = json!("deadline_expired");
             let _ = crate::atomic_write_json(&receipt_path, &receipt);
             return Ok(receipt);
         }
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
+        let paste = format!("\x1b[200~{text}\x1b[201~");
+        if self
+            .send_under_input_lease_before(paste.as_bytes(), Some(deadline))
+            .is_err()
+        {
+            receipt["reason"] = json!(if deadline.expired() {
+                "deadline_expired"
+            } else {
+                "paste_uncertain"
+            });
+            let _ = crate::atomic_write_json(&receipt_path, &receipt);
+            return Ok(receipt);
+        }
+        let landing_until = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < landing_until && !deadline.expired() {
             let (plain, _, _) = self.output.strict_input_snapshot()?;
+            if deadline.expired() {
+                break;
+            }
             if crate::delivery_ack::strict_payload_landed(family, &plain, text) {
                 receipt["landed"] = json!(true);
                 break;
             }
-            thread::sleep(Duration::from_millis(25));
+            thread::sleep(Duration::from_millis(25).min(deadline.remaining()));
         }
         if receipt["landed"] != true {
-            receipt["reason"] = json!("landing_uncertain");
+            receipt["reason"] = json!(if deadline.expired() {
+                "deadline_expired"
+            } else {
+                "landing_uncertain"
+            });
+            let _ = crate::atomic_write_json(&receipt_path, &receipt);
+            return Ok(receipt);
+        }
+        if deadline.expired() {
+            receipt["reason"] = json!("deadline_expired");
             let _ = crate::atomic_write_json(&receipt_path, &receipt);
             return Ok(receipt);
         }
@@ -223,14 +288,31 @@ impl WorkerRuntime {
             let _ = crate::atomic_write_json(&receipt_path, &receipt);
             return Ok(receipt);
         }
-        if self.send_under_input_lease(b"\r").is_err() {
-            receipt["reason"] = json!("enter_uncertain");
+        #[cfg(test)]
+        delay_stage("enter");
+        if deadline.expired() {
+            receipt["reason"] = json!("deadline_expired");
             let _ = crate::atomic_write_json(&receipt_path, &receipt);
             return Ok(receipt);
         }
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
+        if self
+            .send_under_input_lease_before(b"\r", Some(deadline))
+            .is_err()
+        {
+            receipt["reason"] = json!(if deadline.expired() {
+                "deadline_expired"
+            } else {
+                "enter_uncertain"
+            });
+            let _ = crate::atomic_write_json(&receipt_path, &receipt);
+            return Ok(receipt);
+        }
+        let submission_until = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < submission_until && !deadline.expired() {
             let (plain, styled, _generation) = self.output.strict_input_snapshot()?;
+            if deadline.expired() {
+                break;
+            }
             if crate::delivery_ack::strict_submission_confirmed(
                 family,
                 &before,
@@ -250,9 +332,13 @@ impl WorkerRuntime {
                 }
                 return Ok(receipt);
             }
-            thread::sleep(Duration::from_millis(25));
+            thread::sleep(Duration::from_millis(25).min(deadline.remaining()));
         }
-        receipt["reason"] = json!("submission_uncertain");
+        receipt["reason"] = json!(if deadline.expired() {
+            "deadline_expired"
+        } else {
+            "submission_uncertain"
+        });
         let _ = crate::atomic_write_json(&receipt_path, &receipt);
         Ok(receipt)
     }
@@ -313,6 +399,7 @@ mod tests {
             let mut record = runtime.record.lock().unwrap();
             record.engine = "codex".into();
             record.phase = Phase::Running;
+            record.created_at_ms = crate::now_ms();
         }
         let writes = dir.path().join("input");
         *runtime.pty_write.lock().unwrap() = Some(Arc::new(
@@ -334,9 +421,90 @@ mod tests {
                 &record.tag,
                 &record.workspace,
                 record.created_at_ms,
+                record.created_at_ms + 60_000,
                 text,
             )
             .unwrap()
+    }
+
+    fn submit_before(runtime: &WorkerRuntime, id: Uuid, deadline_ms: u64) -> serde_json::Value {
+        let record = runtime.record().unwrap();
+        runtime
+            .submit_strict(
+                id,
+                &record.tag,
+                &record.workspace,
+                record.created_at_ms,
+                deadline_ms,
+                PAYLOAD,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn strict_expired_request_refuses_before_any_fence_or_input() {
+        let (_dir, runtime, writes) = fixture();
+        let operation = Uuid::new_v4();
+        let receipt = submit_before(&runtime, operation, crate::now_ms());
+        assert_eq!(receipt["status"], "refused");
+        assert_eq!(receipt["reason"], "deadline_expired");
+        assert_eq!(receipt["mutation"], false);
+        assert_eq!(fs::metadata(writes).unwrap().len(), 0);
+        assert!(!runtime
+            .paths
+            .state_session(runtime.id)
+            .join(format!("strict-send-{operation}.json"))
+            .exists());
+    }
+
+    #[test]
+    fn strict_slow_durable_fence_and_pre_paste_delay_cannot_write_after_deadline() {
+        for stage in ["fsync", "paste"] {
+            let (_dir, runtime, writes) = fixture();
+            let operation = Uuid::new_v4();
+            let deadline = crate::now_ms() + 100;
+            STAGE_DELAY.with(|delay| delay.set(Some((stage, Duration::from_millis(150)))));
+            let receipt = submit_before(&runtime, operation, deadline);
+            assert_eq!(receipt["status"], "uncertain", "{stage}: {receipt}");
+            assert_eq!(receipt["reason"], "deadline_expired");
+            assert_eq!(receipt["deadline_ms"], deadline);
+            assert_eq!(fs::metadata(&writes).unwrap().len(), 0);
+            // The durable uncertain fence stays binding even after expiry.
+            assert_eq!(
+                submit_before(&runtime, operation, deadline)["replayed"],
+                true
+            );
+            assert_eq!(
+                submit_before(&runtime, operation, deadline + 1)["reason"],
+                "operation_conflict"
+            );
+            assert_eq!(fs::metadata(writes).unwrap().len(), 0);
+        }
+    }
+
+    #[test]
+    fn strict_deadline_after_landing_prevents_enter() {
+        let (_dir, runtime, writes) = fixture();
+        let worker = runtime.clone();
+        let input = writes.clone();
+        let paint = thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < until && fs::metadata(&input).unwrap().len() == 0 {
+                thread::sleep(Duration::from_millis(1));
+            }
+            screen(&worker, "pending-short");
+        });
+        let deadline = crate::now_ms() + 300;
+        STAGE_DELAY.with(|delay| delay.set(Some(("enter", Duration::from_millis(350)))));
+        let receipt = submit_before(&runtime, Uuid::new_v4(), deadline);
+        paint.join().unwrap();
+        assert_eq!(receipt["reason"], "deadline_expired");
+        assert_eq!(receipt["landed"], true);
+        assert_eq!(receipt["submitted"], false);
+        assert_eq!(
+            fs::read(writes).unwrap(),
+            format!("\x1b[200~{PAYLOAD}\x1b[201~").as_bytes()
+        );
     }
     #[test]
     fn strict_refusals_write_zero_bytes_for_identity_unknown_busy_and_drafts() {
@@ -349,6 +517,7 @@ mod tests {
                     "wrong",
                     &r.workspace,
                     r.created_at_ms,
+                    r.created_at_ms + 60_000,
                     PAYLOAD
                 )
                 .unwrap()["reason"],
@@ -361,6 +530,7 @@ mod tests {
                     &r.tag,
                     Path::new("/different"),
                     r.created_at_ms,
+                    r.created_at_ms + 60_000,
                     PAYLOAD
                 )
                 .unwrap()["status"],

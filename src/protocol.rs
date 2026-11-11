@@ -23,6 +23,7 @@ pub fn strict_submission_digest(
     tag: &str,
     workspace: &std::path::Path,
     created_at_ms: u64,
+    deadline_ms: u64,
     text: &str,
 ) -> Result<String> {
     use sha2::{Digest, Sha256};
@@ -34,6 +35,7 @@ pub fn strict_submission_digest(
             tag,
             workspace,
             created_at_ms,
+            deadline_ms,
             text
         ))?)
     ))
@@ -141,11 +143,13 @@ pub enum Operation {
     },
     /// Fail-closed, identity-bound, idempotent agent submission. Old workers
     /// reject this operation; clients must never fall back to Send.
+    #[serde(rename = "submit_strict_deadline")]
     SubmitStrict {
         operation_id: Uuid,
         expected_tag: String,
         expected_workspace: PathBuf,
         expected_created_at_ms: u64,
+        deadline_ms: u64,
         text: String,
     },
     Capture {

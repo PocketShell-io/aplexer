@@ -9,14 +9,54 @@
 
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(super) struct StrictDeadline {
+    absolute_ms: u64,
+    instant: Instant,
+}
+
+impl StrictDeadline {
+    pub(super) fn new(absolute_ms: u64) -> Option<Self> {
+        let remaining = absolute_ms.checked_sub(crate::now_ms())?;
+        if remaining == 0 {
+            return None;
+        }
+        Some(Self {
+            absolute_ms,
+            instant: Instant::now().checked_add(Duration::from_millis(remaining))?,
+        })
+    }
+
+    pub(super) fn remaining(self) -> Duration {
+        self.instant
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(
+                self.absolute_ms.saturating_sub(crate::now_ms()),
+            ))
+    }
+
+    pub(super) fn expired(self) -> bool {
+        self.remaining().is_zero()
+    }
+}
+
 /// A nonblocking PTY can accept a prefix then return EAGAIN. Keep the exact
 /// offset across retries: retrying `write_all(data)` would duplicate that prefix.
 /// Stay inside the control RPC's three-second deadline and never hold the
 /// runtime's PTY/record locks while a workload is slow to drain input.
-fn write_pty_input(mut writer: impl Write, mut data: &[u8], budget: Duration) -> io::Result<()> {
+fn write_pty_input(writer: impl Write, data: &[u8], budget: Duration) -> io::Result<()> {
+    write_pty_input_before(writer, data, budget, None)
+}
+
+fn write_pty_input_before(
+    mut writer: impl Write,
+    mut data: &[u8],
+    budget: Duration,
+    strict: Option<StrictDeadline>,
+) -> io::Result<()> {
     let deadline = Instant::now() + budget;
     while !data.is_empty() {
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline || strict.is_some_and(StrictDeadline::expired) {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "PTY input backpressure deadline exceeded; input may be partially written",
@@ -31,7 +71,9 @@ fn write_pty_input(mut writer: impl Write, mut data: &[u8], budget: Duration) ->
                     io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
                 ) =>
             {
-                thread::sleep(Duration::from_millis(5));
+                let delay = deadline.saturating_duration_since(Instant::now());
+                let delay = strict.map_or(delay, |strict| delay.min(strict.remaining()));
+                thread::sleep(Duration::from_millis(5).min(delay));
             }
             Err(error) => return Err(error),
         }
@@ -309,6 +351,14 @@ impl WorkerRuntime {
     }
 
     pub(super) fn send_under_input_lease(&self, data: &[u8]) -> Result<()> {
+        self.send_under_input_lease_before(data, None)
+    }
+
+    pub(super) fn send_under_input_lease_before(
+        &self,
+        data: &[u8],
+        deadline: Option<StrictDeadline>,
+    ) -> Result<()> {
         // All strict and ordinary mutations share this barrier. Set uncertainty
         // before the first possible byte, including on partial-write errors.
         lock(&self.input_safety)?.observe(data);
@@ -319,7 +369,12 @@ impl WorkerRuntime {
             let file = lock(&self.pty_write)?
                 .clone()
                 .ok_or_else(|| anyhow!("PTY is closed"))?;
-            write_pty_input(&*file, data, Duration::from_secs(2)).context("write PTY")?;
+            if let Some(deadline) = deadline {
+                write_pty_input_before(&*file, data, Duration::from_secs(2), Some(deadline))
+                    .context("write PTY")?;
+            } else {
+                write_pty_input(&*file, data, Duration::from_secs(2)).context("write PTY")?;
+            }
             (&*file).flush()?;
             Ok(())
         })();
@@ -1101,6 +1156,49 @@ mod windows_tests {
 
 #[cfg(test)]
 mod input_write_tests {
+    #[test]
+    fn strict_absolute_deadline_stops_partial_write_retries() {
+        struct SlowPrefix {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl std::io::Write for SlowPrefix {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(&data[..2]);
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                Ok(2)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = SlowPrefix {
+            calls: 0,
+            bytes: Vec::new(),
+        };
+        let strict = super::StrictDeadline::new(crate::now_ms() + 100).unwrap();
+        let error = super::write_pty_input_before(
+            &mut writer,
+            b"payload",
+            std::time::Duration::from_secs(2),
+            Some(strict),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(writer.calls, 1);
+        assert_eq!(writer.bytes, b"pa");
+        let error = super::write_pty_input_before(
+            &mut writer,
+            b"\r",
+            std::time::Duration::from_secs(2),
+            Some(strict),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(writer.calls, 1);
+    }
+
     #[test]
     fn pty_input_retries_only_the_unwritten_suffix_after_backpressure() {
         struct Backpressure {

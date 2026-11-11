@@ -14,6 +14,7 @@ fn exercise(reply: Option<&str>) -> (std::process::Output, Value) {
     let h = support::Harness::new();
     let mut record = h.record(Phase::Running, Some(std::process::id()), b"");
     record.engine = "codex".into();
+    record.created_at_ms = aplexer::now_ms();
     // Keep only the fixture IPC endpoint short on Linux; state and ordinary
     // test temps still use the caller's repo-local TMPDIR. Never weaken the
     // production canonical socket-path check to accommodate a long checkout.
@@ -93,6 +94,7 @@ fn exercise(reply: Option<&str>) -> (std::process::Output, Value) {
             expected_tag,
             expected_workspace,
             expected_created_at_ms,
+            deadline_ms,
             text,
         } = &request.operation
         else {
@@ -102,6 +104,7 @@ fn exercise(reply: Option<&str>) -> (std::process::Output, Value) {
         assert_eq!(expected_workspace, &worker_record.workspace);
         assert_eq!(*expected_created_at_ms, worker_record.created_at_ms);
         assert_eq!(text, "offline strict payload");
+        assert_eq!(*deadline_ms, worker_record.created_at_ms + 60_000);
         let evidence = json!({"operation_id":operation_id,"text_sha_only":true});
         if response.as_deref() == Some("unsupported") {
             write_json(
@@ -123,7 +126,17 @@ fn exercise(reply: Option<&str>) -> (std::process::Output, Value) {
             return evidence;
         }
         if let Some(status) = response {
-            write_json(&mut stream,&Response::ok(request.request_id,json!({"version":1,"session_id":worker_record.id,"status":status,"reason":"test_verdict","operation_id":operation_id,"consumed":null,"mutation":status!="refused","landed":status!="refused","submitted":status!="refused","request_sha256":aplexer::strict_submission_digest(worker_record.id,*operation_id,expected_tag,expected_workspace,*expected_created_at_ms,text).unwrap()}))).unwrap();
+            let receipt_deadline = if status == "wrong_deadline" {
+                deadline_ms + 1
+            } else {
+                *deadline_ms
+            };
+            let status = if status == "wrong_deadline" {
+                "submitted_verified"
+            } else {
+                &status
+            };
+            write_json(&mut stream,&Response::ok(request.request_id,json!({"version":1,"session_id":worker_record.id,"status":status,"reason":"test_verdict","operation_id":operation_id,"consumed":null,"mutation":status!="refused","landed":status!="refused","submitted":status!="refused","deadline_ms":receipt_deadline,"request_sha256":aplexer::strict_submission_digest(worker_record.id,*operation_id,expected_tag,expected_workspace,*expected_created_at_ms,*deadline_ms,text).unwrap()}))).unwrap();
         }
         // Otherwise close the connection after accepting the request: lost reply.
         evidence
@@ -155,6 +168,10 @@ fn exercise(reply: Option<&str>) -> (std::process::Output, Value) {
         ])
         .arg(&record.workspace)
         .args(["--idempotency-key", "11111111-1111-4111-8111-111111111111"])
+        .args([
+            "--deadline-ms",
+            &(record.created_at_ms + 60_000).to_string(),
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -183,6 +200,7 @@ fn strict_cli_uses_bound_operation_and_only_verified_submission_exits_zero() {
         let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(receipt["status"], status);
         assert!(receipt["consumed"].is_null());
+        assert!(receipt["deadline_ms"].as_u64().unwrap() > 0);
     }
 }
 #[test]
@@ -231,6 +249,7 @@ fn strict_cli_rejects_incomplete_verified_receipt_and_unsupported_worker() {
     for (reply, reason) in [
         ("malformed", "strict_receipt_unverified"),
         ("unsupported", "strict_transport_uncertain"),
+        ("wrong_deadline", "strict_receipt_unverified"),
     ] {
         let (output, _) = exercise(Some(reply));
         assert!(!output.status.success());
@@ -238,4 +257,86 @@ fn strict_cli_rejects_incomplete_verified_receipt_and_unsupported_worker() {
         assert_eq!(receipt["status"], "uncertain");
         assert_eq!(receipt["reason"], reason);
     }
+}
+
+#[test]
+fn strict_cli_requires_deadline_and_old_worker_cannot_decode_new_operation() {
+    let h = support::Harness::new();
+    let missing = h
+        .command()
+        .args([
+            "send",
+            "11111111-1111-4111-8111-111111111111",
+            "--strict",
+            "--enter",
+            "--expect-tag",
+            "tag",
+            "--expect-workspace",
+            "/offline",
+            "--idempotency-key",
+            "22222222-2222-4222-8222-222222222222",
+            "text",
+        ])
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("--deadline-ms"));
+
+    // The previous worker accepted unknown fields in submit_strict. A new
+    // field alone therefore cannot protect against that worker writing input.
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "op", rename_all = "snake_case")]
+    enum OldOperation {
+        SubmitStrict {
+            operation_id: uuid::Uuid,
+            expected_tag: String,
+            expected_workspace: std::path::PathBuf,
+            expected_created_at_ms: u64,
+            text: String,
+        },
+    }
+    let operation = Operation::SubmitStrict {
+        operation_id: uuid::Uuid::new_v4(),
+        expected_tag: "tag".into(),
+        expected_workspace: "/offline".into(),
+        expected_created_at_ms: 1,
+        deadline_ms: 2,
+        text: "payload".into(),
+    };
+    let wire = serde_json::to_value(&operation).unwrap();
+    assert_eq!(wire["op"], "submit_strict_deadline");
+    assert!(serde_json::from_value::<OldOperation>(wire.clone()).is_err());
+    let mut old = wire;
+    old["op"] = json!("submit_strict");
+    let OldOperation::SubmitStrict {
+        operation_id,
+        expected_tag,
+        expected_workspace,
+        expected_created_at_ms,
+        text,
+    } = serde_json::from_value::<OldOperation>(old.clone()).unwrap();
+    assert_eq!(operation_id.to_string(), old["operation_id"]);
+    assert_eq!(expected_tag, "tag");
+    assert_eq!(expected_workspace, std::path::Path::new("/offline"));
+    assert_eq!(expected_created_at_ms, 1);
+    assert_eq!(text, "payload");
+    assert!(serde_json::from_value::<Operation>(old).is_err());
+}
+
+#[test]
+fn strict_digest_binds_exact_compact_utf8_seven_tuple() {
+    let digest = aplexer::strict_submission_digest(
+        "11111111-1111-4111-8111-111111111111".parse().unwrap(),
+        "22222222-2222-4222-8222-222222222222".parse().unwrap(),
+        "tag",
+        std::path::Path::new("/offline/λ"),
+        123,
+        456,
+        "hello\n世界",
+    )
+    .unwrap();
+    assert_eq!(
+        digest,
+        "8b937935123f706ab1cd7c11274cd14a6b3dfa1ec4ba4e4b9f61586bc61f39af"
+    );
 }
