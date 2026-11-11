@@ -514,6 +514,19 @@ mod tests {
             runtime
                 .submit_strict(
                     Uuid::new_v4(),
+                    &r.tag,
+                    &r.workspace,
+                    r.created_at_ms + 1,
+                    r.created_at_ms + 60_000,
+                    PAYLOAD,
+                )
+                .unwrap()["reason"],
+            "identity_mismatch"
+        );
+        assert_eq!(
+            runtime
+                .submit_strict(
+                    Uuid::new_v4(),
                     "wrong",
                     &r.workspace,
                     r.created_at_ms,
