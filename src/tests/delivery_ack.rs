@@ -855,3 +855,98 @@ fn claude_post_stop_status_footer_and_ghost_redraws_do_not_count_as_activity() {
         p_new.screen(),
     ));
 }
+
+#[test]
+fn strict_submission_requires_new_echo_and_empty_composer_not_old_or_pending_text() {
+    let ready = fixture("codex", "ready");
+    let pending = fixture("codex", "pending-short");
+    let done = fixture("codex", "done");
+    let styled = screen_from_snapshot(done.replace('\n', "\r\n").as_bytes());
+    assert!(strict_payload_landed("codex", &pending, SHORT));
+    assert!(!strict_payload_landed("codex", &ready, SHORT));
+    assert!(strict_submission_confirmed(
+        "codex",
+        &ready,
+        &done,
+        SHORT,
+        styled.screen()
+    ));
+    assert!(!strict_submission_confirmed(
+        "codex",
+        &done,
+        &done,
+        SHORT,
+        styled.screen()
+    ));
+    assert!(!strict_submission_confirmed(
+        "codex",
+        &ready,
+        &pending,
+        SHORT,
+        styled.screen()
+    ));
+    assert!(!strict_submission_confirmed(
+        "codex",
+        &ready,
+        "unknown UI",
+        SHORT,
+        styled.screen()
+    ));
+}
+
+#[test]
+fn strict_exact_matching_rejects_prefix_tail_collisions_collapsed_and_truncated_presentations() {
+    let ready = fixture("codex", "ready");
+    let pending = fixture("codex", "pending-short");
+    let done = fixture("codex", "done");
+    for wrong in [
+        format!("WRONG PREFIX {SHORT}"),
+        SHORT.replace("Reply with", "Replywith"),
+        "[Pasted Content 400 chars]".to_string(),
+        format!("{}…", SHORT.chars().take(32).collect::<String>()),
+    ] {
+        let landing = pending.replace(SHORT, &wrong);
+        assert!(!strict_payload_landed("codex", &landing, SHORT), "{wrong}");
+        let transcript = done.replace(SHORT, &wrong);
+        let styled = screen_from_snapshot(transcript.replace('\n', "\r\n").as_bytes());
+        assert!(
+            !strict_submission_confirmed("codex", &ready, &transcript, SHORT, styled.screen()),
+            "{wrong}"
+        );
+    }
+    let quote = done.replace(&format!("› {SHORT}"), &format!("• {SHORT}"));
+    let styled = screen_from_snapshot(quote.replace('\n', "\r\n").as_bytes());
+    assert!(!strict_submission_confirmed(
+        "codex",
+        &ready,
+        &quote,
+        SHORT,
+        styled.screen()
+    ));
+}
+
+#[test]
+fn strict_full_visible_row_is_provable_for_each_maintained_family() {
+    for family in ["codex", "claude", "opencode"] {
+        let ready = fixture(family, "ready");
+        let pending = fixture(family, "pending-short");
+        let done = fixture(family, "done");
+        let styled = screen_from_snapshot(done.replace('\n', "\r\n").as_bytes());
+        assert!(strict_payload_landed(family, &pending, SHORT), "{family}");
+        let changed = pending.replace(SHORT, &format!(" {SHORT}"));
+        assert!(
+            !strict_payload_landed(family, &changed, SHORT),
+            "leading-space collision: {family}"
+        );
+        let changed = done.replace(SHORT, &format!(" {SHORT}"));
+        let changed_style = screen_from_snapshot(changed.replace('\n', "\r\n").as_bytes());
+        assert!(
+            !strict_submission_confirmed(family, &ready, &changed, SHORT, changed_style.screen()),
+            "leading-space echo collision: {family}"
+        );
+        assert!(
+            strict_submission_confirmed(family, &ready, &done, SHORT, styled.screen()),
+            "{family}"
+        );
+    }
+}

@@ -21,6 +21,29 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
     let h = support::Harness::new();
     let mut record = h.record(Phase::Running, Some(std::process::id()), b"");
     record.engine = engine.into();
+    // Separate only IPC runtime from potentially long repo-local TMPDIR.
+    // State, scratch, canonical-path validation and assertions are unchanged.
+    #[cfg(target_os = "linux")]
+    let ipc_runtime = {
+        let root = std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }));
+        tempfile::Builder::new()
+            .prefix("send-test-")
+            .tempdir_in(if root.is_dir() {
+                root
+            } else {
+                std::env::temp_dir()
+            })
+            .unwrap()
+    };
+    #[cfg(target_os = "linux")]
+    {
+        record.socket_path = ipc_runtime
+            .path()
+            .join("sessions")
+            .join(record.id.to_string())
+            .join("control.sock");
+    }
+
     // A settled session: unrecognized screens get the short readiness grace.
     record.created_at_ms = 1;
     atomic_write_json(&h.paths().record(record.id), &record).unwrap();
@@ -129,9 +152,14 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
     } else {
         "retry-probe"
     };
+    let command = || {
+        let mut command = h.command();
+        #[cfg(target_os = "linux")]
+        command.env("APLEXER_RUNTIME_DIR", ipc_runtime.path());
+        command
+    };
     let success = if stdio {
-        let mut child = h
-            .command()
+        let mut child = command()
             .args(["rpc", "--stdio", "--protocol", "1"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -154,8 +182,7 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
         child.wait().unwrap();
         response.get("error").is_none()
     } else {
-        let result = h
-            .command()
+        let result = command()
             .args([
                 "send",
                 &record.id.to_string(),

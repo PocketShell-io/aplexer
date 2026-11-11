@@ -160,6 +160,33 @@ impl TerminalState {
     }
 }
 
+/// Ordinary Send is a sequence of RPC frames, not an atomic paste. Track
+/// framing and the output watermark so strict submission cannot slip between
+/// its prefix/body/close or reuse a screen predating ordinary input.
+#[derive(Default)]
+pub(super) struct InputSafety {
+    pub(super) paste_open: bool,
+    pub(super) tail: Vec<u8>,
+    pub(super) last_write: Option<Instant>,
+    pub(super) output_after_write: Option<u64>,
+}
+impl InputSafety {
+    fn observe(&mut self, bytes: &[u8]) {
+        let mut framed = std::mem::take(&mut self.tail);
+        framed.extend_from_slice(bytes);
+        for window in framed.windows(6) {
+            if window == b"\x1b[200~" {
+                self.paste_open = true;
+            } else if window == b"\x1b[201~" {
+                self.paste_open = false;
+            }
+        }
+        self.tail = framed[framed.len().saturating_sub(5)..].to_vec();
+        self.last_write = Some(Instant::now());
+        self.output_after_write = None;
+    }
+}
+
 pub(super) struct WorkerRuntime {
     /// The session this worker serves. Immutable for the worker's life, so
     /// no caller needs to clone the whole record out of its mutex to
@@ -183,6 +210,9 @@ pub(super) struct WorkerRuntime {
     /// job-backed Cgroup shim.
     pub(super) cgroup: Mutex<Option<Cgroup>>,
     pub(super) kill_gate: Mutex<()>,
+    /// Excludes strict submissions, legacy sends and attached-client input.
+    pub(super) input_gate: Mutex<()>,
+    pub(super) input_safety: Mutex<InputSafety>,
     pub(super) output: OutputHub,
     /// Most recent failure to durably write the session record. Kept live so
     /// status remains truthful while the lifecycle retries final evidence.
@@ -260,16 +290,46 @@ impl WorkerRuntime {
         Ok(())
     }
     pub(super) fn send(&self, data: &[u8]) -> Result<()> {
-        if !lock(&self.workload)?.running {
-            bail!("workload has exited");
-        }
-        let file = lock(&self.pty_write)?
-            .clone()
-            .ok_or_else(|| anyhow!("PTY is closed"))?;
-        // Unlocked: see `pty_write`.
-        write_pty_input(&*file, data, Duration::from_secs(2)).context("write PTY")?;
-        (&*file).flush()?;
-        Ok(())
+        let _input = self
+            .input_gate
+            .try_lock()
+            .map_err(|_| anyhow!("input operation in progress; bytes not written"))?;
+        self.send_under_input_lease(data)
+    }
+
+    pub(super) fn input_is_settled_at(&self, render_generation: u64) -> Result<bool> {
+        let input = lock(&self.input_safety)?;
+        Ok(!input.paste_open
+            && input.last_write.is_none_or(|at| {
+                at.elapsed() >= Duration::from_millis(500)
+                    && input
+                        .output_after_write
+                        .is_some_and(|generation| render_generation > generation)
+            }))
+    }
+
+    pub(super) fn send_under_input_lease(&self, data: &[u8]) -> Result<()> {
+        // All strict and ordinary mutations share this barrier. Set uncertainty
+        // before the first possible byte, including on partial-write errors.
+        lock(&self.input_safety)?.observe(data);
+        let result = (|| {
+            if !lock(&self.workload)?.running {
+                bail!("workload has exited");
+            }
+            let file = lock(&self.pty_write)?
+                .clone()
+                .ok_or_else(|| anyhow!("PTY is closed"))?;
+            write_pty_input(&*file, data, Duration::from_secs(2)).context("write PTY")?;
+            (&*file).flush()?;
+            Ok(())
+        })();
+        // Watermark AFTER writing, under the same lock that updates the parsed
+        // screen. A reader's later last_activity.store is not rendering proof.
+        let generation = self.output.strict_render_generation().ok();
+        let mut input = lock(&self.input_safety)?;
+        input.output_after_write = generation;
+        input.last_write = Some(Instant::now());
+        result
     }
     /// Apply a size while `terminal` is held, and repaint every attached
     /// client once it has actually landed. The shared-state check is what
@@ -366,6 +426,10 @@ impl WorkerRuntime {
         geometry: Option<(u16, u16)>,
         want_record: bool,
     ) -> Result<(u64, u64, Vec<u8>, OutputReceiver)> {
+        let _input = self
+            .input_gate
+            .try_lock()
+            .map_err(|_| anyhow!("strict input operation in progress; attach refused"))?;
         let mut terminal = lock(&self.terminal)?;
         let client_id = terminal.next_client_id;
         terminal.next_client_id += 1;
@@ -653,6 +717,10 @@ impl WorkerRuntime {
         workspace: std::path::PathBuf,
         tag: String,
     ) -> Result<SessionRecord> {
+        let _input = self
+            .input_gate
+            .try_lock()
+            .map_err(|_| anyhow!("input operation in progress"))?;
         validate_tag(&tag)?;
         let workspace = canonical_workspace(&workspace)?;
         let _registry = registry_lock_within(&self.paths, RENAME_REGISTRY_WAIT)?;
@@ -667,6 +735,10 @@ impl WorkerRuntime {
     /// directly launched agent). A shell's own /proc cwd changes on `cd`
     /// even while an agent it launched occupies the foreground PTY.
     pub(super) fn sync_workspace_from_cwd(&self) -> Result<()> {
+        let _input = self
+            .input_gate
+            .try_lock()
+            .map_err(|_| anyhow!("input operation in progress"))?;
         let record = self.record()?;
         let Some(pid) = record.workload_pid else {
             return Ok(());
@@ -1096,7 +1168,7 @@ mod input_write_tests {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(in crate::worker) mod tests {
     use super::*;
     use crate::worker::hub::tests::test_hub;
 
@@ -1503,7 +1575,7 @@ mod tests {
 
     /// A `WorkerRuntime` over a throwaway hub, with its durable record at
     /// `record_path` and every other path under `dir`.
-    pub(super) fn test_runtime(
+    pub(in crate::worker) fn test_runtime(
         dir: &tempfile::TempDir,
         record_path: std::path::PathBuf,
     ) -> WorkerRuntime {
@@ -1537,6 +1609,8 @@ mod tests {
             }),
             cgroup: Mutex::new(None),
             kill_gate: Mutex::new(()),
+            input_gate: Mutex::new(()),
+            input_safety: Mutex::new(InputSafety::default()),
             output: test_hub(dir),
             record_persistence_error: Mutex::new(None),
             active_connections: Arc::new(AtomicUsize::new(0)),

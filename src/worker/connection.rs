@@ -115,6 +115,22 @@ fn dispatch_operation(
         )?,
         Operation::Status => write_json(&mut stream, &Response::ok(id, status_value(runtime)?))?,
         Operation::Send { bytes } => handle_send(&mut stream, runtime, &id, bytes)?,
+        Operation::SubmitStrict {
+            operation_id,
+            expected_tag,
+            expected_workspace,
+            expected_created_at_ms,
+            text,
+        } => {
+            let receipt = runtime.submit_strict(
+                operation_id,
+                &expected_tag,
+                &expected_workspace,
+                expected_created_at_ms,
+                &text,
+            )?;
+            write_json(&mut stream, &Response::ok(id, receipt))?;
+        }
         Operation::Capture { max_bytes } => {
             respond_with_data(&mut stream, &id, runtime.output.snapshot(max_bytes)?)?
         }

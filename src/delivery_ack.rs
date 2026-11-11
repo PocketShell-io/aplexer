@@ -483,6 +483,143 @@ pub fn screen_is_ready_idle(engine: &str, plain: &str, screen: &vt100::Screen) -
         && composer_is_empty_or_ghost(family, plain, screen)
 }
 
+/// Strict evidence deliberately does not use the legacy head/tail or collapsed
+/// paste heuristics. Only one fully visible, exact text row is provable here;
+/// wrapped, collapsed or truncated presentations remain unverified.
+fn strict_text_matches(observed: &str, payload: &str) -> bool {
+    !payload.is_empty()
+        && !payload.contains(['\n', '\r', '\t'])
+        && !observed.starts_with("[Pasted")
+        && observed == payload
+}
+
+fn prompt_text(line: &str, marker: char) -> Option<&str> {
+    let text = line.trim_start().strip_prefix(marker)?;
+    Some(
+        text.strip_prefix([' ', '\u{a0}'])
+            .unwrap_or(text)
+            .trim_end(),
+    )
+}
+
+fn strict_bar_text(line: &str) -> Option<&str> {
+    let text = line.trim_start().strip_prefix('┃')?;
+    if text.trim().is_empty() {
+        return Some("");
+    }
+    // Maintained OpenCode gutter is exactly two spaces. Preserve additional
+    // leading payload spaces instead of treating them as arbitrary UI trim.
+    Some(text.strip_prefix("  ")?.trim_end())
+}
+
+pub fn strict_payload_landed(engine: &str, plain: &str, payload: &str) -> bool {
+    let Some(view) = parse_screen(engine, plain) else {
+        return false;
+    };
+    if is_busy(engine, plain) {
+        return false;
+    }
+    let lines: Vec<&str> = plain.lines().collect();
+    let start = view.above.len();
+    let end = lines.len().saturating_sub(view.below.len());
+    let mut content = Vec::new();
+    match crate::engine_family(engine) {
+        "codex" => {
+            if let Some(text) = lines.get(start).and_then(|line| prompt_text(line, '›')) {
+                content.push(text);
+            }
+            for line in lines.iter().take(end).skip(start + 1) {
+                if !line.trim().is_empty() {
+                    return false;
+                }
+            }
+        }
+        "claude" => {
+            if let Some(text) = lines.get(start + 1).and_then(|line| prompt_text(line, '❯')) {
+                content.push(text);
+            }
+            for line in lines.iter().take(end.saturating_sub(1)).skip(start + 2) {
+                if !line.trim().is_empty() {
+                    return false;
+                }
+            }
+        }
+        "opencode" => {
+            // Last bar row is model selector, then the bottom border.
+            for line in lines.iter().take(end.saturating_sub(2)).skip(start) {
+                let Some(text) = strict_bar_text(line) else {
+                    return false;
+                };
+                if !text.is_empty() {
+                    content.push(text);
+                }
+            }
+        }
+        _ => return false,
+    }
+    content.len() == 1 && strict_text_matches(content[0], payload)
+}
+
+fn strict_echo_count(engine: &str, plain: &str, payload: &str) -> usize {
+    let Some(view) = parse_screen(engine, plain) else {
+        return 0;
+    };
+    let family = crate::engine_family(engine);
+    let lines = &view.above;
+    let mut count = 0;
+    let mut index = 0;
+    while index < lines.len() {
+        if family == "opencode" {
+            if lines[index].trim_start().starts_with('┃') {
+                let mut content = Vec::new();
+                while index < lines.len() && lines[index].trim_start().starts_with('┃') {
+                    let Some(text) = strict_bar_text(&lines[index]) else {
+                        return 0;
+                    };
+                    if !text.is_empty() {
+                        content.push(text);
+                    }
+                    index += 1;
+                }
+                if content.len() == 1 && strict_text_matches(content[0], payload) {
+                    count += 1;
+                }
+                continue;
+            }
+        } else {
+            let marker = match family {
+                "codex" => '›',
+                "claude" => '❯',
+                _ => return 0,
+            };
+            if let Some(text) = prompt_text(&lines[index], marker) {
+                // A nonempty continuation might hide a different prefix or a
+                // clipped suffix. Never accept a substring of that prompt.
+                let bounded = index + 1 == lines.len() || lines[index + 1].trim().is_empty();
+                if bounded && strict_text_matches(text, payload) {
+                    count += 1;
+                }
+            }
+        }
+        index += 1;
+    }
+    count
+}
+
+/// Positive rendered submission, not consumption. No suffix collisions,
+/// collapsed markers, assistant-only quotations or historical echoes qualify.
+pub fn strict_submission_confirmed(
+    engine: &str,
+    before: &str,
+    after: &str,
+    payload: &str,
+    styled: &vt100::Screen,
+) -> bool {
+    parse_screen(engine, after).is_some()
+        && composer_is_empty_or_ghost(engine, after, styled)
+        && strict_echo_count(engine, after, payload) > strict_echo_count(engine, before, payload)
+}
+
 /// Whether `plain`/`screen` shows a fresh interactive session at an empty
 /// initial prompt (ready, not busy, empty/ghost composer, and no submitted
 /// prompt or turn output in `above`).

@@ -414,6 +414,20 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
     {
         args.text = args.target.selector.take();
     }
+    if args.strict {
+        let selector = args
+            .target
+            .selector
+            .as_deref()
+            .ok_or_else(|| anyhow!("strict send requires a full session UUID"))?;
+        let id = Uuid::parse_str(selector).context("strict send requires a full session UUID")?;
+        if selector != id.to_string()
+            || args.target.workspace.is_some()
+            || args.target.tag.is_some()
+        {
+            bail!("strict send requires a canonical full UUID and separate --expect-* identity guards");
+        }
+    }
     let record = resolve(paths, &args.target)?;
     check_attachable(&record)?;
     let mut data = if args.stdin {
@@ -423,6 +437,70 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
     } else {
         args.text.unwrap_or_default().into_bytes()
     };
+    if args.strict {
+        validate_submission_text(&data)?;
+        let text = String::from_utf8(data).context("strict send requires UTF-8 text")?;
+        let expected_digest = aplexer::strict_submission_digest(
+            record.id,
+            args.idempotency_key.expect("required by clap"),
+            args.expect_tag.as_deref().expect("required by clap"),
+            args.expect_workspace.as_deref().expect("required by clap"),
+            record.created_at_ms,
+            &text,
+        )?;
+        let mut receipt = match rpc_call_within(
+            &record,
+            Operation::SubmitStrict {
+                operation_id: args.idempotency_key.expect("required by clap"),
+                expected_tag: args.expect_tag.expect("required by clap"),
+                expected_workspace: args.expect_workspace.expect("required by clap"),
+                expected_created_at_ms: record.created_at_ms,
+                text,
+            },
+            None,
+            Duration::from_secs(12),
+        ) {
+            Ok((_, receipt)) => receipt,
+            Err(_) => {
+                json!({"version":1,"session_id":record.id,"status":"uncertain","mutation":null,
+                "operation_id":args.idempotency_key,"request_sha256":expected_digest,"reason":"strict_transport_uncertain","consumed":null})
+            }
+        };
+        let bound = receipt["version"] == 1
+            && receipt["session_id"] == record.id.to_string()
+            && receipt["operation_id"]
+                == args.idempotency_key.expect("required by clap").to_string()
+            && receipt["request_sha256"] == expected_digest
+            && receipt.get("consumed") == Some(&serde_json::Value::Null);
+        let verified = bound
+            && receipt["status"] == "submitted_verified"
+            && receipt["mutation"] == true
+            && receipt["landed"] == true
+            && receipt["submitted"] == true
+            && receipt.get("consumed") == Some(&serde_json::Value::Null);
+        let valid_negative = receipt["status"] == "uncertain"
+            || (receipt["status"] == "refused"
+                && receipt["mutation"] == false
+                && receipt["landed"] == false
+                && receipt["submitted"] == false);
+        if !bound || (!verified && !valid_negative) {
+            receipt = json!({"version":1,"session_id":record.id,"operation_id":args.idempotency_key,
+                "status":"uncertain","mutation":null,"reason":"strict_receipt_unverified","consumed":null});
+        }
+        if json_output {
+            println!("{}", receipt);
+        } else {
+            eprintln!(
+                "strict send: {}",
+                receipt["reason"].as_str().unwrap_or("uncertain")
+            );
+        }
+        if !verified {
+            io::stdout().flush().ok();
+            std::process::exit(4);
+        }
+        return Ok(());
+    }
     if args.hex {
         data = parse_hex(&data)?;
     }
