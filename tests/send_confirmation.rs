@@ -153,7 +153,10 @@ fn exercise(engine: &str, accepted_enter: usize, recognizable: bool, stdio: bool
         "retry-probe"
     };
     let command = || {
+        #[cfg(target_os = "linux")]
         let mut command = h.command();
+        #[cfg(not(target_os = "linux"))]
+        let command = h.command();
         #[cfg(target_os = "linux")]
         command.env("APLEXER_RUNTIME_DIR", ipc_runtime.path());
         command
