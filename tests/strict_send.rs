@@ -1,7 +1,7 @@
 //! Offline CLI protocol tests: no native session or agent is launched.
 #[path = "support/messaging.rs"]
 mod support;
-use aplexer::sys::ipc::Listener;
+use aplexer::sys::ipc::{Listener, Stream};
 use aplexer::{
     atomic_write_json, frame_json, read_frame, write_json, Operation, Phase, Request, Response,
 };
@@ -45,11 +45,12 @@ fn exercise(reply: Option<&str>) -> (std::process::Output, Value) {
     listener.set_nonblocking(true).unwrap();
     let worker_record = record.clone();
     let response = reply.map(str::to_owned);
+    let (accepted, accepted_rx) = std::sync::mpsc::channel();
     let worker = thread::spawn(move || {
-        #[cfg(unix)]
-        let mut stream = {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            loop {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let (mut stream, request) = loop {
+            #[cfg(unix)]
+            let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         stream.set_nonblocking(false).unwrap();
@@ -63,11 +64,29 @@ fn exercise(reply: Option<&str>) -> (std::process::Output, Value) {
                     }
                     Err(error) => panic!("strict fake accept failed: {error}"),
                 }
-            }
+            };
+            #[cfg(windows)]
+            let mut stream = loop {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "strict request before fixture deadline");
+                // ERROR_NO_DATA can replace an abandoned pipe and return None
+                // before the timeout; keep accepting within the same deadline.
+                if let Some(stream) = listener.accept_timeout(left).unwrap() {
+                    break stream;
+                }
+            };
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!left.is_zero(), "strict request before fixture deadline");
+            stream.set_read_timeout(Some(left)).unwrap();
+            let _ = accepted.send(());
+            // Named-pipe availability probes connect and close without a frame.
+            // An empty probe is not a request and must not end the fake worker.
+            let Some(frame) = read_frame(&mut stream).unwrap() else {
+                continue;
+            };
+            let request: Request = frame_json(frame).unwrap();
+            break (stream, request);
         };
-        #[cfg(windows)]
-        let mut stream = listener.accept().unwrap();
-        let request: Request = frame_json(read_frame(&mut stream).unwrap().unwrap()).unwrap();
         assert_eq!(request.session_id, Some(worker_record.id));
         let Operation::SubmitStrict {
             operation_id,
@@ -109,6 +128,16 @@ fn exercise(reply: Option<&str>) -> (std::process::Output, Value) {
         // Otherwise close the connection after accepting the request: lost reply.
         evidence
     });
+    // Force the same empty readiness connection on Unix that Windows makes
+    // during pipe availability checks. Hold it until accepted, then close it.
+    #[cfg(unix)]
+    let probe = Stream::connect(&record.socket_path).unwrap();
+    #[cfg(windows)]
+    let probe = Stream::connect(&record.socket_path, std::time::Duration::from_secs(3)).unwrap();
+    accepted_rx
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .expect("empty readiness probe accepted");
+    drop(probe);
     let mut command = h.command();
     #[cfg(target_os = "linux")]
     command.env("APLEXER_RUNTIME_DIR", ipc_runtime.path());
