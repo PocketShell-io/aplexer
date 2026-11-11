@@ -253,12 +253,15 @@ pub(crate) struct SendArgs {
     #[arg(long)]
     pub(crate) enter: bool,
     /// Identity-bound fail-closed submission; never falls back to legacy Send.
-    #[arg(long, requires_all = ["enter", "expect_tag", "expect_workspace", "idempotency_key", "deadline_ms"], conflicts_with_all = ["raw", "hex", "no_ack", "wait_ack", "ready_timeout", "resends"])]
+    #[arg(long, requires_all = ["enter", "expect_tag", "expect_workspace", "expect_created_at_ms", "idempotency_key", "deadline_ms"], conflicts_with_all = ["raw", "hex", "no_ack", "wait_ack", "ready_timeout", "resends"])]
     pub(crate) strict: bool,
     #[arg(long, requires = "strict")]
     pub(crate) expect_tag: Option<String>,
     #[arg(long, requires = "strict")]
     pub(crate) expect_workspace: Option<PathBuf>,
+    /// Birth timestamp from the caller's pinned native identity, never rediscovered.
+    #[arg(long, requires = "strict")]
+    pub(crate) expect_created_at_ms: Option<u64>,
     #[arg(long, requires = "strict")]
     pub(crate) idempotency_key: Option<Uuid>,
     /// Absolute Unix-millisecond deadline for strict input; never extends on retry.

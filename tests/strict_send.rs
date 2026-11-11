@@ -172,6 +172,7 @@ fn exercise(reply: Option<&str>) -> (std::process::Output, Value) {
             "--deadline-ms",
             &(record.created_at_ms + 60_000).to_string(),
         ])
+        .args(["--expect-created-at-ms", &record.created_at_ms.to_string()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -338,5 +339,86 @@ fn strict_digest_binds_exact_compact_utf8_seven_tuple() {
     assert_eq!(
         digest,
         "8b937935123f706ab1cd7c11274cd14a6b3dfa1ec4ba4e4b9f61586bc61f39af"
+    );
+}
+
+#[test]
+fn strict_cli_requires_caller_pinned_birth() {
+    let h = support::Harness::new();
+    let output = h
+        .command()
+        .args([
+            "send",
+            "11111111-1111-4111-8111-111111111111",
+            "--strict",
+            "--enter",
+            "--expect-tag",
+            "tag",
+            "--expect-workspace",
+            "/offline",
+            "--idempotency-key",
+            "22222222-2222-4222-8222-222222222222",
+            "--deadline-ms",
+            "9999999999999",
+            "text",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--expect-created-at-ms"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn strict_birth_mismatch_is_rejected_before_any_worker_connection() {
+    let h = support::Harness::new();
+    let root = std::path::PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }));
+    let ipc = tempfile::Builder::new()
+        .prefix("birth-")
+        .tempdir_in(if root.is_dir() {
+            root
+        } else {
+            std::env::temp_dir()
+        })
+        .unwrap();
+    let mut record = h.record(Phase::Running, Some(std::process::id()), b"");
+    record.created_at_ms = aplexer::now_ms();
+    record.socket_path = ipc
+        .path()
+        .join("sessions")
+        .join(record.id.to_string())
+        .join("control.sock");
+    atomic_write_json(&h.paths().record(record.id), &record).unwrap();
+    std::fs::create_dir_all(record.socket_path.parent().unwrap()).unwrap();
+    let listener = Listener::bind(&record.socket_path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let output = h
+        .command()
+        .env("APLEXER_RUNTIME_DIR", ipc.path())
+        .args([
+            "send",
+            &record.id.to_string(),
+            "--strict",
+            "--enter",
+            "--expect-tag",
+            &record.tag,
+            "--expect-workspace",
+        ])
+        .arg(&record.workspace)
+        .args([
+            "--expect-created-at-ms",
+            &(record.created_at_ms + 1).to_string(),
+            "--deadline-ms",
+            &(record.created_at_ms + 60_000).to_string(),
+            "--idempotency-key",
+            "22222222-2222-4222-8222-222222222222",
+            "payload",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("expected_created_at_ms mismatch"));
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
     );
 }

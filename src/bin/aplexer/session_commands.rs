@@ -429,6 +429,9 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
         }
     }
     let record = resolve(paths, &args.target)?;
+    if args.strict && args.expect_created_at_ms != Some(record.created_at_ms) {
+        bail!("strict send expected_created_at_ms mismatch; bytes not written");
+    }
     check_attachable(&record)?;
     let mut data = if args.stdin {
         let mut v = Vec::new();
@@ -445,7 +448,7 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
             args.idempotency_key.expect("required by clap"),
             args.expect_tag.as_deref().expect("required by clap"),
             args.expect_workspace.as_deref().expect("required by clap"),
-            record.created_at_ms,
+            args.expect_created_at_ms.expect("required by clap"),
             args.deadline_ms.expect("required by clap"),
             &text,
         )?;
@@ -455,7 +458,7 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
                 operation_id: args.idempotency_key.expect("required by clap"),
                 expected_tag: args.expect_tag.expect("required by clap"),
                 expected_workspace: args.expect_workspace.expect("required by clap"),
-                expected_created_at_ms: record.created_at_ms,
+                expected_created_at_ms: args.expect_created_at_ms.expect("required by clap"),
                 deadline_ms: args.deadline_ms.expect("required by clap"),
                 text,
             },
