@@ -120,6 +120,7 @@ fn dispatch_operation(
             expected_tag,
             expected_workspace,
             expected_created_at_ms,
+            deadline_ms,
             text,
         } => {
             let receipt = runtime.submit_strict(
@@ -127,6 +128,7 @@ fn dispatch_operation(
                 &expected_tag,
                 &expected_workspace,
                 expected_created_at_ms,
+                deadline_ms,
                 &text,
             )?;
             write_json(&mut stream, &Response::ok(id, receipt))?;

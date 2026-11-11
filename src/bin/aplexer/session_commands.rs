@@ -446,6 +446,7 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
             args.expect_tag.as_deref().expect("required by clap"),
             args.expect_workspace.as_deref().expect("required by clap"),
             record.created_at_ms,
+            args.deadline_ms.expect("required by clap"),
             &text,
         )?;
         let mut receipt = match rpc_call_within(
@@ -455,15 +456,22 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
                 expected_tag: args.expect_tag.expect("required by clap"),
                 expected_workspace: args.expect_workspace.expect("required by clap"),
                 expected_created_at_ms: record.created_at_ms,
+                deadline_ms: args.deadline_ms.expect("required by clap"),
                 text,
             },
             None,
-            Duration::from_secs(12),
+            Duration::from_millis(
+                args.deadline_ms
+                    .expect("required by clap")
+                    .saturating_sub(aplexer::now_ms()),
+            )
+            .min(Duration::from_secs(12))
+            .max(Duration::from_millis(1)),
         ) {
             Ok((_, receipt)) => receipt,
             Err(_) => {
                 json!({"version":1,"session_id":record.id,"status":"uncertain","mutation":null,
-                "operation_id":args.idempotency_key,"request_sha256":expected_digest,"reason":"strict_transport_uncertain","consumed":null})
+                "operation_id":args.idempotency_key,"request_sha256":expected_digest,"deadline_ms":args.deadline_ms,"reason":"strict_transport_uncertain","consumed":null})
             }
         };
         let bound = receipt["version"] == 1
@@ -471,6 +479,7 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
             && receipt["operation_id"]
                 == args.idempotency_key.expect("required by clap").to_string()
             && receipt["request_sha256"] == expected_digest
+            && receipt["deadline_ms"] == args.deadline_ms.expect("required by clap")
             && receipt.get("consumed") == Some(&serde_json::Value::Null);
         let verified = bound
             && receipt["status"] == "submitted_verified"
@@ -485,6 +494,7 @@ pub(crate) fn cmd_send(paths: &Paths, mut args: SendArgs, json_output: bool) -> 
                 && receipt["submitted"] == false);
         if !bound || (!verified && !valid_negative) {
             receipt = json!({"version":1,"session_id":record.id,"operation_id":args.idempotency_key,
+                "request_sha256":expected_digest,"deadline_ms":args.deadline_ms,
                 "status":"uncertain","mutation":null,"reason":"strict_receipt_unverified","consumed":null});
         }
         if json_output {
