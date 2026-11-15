@@ -24,15 +24,22 @@ pub(crate) fn rpc_call_within(
     response_timeout: Duration,
 ) -> Result<(Stream, Value)> {
     let mut stream = connect(record)?;
+    // Arm the response deadline before the request goes out, never after.
+    // Once the request is on the wire the worker may answer and close at
+    // once (a refused `Send` does), and Darwin's `setsockopt` fails with
+    // EINVAL on a socket whose peer has shut both directions: `a send`
+    // then printed "set control response deadline: Invalid argument"
+    // instead of the reply already sitting in the receive buffer. The
+    // library twin (`api::rpc_simple_within`) has always used this order.
+    stream
+        .set_read_timeout(Some(response_timeout))
+        .context("set control response deadline")?;
     let request = Request::new(record.id, operation);
     let id = request.request_id.clone();
     write_json(&mut stream, &request)?;
     if let Some(bytes) = data {
         write_frame(&mut stream, FrameKind::Data, bytes)?;
     }
-    stream
-        .set_read_timeout(Some(response_timeout))
-        .context("set control response deadline")?;
     let result = read_response(&mut stream, &id)?;
     Ok((stream, result))
 }
