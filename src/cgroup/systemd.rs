@@ -232,11 +232,7 @@ fn monotonic_us_to_epoch_ms(monotonic_us: u64) -> Option<u64> {
 /// listing sweep (this runs inside `sweep_warnings`).
 fn manager_active_enter_monotonic_us(uid: u32) -> Option<u64> {
     let unit = format!("user@{uid}.service");
-    let text = run_systemctl_show(&[
-        "show",
-        &unit,
-        "--property=ActiveEnterTimestampMonotonic",
-    ])?;
+    let text = run_systemctl_show(&["show", &unit, "--property=ActiveEnterTimestampMonotonic"])?;
     let (_, value) = text.trim().split_once('=')?;
     value.trim().parse::<u64>().ok()
 }

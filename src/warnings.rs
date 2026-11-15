@@ -250,7 +250,11 @@ fn unit_teardown_for(record: &SessionRecord) -> Option<u64> {
         .as_deref()
         .and_then(crate::placement::systemd_unit_from_cgroup)?;
     let cache = UNIT_TEARDOWN.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(ts) = cache.lock().ok().and_then(|cache| cache.get(&scope).copied()) {
+    if let Some(ts) = cache
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&scope).copied())
+    {
         return ts;
     }
     let ts = crate::systemd_unit_teardown_ms(&scope);
