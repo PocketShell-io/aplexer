@@ -789,11 +789,14 @@ impl WorkerRuntime {
     /// Keep the session's workspace aligned with its running shell (or
     /// directly launched agent). A shell's own /proc cwd changes on `cd`
     /// even while an agent it launched occupies the foreground PTY.
+    ///
+    /// Runs on every history-flush tick, so the probe below happens without
+    /// `input_gate`: holding the gate across the cwd read made every tick a
+    /// window in which a concurrent `a send` was refused with "input
+    /// operation in progress; bytes not written" (libproc + canonicalize on
+    /// macOS is slow enough to hit routinely). The gate is taken only once
+    /// the shell has actually moved, and the move is re-validated under it.
     pub(super) fn sync_workspace_from_cwd(&self) -> Result<()> {
-        let _input = self
-            .input_gate
-            .try_lock()
-            .map_err(|_| anyhow!("input operation in progress"))?;
         let record = self.record()?;
         let Some(pid) = record.workload_pid else {
             return Ok(());
@@ -821,6 +824,11 @@ impl WorkerRuntime {
             return Ok(());
         }
 
+        // Exclude strict submissions and renames only for the move itself.
+        let _input = self
+            .input_gate
+            .try_lock()
+            .map_err(|_| anyhow!("input operation in progress"))?;
         let _registry = registry_lock_within(&self.paths, RENAME_REGISTRY_WAIT)?;
         // Another rename may have landed since the /proc read. Preserve its
         // latest tag while moving, and give this session a free destination
@@ -1323,6 +1331,34 @@ pub(in crate::worker) mod tests {
         assert_eq!(read_record(&occupied_path).unwrap().tag, "before");
         assert_eq!(unsafe { libc::kill(shell.id() as i32, libc::SIGTERM) }, 0);
         shell.wait().unwrap();
+    }
+
+    /// The flush tick's cwd probe must not need `input_gate` while the shell
+    /// stays put: holding it made every 500ms tick a window in which a
+    /// concurrent `a send` was refused with "input operation in progress".
+    #[test]
+    fn unchanged_cwd_sync_does_not_need_the_input_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = fs::canonicalize(dir.path()).unwrap();
+        let mut shell = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .current_dir(&workspace)
+            .spawn()
+            .unwrap();
+        let runtime = test_runtime(&dir, dir.path().join("session.json"));
+        {
+            let mut record = runtime.record.lock().unwrap();
+            record.workspace = workspace.clone();
+            record.workload_pid = Some(shell.id());
+        }
+
+        let held = runtime.input_gate.lock().unwrap();
+        let result = runtime.sync_workspace_from_cwd();
+        drop(held);
+        let _ = shell.kill();
+        shell.wait().unwrap();
+        result.expect("an unchanged cwd must not contend for input_gate");
+        assert_eq!(runtime.record().unwrap().workspace, workspace);
     }
 
     #[test]
