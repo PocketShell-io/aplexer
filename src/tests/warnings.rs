@@ -502,3 +502,78 @@ fn live_predicate_attributes_when_the_manager_postdates_the_session() {
         ),
     }
 }
+
+#[test]
+fn unit_teardown_is_attributed_not_hidden() {
+    let record = teardown_fixture(
+        Some("/user.slice/user-1000.slice/user@1000.service/app.slice/supervision.service"),
+        TEARDOWN_CREATED,
+    );
+    let (kind, detail) = crate::warnings::warning_for_record_with(
+        &record,
+        TEARDOWN_NOW,
+        Some(TEARDOWN_BOOT_OLDER),
+        Some(TEARDOWN_BOOT_NEWER),
+    )
+    .expect("dead worker still warns");
+    assert_eq!(kind, WarningKind::Crash);
+    assert!(detail.contains("supervision.service"), "{detail}");
+    assert!(detail.contains("stopped or restarted"), "{detail}");
+    assert!(!detail.contains("per-user systemd manager"), "{detail}");
+}
+
+#[test]
+fn unit_teardown_within_skew_or_older_stays_generic() {
+    let record = teardown_fixture(
+        Some("/user.slice/user-1000.slice/user@1000.service/app.slice/supervision.service"),
+        TEARDOWN_CREATED,
+    );
+    for ts in [
+        None,
+        Some(0),
+        Some(TEARDOWN_BOOT_OLDER),
+        Some(TEARDOWN_CREATED + 1_000),
+    ] {
+        let (_, detail) = crate::warnings::warning_for_record_with(
+            &record,
+            TEARDOWN_NOW,
+            Some(TEARDOWN_BOOT_OLDER),
+            ts,
+        )
+        .expect("dead worker still warns");
+        assert!(
+            detail.contains("termination signal and kill source are unknown"),
+            "{detail}"
+        );
+        assert!(!detail.contains("supervision.service"), "{detail}");
+    }
+}
+
+#[test]
+fn manager_teardown_wins_over_unit_teardown() {
+    let record = teardown_fixture(
+        Some("/user.slice/user-1000.slice/user@1000.service/app.slice/supervision.service"),
+        TEARDOWN_CREATED,
+    );
+    let (_, detail) = crate::warnings::warning_for_record_with(
+        &record,
+        TEARDOWN_NOW,
+        Some(TEARDOWN_BOOT_NEWER),
+        Some(TEARDOWN_BOOT_NEWER),
+    )
+    .expect("dead worker still warns");
+    assert!(
+        detail.contains("per-user systemd manager user@1000.service"),
+        "{detail}"
+    );
+    assert!(!detail.contains("supervision.service"), "{detail}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn live_unit_teardown_lookup_handles_missing_unit_gracefully() {
+    let missing = crate::placement::SystemdUnitScope::System {
+        unit: "aplexer-nonexistent-unit-for-test.service".to_string(),
+    };
+    assert_eq!(crate::systemd_unit_teardown_ms(&missing), None);
+}

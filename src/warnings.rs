@@ -130,7 +130,12 @@ impl SessionWarning {
 /// the misattribution ("died unexpectedly ... kill source unknown") is
 /// fixed.
 pub fn warning_for_record(record: &SessionRecord) -> Option<(WarningKind, String)> {
-    warning_for_record_at(record, now_ms(), manager_boot_for(record))
+    warning_for_record_with(
+        record,
+        now_ms(),
+        manager_boot_for(record),
+        unit_teardown_for(record),
+    )
 }
 
 /// The shared warning predicate with injected clocks: `now` is the wall
@@ -142,6 +147,18 @@ pub fn warning_for_record_at(
     record: &SessionRecord,
     now: u64,
     manager_started_ms: Option<u64>,
+) -> Option<(WarningKind, String)> {
+    warning_for_record_with(record, now, manager_started_ms, None)
+}
+
+/// Like [`warning_for_record_at`], also accepting the owning systemd
+/// unit's most recent stop/start timestamp (`unit_teardown_ms`) for
+/// unit-level teardown attribution.
+pub fn warning_for_record_with(
+    record: &SessionRecord,
+    now: u64,
+    manager_started_ms: Option<u64>,
+    unit_teardown_ms: Option<u64>,
 ) -> Option<(WarningKind, String)> {
     if let Some(exit) = &record.exit {
         if exit.oom_killed {
@@ -176,7 +193,7 @@ pub fn warning_for_record_at(
         };
         return Some((
             WarningKind::Crash,
-            attribute_manager_teardown(record, base, manager_started_ms),
+            attribute_systemd_teardown(record, base, manager_started_ms, unit_teardown_ms),
         ));
     }
     if record.phase == Phase::Failed {
@@ -223,6 +240,31 @@ fn manager_boot_for(_record: &SessionRecord) -> Option<u64> {
     None
 }
 
+#[cfg(target_os = "linux")]
+fn unit_teardown_for(record: &SessionRecord) -> Option<u64> {
+    static UNIT_TEARDOWN: OnceLock<
+        Mutex<HashMap<crate::placement::SystemdUnitScope, Option<u64>>>,
+    > = OnceLock::new();
+    let scope = record
+        .worker_cgroup
+        .as_deref()
+        .and_then(crate::placement::systemd_unit_from_cgroup)?;
+    let cache = UNIT_TEARDOWN.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(ts) = cache.lock().ok().and_then(|cache| cache.get(&scope).copied()) {
+        return ts;
+    }
+    let ts = crate::systemd_unit_teardown_ms(&scope);
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(scope, ts);
+    }
+    ts
+}
+
+#[cfg(not(target_os = "linux"))]
+fn unit_teardown_for(_record: &SessionRecord) -> Option<u64> {
+    None
+}
+
 /// Clock-skew margin for the teardown attribution: the manager boot must
 /// postdate the session start by more than this. Both clocks are wall time
 /// from the same machine (session start from `now_ms`, manager boot from
@@ -231,39 +273,42 @@ fn manager_boot_for(_record: &SessionRecord) -> Option<u64> {
 /// real ordering.
 const MANAGER_BOOT_SKEW_MS: u64 = 5_000;
 
-/// Attribute a dead-worker crash to the per-user systemd manager teardown
-/// that killed it, when that is provable from the record alone: the
-/// recorded worker cgroup classifies as the manager's own failure domain
-/// ([`CgroupPlacement::UserManager`]) *and* that manager started after the
-/// session (past the skew margin). Anything else -- no cgroup, another
-/// placement, no (or an older) manager boot, a zeroed timestamp -- leaves
-/// the detail untouched, so an unprovable cause never reads as a proven
-/// one.
-fn attribute_manager_teardown(
+/// Attribute a dead-worker crash to a per-user systemd manager teardown or
+/// owning systemd unit stop/restart when provable from the record alone.
+fn attribute_systemd_teardown(
     record: &SessionRecord,
     base: String,
     manager_started_ms: Option<u64>,
+    unit_teardown_ms: Option<u64>,
 ) -> String {
-    let Some(boot_ms) = manager_started_ms.filter(|boot_ms| *boot_ms != 0) else {
-        return base;
-    };
     let cgroup = record.worker_cgroup.as_deref();
-    if cgroup.map(crate::placement::classify_cgroup_path)
-        != Some(crate::placement::CgroupPlacement::UserManager)
-    {
-        return base;
+    if let Some(boot_ms) = manager_started_ms.filter(|boot_ms| *boot_ms != 0) {
+        if cgroup.map(crate::placement::classify_cgroup_path)
+            == Some(crate::placement::CgroupPlacement::UserManager)
+            && boot_ms > record.created_at_ms.saturating_add(MANAGER_BOOT_SKEW_MS)
+        {
+            if let Some(uid) = cgroup.and_then(crate::placement::user_manager_uid_from_cgroup) {
+                let gap_ms = boot_ms.saturating_sub(record.created_at_ms);
+                return format!(
+                    "{base}; the per-user systemd manager user@{uid}.service started ~{} after this session started, tearing down every session beneath it together",
+                    format_duration_gap(gap_ms)
+                );
+            }
+        }
     }
-    if boot_ms <= record.created_at_ms.saturating_add(MANAGER_BOOT_SKEW_MS) {
-        return base;
+    if let Some(teardown_ms) = unit_teardown_ms.filter(|ts| *ts != 0) {
+        if teardown_ms > record.created_at_ms.saturating_add(MANAGER_BOOT_SKEW_MS) {
+            if let Some(unit_scope) = cgroup.and_then(crate::placement::systemd_unit_from_cgroup) {
+                let gap_ms = teardown_ms.saturating_sub(record.created_at_ms);
+                return format!(
+                    "{base}; the systemd unit {} stopped or restarted ~{} after this session started, tearing down processes in its cgroup",
+                    unit_scope.unit_name(),
+                    format_duration_gap(gap_ms)
+                );
+            }
+        }
     }
-    let Some(uid) = cgroup.and_then(crate::placement::user_manager_uid_from_cgroup) else {
-        return base;
-    };
-    let gap_ms = boot_ms.saturating_sub(record.created_at_ms);
-    format!(
-        "{base}; the per-user systemd manager user@{uid}.service started ~{} after this session started, tearing down every session beneath it together",
-        format_duration_gap(gap_ms)
-    )
+    base
 }
 
 /// Human gap between session start and manager boot for the teardown
