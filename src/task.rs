@@ -390,7 +390,16 @@ pub fn run_task_child(
     timeout: Option<Duration>,
 ) -> Result<ChildOutcome> {
     let program = argv.first().ok_or_else(|| anyhow!("task argv is empty"))?;
-    let mut command = Command::new(program);
+    // Windows `CreateProcess` through std only finds `.exe` for a bare name,
+    // but npm engines (claude, codex) are `.cmd` shims: resolve PATH x PATHEXT
+    // first so the task child starts instead of dying "program not found".
+    #[cfg(windows)]
+    let resolved_program = crate::sys::windows::pty::find_executable(program)
+        .map(|path| path.into_os_string())
+        .unwrap_or_else(|| program.into());
+    #[cfg(not(windows))]
+    let resolved_program = std::ffi::OsString::from(program);
+    let mut command = Command::new(&resolved_program);
     command
         .args(&argv[1..])
         .current_dir(cwd)
