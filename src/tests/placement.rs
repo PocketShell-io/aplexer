@@ -265,14 +265,18 @@ fn uid_parses_from_the_user_slice_component() {
 #[test]
 fn systemd_unit_extracts_leaf_unit_excluding_manager_and_init() {
     assert_eq!(
-        systemd_unit_from_cgroup("/user.slice/user-1000.slice/user@1000.service/app.slice/supervision.service"),
+        systemd_unit_from_cgroup(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/supervision.service"
+        ),
         Some(SystemdUnitScope::User {
             uid: 1000,
             unit: "supervision.service".to_string(),
         })
     );
     assert_eq!(
-        systemd_unit_from_cgroup("/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.scope"),
+        systemd_unit_from_cgroup(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.scope"
+        ),
         Some(SystemdUnitScope::User {
             uid: 1000,
             unit: "app-org.gnome.Terminal.scope".to_string(),
