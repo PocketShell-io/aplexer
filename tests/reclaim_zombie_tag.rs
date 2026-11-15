@@ -149,12 +149,43 @@ impl Harness {
     /// A workload leader that deliberately survives its worker: it ignores
     /// the SIGHUP the closing PTY delivers, so killing the worker leaves a
     /// real orphaned process whose last durable handle is this record.
+    ///
+    /// `start` returns once the leader is spawned, not once `sh` has run
+    /// its `trap`. Killing the worker inside that window delivers the
+    /// PTY-close SIGHUP to a leader that still has the default disposition,
+    /// so the fixture loses the very process it exists to keep (seen on
+    /// macos-15 arm64, where the worker is SIGKILLed before `sh` gets that
+    /// far). The leader therefore creates `ready` only after the trap is
+    /// installed, and this waits for it: once the file exists the leader is
+    /// HUP-proof, and `sleep` inherits the ignored dispositions across exec.
     fn start_hup_proof_sleeper(&self, workspace: &TempDir, tag: &str) -> Session {
-        self.start(
+        let ready = self
+            .runtime
+            .path()
+            .join(format!("hup-proof-ready-{tag}-{}", Uuid::new_v4()));
+        let session = self.start(
             workspace,
             tag,
-            &["/bin/sh", "-c", "trap \"\" HUP TERM; sleep 300"],
-        )
+            &[
+                "/bin/sh",
+                "-c",
+                "trap \"\" HUP TERM; : > \"$1\"; sleep 300",
+                "aplexer-hup-proof",
+                ready.to_str().expect("UTF-8 ready marker path"),
+            ],
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            if Instant::now() >= deadline {
+                unsafe {
+                    libc::kill(-session.workload_pid, libc::SIGKILL);
+                    libc::kill(session.worker_pid, libc::SIGKILL);
+                }
+                panic!("HUP-proof leader never reported its trap installed");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        session
     }
 
     fn snapshot(&self) -> Vec<Value> {
@@ -756,11 +787,7 @@ fn quick_launch_reclaims_a_workspace_tag_held_by_a_broken_record() {
 fn quick_launch_refuses_a_workspace_tag_whose_workload_is_still_alive() {
     let harness = Harness::new();
     let workspace = TempDir::new().expect("workspace tempdir");
-    let session = harness.start(
-        &workspace,
-        "sleep",
-        &["/bin/sh", "-c", "trap \"\" HUP TERM; sleep 300"],
-    );
+    let session = harness.start_hup_proof_sleeper(&workspace, "sleep");
     let _cleanup = ProcessCleanup(vec![session.worker_pid, session.workload_pid]);
     kill_and_wait(session.worker_pid);
     assert!(
