@@ -48,9 +48,9 @@ mod connection;
 use connection::*;
 mod attach;
 use attach::*;
-#[cfg(unix)]
-pub(crate) use termination::disown_child_pid;
 pub(crate) use termination::own_child_pid;
+#[cfg(unix)]
+pub(crate) use termination::{disown_child_pid, reaper_is_armed};
 
 #[derive(Debug, Clone)]
 enum OutputEvent {

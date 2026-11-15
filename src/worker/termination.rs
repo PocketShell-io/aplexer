@@ -211,6 +211,16 @@ pub(super) static OWNED_CHILD_PIDS: Mutex<BTreeSet<u32>> = Mutex::new(BTreeSet::
 #[cfg(unix)]
 static REAPER_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Whether the SIGCHLD-driven descendant reaper is already armed in this
+/// process. Callers that would spawn a self-waited helper (such as
+/// `systemctl show` inside warning attribution) must check this first and
+/// skip spawning when true, rather than racing the reaper or tripping the
+/// `own_child_pid` invariant.
+#[cfg(unix)]
+pub(crate) fn reaper_is_armed() -> bool {
+    REAPER_ARMED.load(Ordering::SeqCst)
+}
+
 /// Claim `pid` before anything can wait on it. Must be called on the
 /// spawning thread, between `Command::spawn` returning and the pid becoming
 /// reachable by the reaper -- which is only possible while the reaper is

@@ -238,6 +238,9 @@ fn manager_active_enter_monotonic_us(uid: u32) -> Option<u64> {
 }
 
 fn run_systemctl_show(args: &[&str]) -> Option<String> {
+    if crate::worker::reaper_is_armed() {
+        return None;
+    }
     let systemctl = trusted_system_helper("systemctl").ok()?;
     let mut child = Command::new(&systemctl)
         .args(args)
