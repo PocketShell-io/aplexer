@@ -178,6 +178,56 @@ pub fn user_manager_uid_from_cgroup(cgroup: &str) -> Option<u32> {
     })
 }
 
+/// A systemd unit (`.service` or `.scope`) owning a process's cgroup,
+/// distinct from `user@<uid>.service` itself. Used to attribute a dead
+/// worker's crash to a service/scope stop or restart (for example
+/// `supervision.service` stopping with `KillMode=mixed` while an
+/// ambient-cgroup worker still lived inside it).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SystemdUnitScope {
+    /// A unit managed by the per-user systemd manager (`user@<uid>.service`).
+    User { uid: u32, unit: String },
+    /// A unit managed by the system systemd manager (PID 1).
+    System { unit: String },
+}
+
+impl SystemdUnitScope {
+    pub fn unit_name(&self) -> &str {
+        match self {
+            SystemdUnitScope::User { unit, .. } | SystemdUnitScope::System { unit } => unit,
+        }
+    }
+}
+
+/// Extract the leaf systemd unit (`.service` or `.scope`) from a cgroup-v2
+/// path when that unit is distinct from `user@<uid>.service` and `init.scope`.
+pub fn systemd_unit_from_cgroup(cgroup: &str) -> Option<SystemdUnitScope> {
+    let path = cgroup.trim();
+    let unit = path
+        .split('/')
+        .rev()
+        .find(|component| component.ends_with(".service") || component.ends_with(".scope"))?;
+    if unit == "init.scope" {
+        return None;
+    }
+    match classify_cgroup_path(path) {
+        CgroupPlacement::UserManager => {
+            let uid = user_manager_uid_from_cgroup(path)?;
+            if unit == format!("user@{uid}.service") {
+                return None;
+            }
+            Some(SystemdUnitScope::User {
+                uid,
+                unit: unit.to_string(),
+            })
+        }
+        CgroupPlacement::SystemSlice => Some(SystemdUnitScope::System {
+            unit: unit.to_string(),
+        }),
+        _ => None,
+    }
+}
+
 /// Classify a cgroup-v2 path (the `/proc/<pid>/cgroup` `0::` form).
 ///
 /// The distinction that matters is *which service manager owns the subtree*:

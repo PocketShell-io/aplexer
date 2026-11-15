@@ -171,17 +171,58 @@ pub fn system_scope_escape_decision() -> Result<bool> {
 /// than attributing on bad data.
 pub fn user_manager_started_ms(uid: u32) -> Option<u64> {
     let monotonic_us = manager_active_enter_monotonic_us(uid)?;
+    monotonic_us_to_epoch_ms(monotonic_us)
+}
+
+/// Resolve the most recent stop or start timestamp (in ms since epoch) of a
+/// systemd unit (`.service` or `.scope`) from `ActiveEnterTimestampMonotonic`
+/// and `InactiveEnterTimestampMonotonic`. Used to attribute a dead worker
+/// whose cgroup sat inside a service/scope unit that stopped or restarted
+/// after the session started. Returns `None` when the unit is unknown, has
+/// never entered active/inactive, belongs to another user's manager, or
+/// `systemctl` fails/times out.
+pub fn systemd_unit_teardown_ms(scope: &crate::placement::SystemdUnitScope) -> Option<u64> {
+    let text = match scope {
+        crate::placement::SystemdUnitScope::User { uid, unit } => {
+            // `systemctl --user` talks to the calling user's manager only.
+            if *uid != unsafe { libc::geteuid() } {
+                return None;
+            }
+            run_systemctl_show(&[
+                "--user",
+                "show",
+                unit,
+                "--property=ActiveEnterTimestampMonotonic,InactiveEnterTimestampMonotonic",
+            ])?
+        }
+        crate::placement::SystemdUnitScope::System { unit } => run_systemctl_show(&[
+            "show",
+            unit,
+            "--property=ActiveEnterTimestampMonotonic,InactiveEnterTimestampMonotonic",
+        ])?,
+    };
+    let max_us = text
+        .lines()
+        .filter_map(|line| {
+            let (_, value) = line.trim().split_once('=')?;
+            value.trim().parse::<u64>().ok()
+        })
+        .max()?;
+    monotonic_us_to_epoch_ms(max_us)
+}
+
+fn monotonic_us_to_epoch_ms(monotonic_us: u64) -> Option<u64> {
     if monotonic_us == 0 {
         return None;
     }
     let boot_ms = boot_time_ms()?;
-    let started_ms = boot_ms.saturating_add(monotonic_us / 1_000);
-    // Refuse impossible data: a manager that supposedly started in the
+    let epoch_ms = boot_ms.saturating_add(monotonic_us / 1_000);
+    // Refuse impossible data: a timestamp that supposedly occurred in the
     // future is a clock disagreement, not evidence of a teardown.
-    if started_ms > crate::now_ms().saturating_add(60_000) {
+    if epoch_ms > crate::now_ms().saturating_add(60_000) {
         return None;
     }
-    Some(started_ms)
+    Some(epoch_ms)
 }
 
 /// Run the trusted `systemctl show` for one user manager with a tight
@@ -190,11 +231,20 @@ pub fn user_manager_started_ms(uid: u32) -> Option<u64> {
 /// never eat this child's status, and a wedged bus must never stall a
 /// listing sweep (this runs inside `sweep_warnings`).
 fn manager_active_enter_monotonic_us(uid: u32) -> Option<u64> {
+    let unit = format!("user@{uid}.service");
+    let text = run_systemctl_show(&[
+        "show",
+        &unit,
+        "--property=ActiveEnterTimestampMonotonic",
+    ])?;
+    let (_, value) = text.trim().split_once('=')?;
+    value.trim().parse::<u64>().ok()
+}
+
+fn run_systemctl_show(args: &[&str]) -> Option<String> {
     let systemctl = trusted_system_helper("systemctl").ok()?;
     let mut child = Command::new(&systemctl)
-        .arg("show")
-        .arg(format!("user@{uid}.service"))
-        .arg("--property=ActiveEnterTimestampMonotonic")
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -217,9 +267,7 @@ fn manager_active_enter_monotonic_us(uid: u32) -> Option<u64> {
         }
     })();
     crate::worker::disown_child_pid(pid);
-    let text = String::from_utf8(output?.stdout).ok()?;
-    let (_, value) = text.trim().split_once('=')?;
-    value.trim().parse::<u64>().ok()
+    String::from_utf8(output?.stdout).ok()
 }
 
 /// Kernel boot time from `/proc/stat`'s `btime`, in milliseconds since the
