@@ -185,10 +185,12 @@ pub struct ManagerOomPressure {
 /// generous ceiling that keeps the journal query bounded (2s deadline)
 /// while still covering a session killed long before anyone looked.
 /// Pressure older than that is too stale to call the likely kill source.
+#[cfg(target_os = "linux")]
 const OOM_PRESSURE_LOOKBACK_MS: u64 = 24 * 3_600_000;
 
 /// Distinct victim units kept in [`ManagerOomPressure`]; more are counted
 /// in `kills` but not named.
+#[cfg(target_os = "linux")]
 const MANAGER_PRESSURE_UNIT_CAP: usize = 6;
 
 /// The live [`OomEvidence`] for a record, best-effort and cached per
