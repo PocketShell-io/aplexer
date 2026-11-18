@@ -785,6 +785,7 @@ fn unit_oom_kill_wins_over_unit_teardown_and_pressure() {
 /// The `--output=short-unix` journal parser: epoch timestamps first, the
 /// kill message recognized, the victim unit lifted from the message, and
 /// everything else (other messages, malformed lines) ignored.
+#[cfg(target_os = "linux")]
 #[test]
 fn journal_oom_line_parser_keeps_only_oom_kill_lines() {
     let text = concat!(
