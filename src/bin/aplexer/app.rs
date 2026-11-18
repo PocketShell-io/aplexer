@@ -132,6 +132,8 @@ mod session_commands;
 mod session_diagnostics;
 #[path = "session_picker.rs"]
 mod session_picker;
+#[path = "shortcut_commands.rs"]
+mod shortcut_commands;
 #[path = "status_bar.rs"]
 mod status_bar;
 #[path = "status_commands.rs"]
@@ -189,6 +191,7 @@ pub(crate) use scroll_keys::*;
 pub(crate) use session_commands::*;
 pub(crate) use session_diagnostics::*;
 pub(crate) use session_picker::*;
+pub(crate) use shortcut_commands::*;
 pub(crate) use status_bar::*;
 pub(crate) use status_commands::*;
 pub(crate) use switch_targets::*;

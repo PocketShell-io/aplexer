@@ -8,6 +8,7 @@ mod pathfix;
 mod provider_env;
 mod schema;
 mod shell;
+mod shortcuts;
 
 pub use builtins::*;
 pub(crate) use discovery::*;
@@ -15,6 +16,7 @@ pub use pathfix::*;
 pub(crate) use provider_env::*;
 pub use schema::*;
 pub use shell::*;
+pub use shortcuts::*;
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::BTreeMap;
@@ -218,6 +220,7 @@ impl Config {
             }
         }
         self.profiles.extend(user_profiles);
+        self.shortcuts.extend(user.shortcuts);
         self.shell = user.shell;
         self.powershell_execution_policy = user.powershell_execution_policy;
         // A bool has no "unset" value to test the way the options above

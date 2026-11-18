@@ -785,3 +785,81 @@ fn deprecated_shortcut_engines_migrate_to_canonical_engine_profile_and_model_fla
         Some("/tmp/orin-codex-home")
     );
 }
+
+#[test]
+fn shortcut_config_parses_with_explicit_or_default_tag() {
+    let config = load_config_text(
+        r#"
+        [shortcuts.dev]
+        workspace = "/srv/bot"
+        tag = "mgmt"
+
+        [shortcuts.orin]
+        workspace = "/srv/orin"
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        config.shortcuts.get("dev"),
+        Some(&ShortcutConfig {
+            workspace: PathBuf::from("/srv/bot"),
+            tag: "mgmt".to_string(),
+        })
+    );
+    assert_eq!(
+        config.shortcuts.get("orin"),
+        Some(&ShortcutConfig {
+            workspace: PathBuf::from("/srv/orin"),
+            tag: "main".to_string(),
+        })
+    );
+}
+
+#[test]
+fn shortcut_config_rejects_unknown_fields() {
+    let err = load_config_text(
+        r#"
+        [shortcuts.dev]
+        workspace = "/srv/bot"
+        bogus = true
+        "#,
+    )
+    .unwrap_err();
+    assert!(format!("{err:#}").contains("unknown field"));
+}
+
+#[test]
+fn save_and_remove_shortcut_preserves_comments_and_other_sections() {
+    let (_root, paths) = temp_paths();
+    let initial = "# keep this comment\nversion = 1\ndefault_engine = \"shell\"\n";
+    fs::write(&paths.config_file, initial).unwrap();
+
+    save_shortcut(
+        &paths,
+        "dev",
+        &ShortcutConfig {
+            workspace: PathBuf::from("/srv/bot"),
+            tag: "mgmt".to_string(),
+        },
+    )
+    .unwrap();
+    let after_save = fs::read_to_string(&paths.config_file).unwrap();
+    assert!(after_save.contains("# keep this comment"));
+    assert!(after_save.contains("default_engine = \"shell\""));
+
+    let loaded = Config::load(&paths).unwrap();
+    assert_eq!(
+        loaded.shortcuts.get("dev"),
+        Some(&ShortcutConfig {
+            workspace: PathBuf::from("/srv/bot"),
+            tag: "mgmt".to_string(),
+        })
+    );
+
+    assert!(remove_shortcut(&paths, "dev").unwrap());
+    assert!(!remove_shortcut(&paths, "dev").unwrap());
+    let reloaded = Config::load(&paths).unwrap();
+    assert!(reloaded.shortcuts.is_empty());
+    assert_eq!(reloaded.default_engine.as_deref(), Some("shell"));
+}
