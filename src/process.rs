@@ -169,6 +169,7 @@ fn env_uuid_in_proc_environ(pid: u32, key: &str) -> Option<Uuid> {
     value.parse().ok()
 }
 
+#[cfg(unix)]
 pub(crate) fn session_id_in_proc_environ(pid: u32) -> Option<Uuid> {
     env_uuid_in_proc_environ(pid, "APLEXER_SESSION_ID")
 }
