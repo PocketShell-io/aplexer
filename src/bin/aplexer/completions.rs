@@ -71,6 +71,29 @@ pub(crate) fn profile_completions() -> ArgValueCompleter {
     })
 }
 
+/// The `#[arg(add = ...)]` registration for configured shortcut names, as on
+/// `a shortcut remove`.
+pub(crate) fn shortcut_name_completions() -> ArgValueCompleter {
+    ArgValueCompleter::new(|current: &OsStr| {
+        complete_shortcut_names(&completion_paths(), &current.to_string_lossy())
+    })
+}
+
+pub(crate) fn complete_shortcut_names(paths: &Paths, current: &str) -> Vec<CompletionCandidate> {
+    let Ok(config) = Config::load(paths) else {
+        return Vec::new();
+    };
+    config
+        .shortcuts
+        .into_iter()
+        .filter(|(name, _)| name.starts_with(current))
+        .map(|(name, shortcut)| {
+            let help = format!("{}:{}", shortcut.workspace.display(), shortcut.tag);
+            CompletionCandidate::new(name).help(Some(help.into()))
+        })
+        .collect()
+}
+
 /// `Paths::discover` for a completion request. Completion must degrade to
 /// "no candidates", never to a usage error splashed at the prompt, so a
 /// broken environment just completes nothing.

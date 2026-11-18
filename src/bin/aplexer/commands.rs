@@ -16,6 +16,7 @@ pub(crate) fn run() -> Result<()> {
     #[cfg(unix)]
     normalize_sigchld_for_child_management()?;
     let args = rewrite_quick_attach_args(std::env::args().collect());
+    let args = maybe_rewrite_shortcut_args(args);
     let cli = Cli::parse_from(args);
     let paths = Paths::discover()?;
     // Bare `a` with no subcommand defaults to `a list`, matching how tmux
@@ -85,8 +86,10 @@ pub(crate) fn run() -> Result<()> {
         },
         Commands::Completions(args) => cmd_completions(args),
         Commands::Hotkeys => cmd_hotkeys(),
+        Commands::Shortcut(args) => cmd_shortcut(&paths, args, cli.json),
         Commands::QuickAttach(args) => cmd_quick_attach(&paths, args),
         Commands::QuickLaunch(args) => cmd_quick_launch(&paths, args),
+        Commands::QuickShortcut(args) => cmd_quick_shortcut(&paths, args),
         Commands::Worker(args) => aplexer::worker::run_worker(args.id, args.rows.zip(args.cols)),
     }
 }
@@ -143,6 +146,60 @@ pub(crate) fn rewrite_quick_attach_args(args: Vec<String>) -> Vec<String> {
 /// -- they predate this idiom and `a -h` must keep printing help.
 fn is_dash_tag_arg(arg: &str) -> bool {
     arg.len() > 1 && arg.starts_with('-') && !arg.starts_with("--") && arg != "-h" && arg != "-V"
+}
+
+/// Whether `word` matches any built-in subcommand name, subcommand alias, or
+/// clap's built-in `help` subcommand. Subcommands and aliases always take
+/// precedence over user-configured shortcuts.
+pub(crate) fn is_reserved_cli_word(word: &str) -> bool {
+    if word == "help" {
+        return true;
+    }
+    let cmd = Cli::command();
+    let matched = cmd
+        .get_subcommands()
+        .any(|sub| sub.get_name() == word || sub.get_all_aliases().any(|alias| alias == word));
+    matched
+}
+
+fn should_check_shortcut_arg(arg: &str) -> bool {
+    !arg.is_empty()
+        && !arg.starts_with('-')
+        && !arg.bytes().all(|b| b.is_ascii_digit())
+        && !is_reserved_cli_word(arg)
+}
+
+pub(crate) fn rewrite_shortcut_args(
+    args: Vec<String>,
+    shortcuts: &BTreeMap<String, ShortcutConfig>,
+) -> Vec<String> {
+    let Some(first) = args.get(1) else {
+        return args;
+    };
+    if !should_check_shortcut_arg(first) || !shortcuts.contains_key(first) {
+        return args;
+    }
+    let mut rewritten = Vec::with_capacity(args.len() + 1);
+    rewritten.push(args[0].clone());
+    rewritten.push("quick-shortcut".to_string());
+    rewritten.extend(args.into_iter().skip(1));
+    rewritten
+}
+
+fn maybe_rewrite_shortcut_args(args: Vec<String>) -> Vec<String> {
+    let Some(first) = args.get(1) else {
+        return args;
+    };
+    if !should_check_shortcut_arg(first) {
+        return args;
+    }
+    let Ok(paths) = Paths::discover() else {
+        return args;
+    };
+    let Ok(config) = Config::load(&paths) else {
+        return args;
+    };
+    rewrite_shortcut_args(args, &config.shortcuts)
 }
 
 /// The tag the terminal-first vocabulary creates and resolves by default:

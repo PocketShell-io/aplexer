@@ -161,6 +161,9 @@ pub(crate) enum Commands {
     /// Print the attach-mode keyboard shortcuts (Ctrl-b prefix, detach).
     #[command(visible_alias = "keys", after_help = HOTKEYS_EXAMPLES)]
     Hotkeys,
+    /// Configure named shortcuts (`a <name>`) to a workspace and session tag.
+    #[command(visible_alias = "shortcuts", after_help = SHORTCUT_EXAMPLES)]
+    Shortcut(ShortcutArgs),
     /// `a <workspace-index> [session-index-or-tag]`, rewritten into this by
     /// main() before argument parsing -- not a name a user types directly.
     #[command(hide = true)]
@@ -169,6 +172,10 @@ pub(crate) enum Commands {
     /// before argument parsing -- not a name a user types directly.
     #[command(hide = true)]
     QuickLaunch(QuickLaunchArgs),
+    /// `a <shortcut>`, rewritten into this by main() before argument parsing
+    /// -- not a name a user types directly.
+    #[command(hide = true)]
+    QuickShortcut(QuickShortcutArgs),
     /// The PTY-keeping worker behind every session, spawned by the client
     /// as `<this binary> worker --id …` (see `worker_command`). One
     /// executable serves as both the user-facing CLI and the worker, so

@@ -10,6 +10,7 @@ pub(crate) const ROOT_EXAMPLES: &str = r#"Examples:
   a new --engine codex --tag refactor    create with start's full options, attached
   a 2                                    attach to workspace #2 from `a list`
   a 2 review                             attach to "review" in workspace #2
+  a dev                                  attach or start shell for configured shortcut "dev"
   a open review                          attach by tag in the current workspace
   a send review "cargo test" --enter     type into a session without attaching
   a capture review --screen              peek at what that session shows right now
@@ -283,4 +284,12 @@ pub(crate) const COMPLETIONS_EXAMPLES: &str = r#"Examples:
 
 pub(crate) const HOTKEYS_EXAMPLES: &str = r#"Examples:
   a hotkeys                     the Ctrl-b key reference for attached mode
+"#;
+
+pub(crate) const SHORTCUT_EXAMPLES: &str = r#"Examples:
+  a shortcut add dev ~/git/bot --tag mgmt  map `a dev` to ~/git/bot:mgmt
+  a shortcut add orin .                    map `a orin` to <cwd>:main
+  a shortcut list                          list all configured shortcuts
+  a shortcut remove dev                    remove the `dev` shortcut
+  a dev                                    attach to ~/git/bot:mgmt, or start a shell there
 "#;

@@ -52,3 +52,64 @@ fn real_flags_are_left_for_clap_not_taken_as_tags() {
         assert_eq!(rewrite_quick_attach_args(args.clone()), args, "argv {argv:?}");
     }
 }
+
+#[test]
+fn configured_shortcut_rewrites_to_quick_shortcut_and_parses() {
+    let mut shortcuts = BTreeMap::new();
+    shortcuts.insert(
+        "dev".to_string(),
+        ShortcutConfig {
+            workspace: PathBuf::from("/srv/bot"),
+            tag: "mgmt".to_string(),
+        },
+    );
+
+    let rewritten = rewrite_shortcut_args(vec!["a".into(), "dev".into()], &shortcuts);
+    assert_eq!(rewritten, vec!["a", "quick-shortcut", "dev"]);
+    match Cli::try_parse_from(rewritten).unwrap().command {
+        Some(Commands::QuickShortcut(args)) => assert_eq!(args.name, "dev"),
+        _ => panic!("expected quick-shortcut"),
+    }
+}
+
+#[test]
+fn subcommands_aliases_numbers_and_flags_take_precedence_over_shortcuts() {
+    let mut shortcuts = BTreeMap::new();
+    for reserved in [
+        "list", "ls", "start", "attach", "open", "shortcut", "help", "123", "-h", "--json",
+    ] {
+        shortcuts.insert(
+            reserved.to_string(),
+            ShortcutConfig {
+                workspace: PathBuf::from("/srv/bot"),
+                tag: "main".to_string(),
+            },
+        );
+    }
+
+    for word in [
+        "list", "ls", "start", "attach", "open", "shortcut", "help", "123", "-h", "--json",
+        "unknown",
+    ] {
+        let args = vec!["a".to_string(), word.to_string()];
+        assert_eq!(
+            rewrite_shortcut_args(args.clone(), &shortcuts),
+            args,
+            "word {word:?} must not be rewritten as shortcut"
+        );
+    }
+}
+
+#[test]
+fn shortcut_name_validation_rejects_reserved_and_ambiguous_names() {
+    assert!(validate_shortcut_name("dev").is_ok());
+    assert!(validate_shortcut_name("tofu").is_ok());
+    assert!(validate_shortcut_name("orin-1_a").is_ok());
+
+    for bad in ["", "-dev", "42", "list", "ls", "ps", "help", "shortcut", "a b"] {
+        assert!(
+            validate_shortcut_name(bad).is_err(),
+            "expected {bad:?} to be rejected"
+        );
+    }
+}

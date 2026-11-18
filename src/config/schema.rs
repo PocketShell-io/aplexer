@@ -131,6 +131,18 @@ impl DiscoveryConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ShortcutConfig {
+    pub workspace: PathBuf,
+    #[serde(default = "default_shortcut_tag")]
+    pub tag: String,
+}
+
+fn default_shortcut_tag() -> String {
+    "main".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -144,6 +156,8 @@ pub struct Config {
     pub engines: BTreeMap<String, EngineConfig>,
     #[serde(default)]
     pub profiles: BTreeMap<String, ProfileConfig>,
+    #[serde(default)]
+    pub shortcuts: BTreeMap<String, ShortcutConfig>,
     #[serde(default)]
     pub discovery: DiscoveryConfig,
     /// Keep a durable record for a session whose workload finished.

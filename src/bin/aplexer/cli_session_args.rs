@@ -1,9 +1,10 @@
 use super::commands::DEFAULT_HUMAN_TAG;
 use super::completions::{
     engine_completions, profile_completions, session_selector_completions, session_tag_completions,
+    shortcut_name_completions,
 };
 use aplexer::DEFAULT_STARTUP_TIMEOUT_MS;
-use clap::{Args, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -31,6 +32,48 @@ pub(crate) struct QuickLaunchArgs {
     /// `a here` accepts it as the typed-out equivalent.
     #[arg(long, value_name = "TAG", hide = true)]
     pub(crate) tag: Option<String>,
+}
+
+#[derive(Args)]
+pub(crate) struct QuickShortcutArgs {
+    /// Configured shortcut name.
+    pub(crate) name: String,
+}
+
+#[derive(Args)]
+pub(crate) struct ShortcutArgs {
+    #[command(subcommand)]
+    pub(crate) command: Option<ShortcutCommand>,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ShortcutCommand {
+    /// Add or update a named shortcut to a workspace and session tag.
+    Add(ShortcutAddArgs),
+    /// List configured shortcuts.
+    #[command(visible_alias = "ls")]
+    List,
+    /// Remove a configured shortcut.
+    #[command(visible_alias = "rm")]
+    Remove(ShortcutRemoveArgs),
+}
+
+#[derive(Args)]
+pub(crate) struct ShortcutAddArgs {
+    /// Shortcut name (used as `a <name>`).
+    pub(crate) name: String,
+    /// Workspace directory (defaults to the current directory).
+    pub(crate) workspace: Option<PathBuf>,
+    /// Session tag inside that workspace (defaults to "main").
+    #[arg(long, short = 't', default_value = DEFAULT_HUMAN_TAG)]
+    pub(crate) tag: String,
+}
+
+#[derive(Args)]
+pub(crate) struct ShortcutRemoveArgs {
+    /// Shortcut name to remove.
+    #[arg(add = shortcut_name_completions())]
+    pub(crate) name: String,
 }
 
 #[derive(Args)]
