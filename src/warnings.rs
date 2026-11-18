@@ -132,13 +132,29 @@ impl SessionWarning {
 /// the misattribution ("died unexpectedly ... kill source unknown") is
 /// fixed.
 pub fn warning_for_record(record: &SessionRecord) -> Option<(WarningKind, String)> {
+    let now = now_ms();
+    if !record_needs_systemd_attribution(record, now) {
+        return warning_for_record_with(record, now, None, None, None);
+    }
     warning_for_record_with(
         record,
-        now_ms(),
+        now,
         manager_boot_for(record),
         unit_teardown_for(record),
-        Some(&oom_evidence_for(record, now_ms())),
+        Some(&oom_evidence_for(record, now)),
     )
+}
+
+fn record_needs_systemd_attribution(record: &SessionRecord, now: u64) -> bool {
+    record.worker_cgroup.is_some()
+        && !record.exit.as_ref().is_some_and(|exit| exit.oom_killed)
+        && !is_finished_exiting_corpse(record)
+        && observed_state(
+            &record.phase,
+            record.worker_alive(),
+            record.created_at_ms,
+            now,
+        ) == "broken"
 }
 
 /// OOM-killer evidence for a dead-worker crash, resolved best-effort from
@@ -223,6 +239,24 @@ fn oom_evidence_for(_record: &SessionRecord, _now: u64) -> OomEvidence {
     OomEvidence::default()
 }
 
+#[cfg(target_os = "linux")]
+fn cached_user_manager_oom_kills(
+    uid: u32,
+    since_ms: u64,
+    until_ms: u64,
+) -> Vec<crate::JournalOomKill> {
+    static KILLS: OnceLock<Mutex<HashMap<u32, Vec<crate::JournalOomKill>>>> = OnceLock::new();
+    let cache = KILLS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(kills) = cache.lock().ok().and_then(|cache| cache.get(&uid).cloned()) {
+        return kills;
+    }
+    let kills = crate::user_manager_oom_kills(uid, since_ms, until_ms);
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(uid, kills.clone());
+    }
+    kills
+}
+
 /// Query the systemd journal for the record's own unit and its per-user
 /// manager, bounded by the session's birth (no kill can precede it) and
 /// the detection clock. Only records whose cgroup names a unit/manager
@@ -236,11 +270,17 @@ fn resolve_oom_evidence(record: &SessionRecord, now: u64) -> OomEvidence {
     if let Some(scope) = crate::placement::systemd_unit_from_cgroup(cgroup) {
         evidence.unit_kill_ms = crate::systemd_unit_oom_kill_ms(&scope, record.created_at_ms);
     }
+    if evidence
+        .unit_kill_ms
+        .is_some_and(|ts| ts > record.created_at_ms.saturating_add(MANAGER_BOOT_SKEW_MS))
+    {
+        return evidence;
+    }
     if crate::placement::classify_cgroup_path(cgroup)
         == crate::placement::CgroupPlacement::UserManager
     {
         if let Some(uid) = crate::placement::user_manager_uid_from_cgroup(cgroup) {
-            let kills = crate::user_manager_oom_kills(
+            let kills = cached_user_manager_oom_kills(
                 uid,
                 now.saturating_sub(OOM_PRESSURE_LOOKBACK_MS),
                 now,
@@ -640,6 +680,10 @@ pub fn load_warning_for(paths: &Paths, id: Uuid) -> Option<SessionWarning> {
 /// broken record can linger until `a prune` -- that is what the `acked/`
 /// tombstone encodes. Returns whether a new warning was created.
 pub fn record_warning(paths: &Paths, record: &SessionRecord) -> Result<bool> {
+    let path = warning_path(paths, record.id);
+    if path.exists() || acked_path(paths, record.id).exists() {
+        return Ok(false);
+    }
     let Some((kind, detail)) = warning_for_record(record) else {
         return Ok(false);
     };
@@ -665,10 +709,6 @@ pub fn record_warning(paths: &Paths, record: &SessionRecord) -> Result<bool> {
     } else {
         (kind, detail)
     };
-    let path = warning_path(paths, record.id);
-    if path.exists() || acked_path(paths, record.id).exists() {
-        return Ok(false);
-    }
     ensure_private_dir(&paths.warnings_dir())?;
     let warning = SessionWarning {
         schema_version: WARNINGS_SCHEMA_VERSION,
