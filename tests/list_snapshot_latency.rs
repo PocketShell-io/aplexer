@@ -58,7 +58,7 @@ fn list_and_snapshot_with_50_sessions_finish_under_1s() {
         // Pre-populate warning / acked tombstones for the broken records so
         // this measures steady-state `list` / `snapshot` latency without
         // shelling out to `systemctl`/`journalctl` 25 times.
-        if i >= 25 && i < 40 {
+        if (25..40).contains(&i) {
             std::fs::write(paths.warnings_dir().join(format!("{id}.json")), "{}")
                 .expect("write warning");
         } else if i >= 40 {
