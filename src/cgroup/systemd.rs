@@ -292,6 +292,7 @@ fn systemd_journal_oom_kills(
         "--quiet".to_string(),
         "--no-pager".to_string(),
         "--output=short-unix".to_string(),
+        "--grep=killed by the OOM killer".to_string(),
         format!("--since=@{}", since_ms / 1_000),
         format!("--until=@{}", until_ms / 1_000),
     ];
@@ -347,11 +348,18 @@ pub fn systemd_journal_oom_kill_lines(text: &str) -> Vec<JournalOomKill> {
 /// Run the trusted `journalctl` with a tight deadline, same discipline as
 /// [`run_systemctl_show`]. `None` on any failure or deadline miss.
 fn run_journalctl(args: &[&str]) -> Option<String> {
+    run_trusted_helper_stdout("journalctl", args)
+}
+
+/// Run a trusted system helper (`journalctl`, `systemctl`) with a tight 2s
+/// deadline, draining stdout on a background thread so a large response cannot
+/// deadlock on a full pipe buffer before `try_wait` observes exit.
+fn run_trusted_helper_stdout(helper: &str, args: &[&str]) -> Option<String> {
     if crate::worker::reaper_is_armed() {
         return None;
     }
-    let journalctl = trusted_system_helper("journalctl").ok()?;
-    let mut child = Command::new(&journalctl)
+    let bin = trusted_system_helper(helper).ok()?;
+    let mut child = Command::new(&bin)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -360,22 +368,34 @@ fn run_journalctl(args: &[&str]) -> Option<String> {
         .ok()?;
     let pid = child.id();
     crate::worker::own_child_pid(pid);
-    let output = (|| -> Option<std::process::Output> {
+    let stdout_handle = child.stdout.take().map(|mut stdout| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let exited_ok = (|| -> bool {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            match child.try_wait().ok()? {
-                Some(_) => return child.wait_with_output().ok(),
-                None if Instant::now() >= deadline => {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success(),
+                Ok(None) if Instant::now() >= deadline => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return None;
+                    return false;
                 }
-                None => thread::sleep(Duration::from_millis(20)),
+                Ok(None) => thread::sleep(Duration::from_millis(20)),
+                Err(_) => return false,
             }
         }
     })();
     crate::worker::disown_child_pid(pid);
-    String::from_utf8(output?.stdout).ok()
+    let bytes = stdout_handle.and_then(|handle| handle.join().ok());
+    if !exited_ok {
+        return None;
+    }
+    String::from_utf8(bytes?).ok()
 }
 
 fn monotonic_us_to_epoch_ms(monotonic_us: u64) -> Option<u64> {
@@ -405,35 +425,7 @@ fn manager_active_enter_monotonic_us(uid: u32) -> Option<u64> {
 }
 
 fn run_systemctl_show(args: &[&str]) -> Option<String> {
-    if crate::worker::reaper_is_armed() {
-        return None;
-    }
-    let systemctl = trusted_system_helper("systemctl").ok()?;
-    let mut child = Command::new(&systemctl)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let pid = child.id();
-    crate::worker::own_child_pid(pid);
-    let output = (|| -> Option<std::process::Output> {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match child.try_wait().ok()? {
-                Some(_) => return child.wait_with_output().ok(),
-                None if Instant::now() >= deadline => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                None => thread::sleep(Duration::from_millis(20)),
-            }
-        }
-    })();
-    crate::worker::disown_child_pid(pid);
-    String::from_utf8(output?.stdout).ok()
+    run_trusted_helper_stdout("systemctl", args)
 }
 
 /// Kernel boot time from `/proc/stat`'s `btime`, in milliseconds since the
