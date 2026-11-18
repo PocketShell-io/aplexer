@@ -144,13 +144,14 @@ pub(crate) fn proc_ppid(pid: u32) -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn session_id_in_proc_environ(pid: u32) -> Option<Uuid> {
+fn env_uuid_in_proc_environ(pid: u32, key: &str) -> Option<Uuid> {
+    let prefix = format!("{key}=");
     let bytes = fs::read(format!("/proc/{pid}/environ")).ok()?;
     for entry in bytes.split(|b| *b == 0) {
         let Ok(s) = std::str::from_utf8(entry) else {
             continue;
         };
-        if let Some(val) = s.strip_prefix("APLEXER_SESSION_ID=") {
+        if let Some(val) = s.strip_prefix(&prefix) {
             if let Ok(id) = val.parse() {
                 return Some(id);
             }
@@ -160,12 +161,22 @@ pub(crate) fn session_id_in_proc_environ(pid: u32) -> Option<Uuid> {
 }
 
 /// Ancestor environment via `KERN_PROCARGS2`: no `/proc/<pid>/environ` on
-/// macOS. Same `APLEXER_SESSION_ID=` lookup over the NUL-separated block.
+/// macOS. Same `<key>=` lookup over the NUL-separated block.
 #[cfg(target_os = "macos")]
-pub(crate) fn session_id_in_proc_environ(pid: u32) -> Option<Uuid> {
+fn env_uuid_in_proc_environ(pid: u32, key: &str) -> Option<Uuid> {
     let block = crate::sys::macos::proc_environ_bytes(pid)?;
-    let value = crate::sys::macos::environ_lookup(&block, "APLEXER_SESSION_ID")?;
+    let value = crate::sys::macos::environ_lookup(&block, key)?;
     value.parse().ok()
+}
+
+#[cfg(unix)]
+pub(crate) fn session_id_in_proc_environ(pid: u32) -> Option<Uuid> {
+    env_uuid_in_proc_environ(pid, "APLEXER_SESSION_ID")
+}
+
+#[cfg(unix)]
+pub(crate) fn worker_session_id_in_proc_environ(pid: u32) -> Option<Uuid> {
+    env_uuid_in_proc_environ(pid, "APLEXER_WORKER_SESSION_ID")
 }
 
 /// Whether `pid` names a process that can still run code.

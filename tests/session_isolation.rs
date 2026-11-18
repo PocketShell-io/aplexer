@@ -274,3 +274,64 @@ fn different_state_roots_isolate_registries() {
 
     first.kill(&ws, "iso");
 }
+
+#[test]
+fn nested_session_survives_killing_parent_session() {
+    let harness = Harness::new();
+    let ws = harness.runtime_dir.path().join("ws-nested");
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_aplexer");
+    let ws_str = ws.to_str().unwrap();
+    let child_cmd = format!(
+        "\"{bin}\" start --workspace \"{ws_str}\" --tag child -- /bin/sh -c 'sleep 60' && sleep 60"
+    );
+    harness.run_ok(&[
+        "--json",
+        "start",
+        "--workspace",
+        ws_str,
+        "--tag",
+        "parent",
+        "--",
+        "/bin/sh",
+        "-c",
+        &child_cmd,
+    ]);
+
+    // Wait for the nested `child` session to appear and reach `running`.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let out = harness.run(&["status", "--workspace", ws_str, "--tag", "child", "--json"]);
+        if out.status.success() {
+            let status: Value = serde_json::from_slice(&out.stdout).expect("child status JSON");
+            if status["phase"] == "running" && status["worker_alive"] == true {
+                break;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nested child session never became running"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // Killing the parent session (defaults to SIGHUP, then SIGKILL if needed)
+    // must not kill the nested child session's worker or produce a crash warning.
+    harness.kill(&ws, "parent");
+
+    let child_after =
+        harness.run_ok(&["status", "--workspace", ws_str, "--tag", "child", "--json"]);
+    let child_status: Value = serde_json::from_str(&child_after).expect("child status JSON");
+    assert_eq!(child_status["phase"], "running");
+    assert_eq!(child_status["worker_alive"], true);
+
+    let warnings_out = harness.run_ok(&["warnings", "--json"]);
+    let warnings: Vec<Value> = serde_json::from_str(&warnings_out).expect("warnings JSON");
+    assert!(
+        warnings.is_empty(),
+        "killing parent must not produce a crash warning for nested child: {warnings:?}"
+    );
+
+    harness.kill(&ws, "child");
+}

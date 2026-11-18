@@ -126,6 +126,17 @@ pub(super) fn install_termination_handlers() -> Result<()> {
     let event_fd = create_worker_event_fd("termination")?;
     TERMINATION_EVENT_FD.store(event_fd, Ordering::SeqCst);
     unsafe {
+        let mut ignore_action: libc::sigaction = std::mem::zeroed();
+        ignore_action.sa_sigaction = libc::SIG_IGN;
+        libc::sigemptyset(&mut ignore_action.sa_mask);
+        if libc::sigaction(libc::SIGHUP, &ignore_action, std::ptr::null_mut()) != 0 {
+            TERMINATION_EVENT_FD.store(-1, Ordering::SeqCst);
+            #[cfg(target_os = "linux")]
+            libc::close(event_fd);
+            #[cfg(target_os = "macos")]
+            close_worker_event_pipe(event_fd, &TERMINATION_EVENT_WRITE);
+            return Err(io::Error::last_os_error()).context("ignore SIGHUP in worker");
+        }
         let mut action: libc::sigaction = std::mem::zeroed();
         action.sa_sigaction = request_worker_termination as *const () as usize;
         action.sa_flags = 0;

@@ -256,6 +256,7 @@ pub(super) fn spawn_workload(
     for name in &record.env_unset {
         command.env_remove(name);
     }
+    command.env_remove("APLEXER_WORKER_SESSION_ID");
     unsafe {
         command.pre_exec(move || {
             // A worker can be launched from an embedded, multi-threaded host

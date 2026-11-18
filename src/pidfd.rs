@@ -200,7 +200,10 @@ mod linux {
         while let Some(parent) = pending.pop_front() {
             check(deadline, "scanning process tree")?;
             for child in read_direct_children(Path::new(DEFAULT_PROC_ROOT), parent, deadline)? {
-                if !seen.insert(child) || process_is_zombie(child) {
+                if !seen.insert(child)
+                    || process_is_zombie(child)
+                    || crate::process::worker_session_id_in_proc_environ(child).is_some()
+                {
                     continue;
                 }
                 if max_descendants.is_some_and(|max| descendants.len() >= max) {
@@ -632,7 +635,9 @@ mod macos_impl {
             check(deadline, "scanning process tree")?;
             if let Some(children) = children_of.get(&parent) {
                 for child in children {
-                    if !seen.insert(*child) {
+                    if !seen.insert(*child)
+                        || crate::process::worker_session_id_in_proc_environ(*child).is_some()
+                    {
                         continue;
                     }
                     if max_descendants.is_some_and(|max| descendants.len() >= max) {
