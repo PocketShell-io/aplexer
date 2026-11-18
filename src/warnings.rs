@@ -123,9 +123,11 @@ impl SessionWarning {
 ///
 /// A `broken` record whose worker cgroup sat beneath a per-user systemd
 /// manager that restarted *after* the session started gets its detail
-/// attributed to that teardown (see [`attribute_manager_teardown`]): the
-/// worker did not crash on its own, systemd killed the whole domain
-/// together, and the next triage must not need journal forensics to say so.
+/// attributed to that teardown (see [`attribute_systemd_teardown`]); the
+/// same goes for a kernel OOM kill the systemd journal recorded in the
+/// session's own unit, or manager-wide OOM pressure near detection (see
+/// [`OomEvidence`]). The worker did not crash on its own in any of these,
+/// and the next triage must not need journal forensics to say so.
 /// The kind stays `Crash` -- sessions really died with unsaved work -- only
 /// the misattribution ("died unexpectedly ... kill source unknown") is
 /// fixed.
@@ -135,7 +137,133 @@ pub fn warning_for_record(record: &SessionRecord) -> Option<(WarningKind, String
         now_ms(),
         manager_boot_for(record),
         unit_teardown_for(record),
+        Some(&oom_evidence_for(record, now_ms())),
     )
+}
+
+/// OOM-killer evidence for a dead-worker crash, resolved best-effort from
+/// the systemd journal and injected into the predicate like the manager
+/// boot, so tests pin it without touching the journal. Two tiers, most
+/// specific first:
+///
+/// * [`OomEvidence::unit_kill_ms`] -- the journal's "killed by the OOM
+///   killer" line for the session's *own* unit: definitive. The kernel
+///   killed a process in this unit and the worker is gone with no exit
+///   recorded; nobody was left to write `exit.oom_killed`.
+/// * [`OomEvidence::manager_pressure`] -- OOM kills under the same
+///   per-user manager within [`OOM_PRESSURE_LOOKBACK_MS`] before
+///   detection: a storm that crosses unit boundaries, so the likeliest
+///   kill source even when the worker's own unit never got a line
+///   (journald drops and rate-limits under the very pressure it records).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OomEvidence {
+    /// Epoch-ms of the newest kernel OOM kill inside the session's own
+    /// systemd unit, or `None` when the journal has none or could not be
+    /// read. Only meaningful after the session started.
+    pub unit_kill_ms: Option<u64>,
+    /// Manager-wide OOM kills near detection, or `None` when the record's
+    /// cgroup names no per-user manager the query could read.
+    pub manager_pressure: Option<ManagerOomPressure>,
+}
+
+/// [`OomEvidence::manager_pressure`]: how many processes the kernel OOM
+/// killer killed under the same per-user manager, in which units, most
+/// recently when.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagerOomPressure {
+    /// Number of journal OOM-kill lines in the lookback window.
+    pub kills: u32,
+    /// Distinct victim units named by the journal, capped for the detail.
+    pub units: Vec<String>,
+    /// Epoch-ms of the newest kill in the window.
+    pub last_kill_ms: u64,
+}
+
+/// How far back from detection the manager-pressure window reaches. The
+/// detection sweep runs from every query command plus a 10-minute hygiene
+/// timer, so first detection lags the death by minutes normally; 24h is a
+/// generous ceiling that keeps the journal query bounded (2s deadline)
+/// while still covering a session killed long before anyone looked.
+/// Pressure older than that is too stale to call the likely kill source.
+const OOM_PRESSURE_LOOKBACK_MS: u64 = 24 * 3_600_000;
+
+/// Distinct victim units kept in [`ManagerOomPressure`]; more are counted
+/// in `kills` but not named.
+const MANAGER_PRESSURE_UNIT_CAP: usize = 6;
+
+/// The live [`OomEvidence`] for a record, best-effort and cached per
+/// process: the journal is queried once per dead session per process. A
+/// stale cache entry can only miss a *later* attribution (a pressure storm
+/// that started after the first sweep), never invent one -- the sweep runs
+/// in fresh CLI processes and the 10-minute hygiene timer, so a missed
+/// window is re-checked minutes later. Off Linux there is no systemd
+/// journal: no evidence, the generic detail stands.
+#[cfg(target_os = "linux")]
+fn oom_evidence_for(record: &SessionRecord, now: u64) -> OomEvidence {
+    static EVIDENCE: OnceLock<Mutex<HashMap<Uuid, OomEvidence>>> = OnceLock::new();
+    let cache = EVIDENCE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(evidence) = cache
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&record.id).cloned())
+    {
+        return evidence;
+    }
+    let evidence = resolve_oom_evidence(record, now);
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(record.id, evidence.clone());
+    }
+    evidence
+}
+
+#[cfg(not(target_os = "linux"))]
+fn oom_evidence_for(_record: &SessionRecord, _now: u64) -> OomEvidence {
+    OomEvidence::default()
+}
+
+/// Query the systemd journal for the record's own unit and its per-user
+/// manager, bounded by the session's birth (no kill can precede it) and
+/// the detection clock. Only records whose cgroup names a unit/manager
+/// produce evidence; anything else stays generic.
+#[cfg(target_os = "linux")]
+fn resolve_oom_evidence(record: &SessionRecord, now: u64) -> OomEvidence {
+    let mut evidence = OomEvidence::default();
+    let Some(cgroup) = record.worker_cgroup.as_deref() else {
+        return evidence;
+    };
+    if let Some(scope) = crate::placement::systemd_unit_from_cgroup(cgroup) {
+        evidence.unit_kill_ms = crate::systemd_unit_oom_kill_ms(&scope, record.created_at_ms);
+    }
+    if crate::placement::classify_cgroup_path(cgroup)
+        == crate::placement::CgroupPlacement::UserManager
+    {
+        if let Some(uid) = crate::placement::user_manager_uid_from_cgroup(cgroup) {
+            let kills = crate::user_manager_oom_kills(
+                uid,
+                now.saturating_sub(OOM_PRESSURE_LOOKBACK_MS),
+                now,
+            );
+            if !kills.is_empty() {
+                let mut units: Vec<String> = Vec::new();
+                for kill in &kills {
+                    if let Some(unit) = &kill.unit {
+                        if !units.contains(unit) {
+                            units.push(unit.clone());
+                            if units.len() >= MANAGER_PRESSURE_UNIT_CAP {
+                                break;
+                            }
+                        }
+                    }
+                }
+                evidence.manager_pressure = Some(ManagerOomPressure {
+                    kills: kills.len() as u32,
+                    units,
+                    last_kill_ms: kills.last().map(|kill| kill.at_ms).unwrap_or(0),
+                });
+            }
+        }
+    }
+    evidence
 }
 
 /// The shared warning predicate with injected clocks: `now` is the wall
@@ -148,17 +276,18 @@ pub fn warning_for_record_at(
     now: u64,
     manager_started_ms: Option<u64>,
 ) -> Option<(WarningKind, String)> {
-    warning_for_record_with(record, now, manager_started_ms, None)
+    warning_for_record_with(record, now, manager_started_ms, None, None)
 }
 
-/// Like [`warning_for_record_at`], also accepting the owning systemd
-/// unit's most recent stop/start timestamp (`unit_teardown_ms`) for
-/// unit-level teardown attribution.
+/// Like [`warning_for_record_at`], also accepting the systemd journal's
+/// OOM-killer evidence (`oom_evidence`) for kill-source attribution; tests
+/// construct it directly, production resolves it via [`oom_evidence_for`].
 pub fn warning_for_record_with(
     record: &SessionRecord,
     now: u64,
     manager_started_ms: Option<u64>,
     unit_teardown_ms: Option<u64>,
+    oom_evidence: Option<&OomEvidence>,
 ) -> Option<(WarningKind, String)> {
     if let Some(exit) = &record.exit {
         if exit.oom_killed {
@@ -193,7 +322,13 @@ pub fn warning_for_record_with(
         };
         return Some((
             WarningKind::Crash,
-            attribute_systemd_teardown(record, base, manager_started_ms, unit_teardown_ms),
+            attribute_systemd_teardown(
+                record,
+                base,
+                manager_started_ms,
+                unit_teardown_ms,
+                oom_evidence,
+            ),
         ));
     }
     if record.phase == Phase::Failed {
@@ -277,13 +412,16 @@ fn unit_teardown_for(_record: &SessionRecord) -> Option<u64> {
 /// real ordering.
 const MANAGER_BOOT_SKEW_MS: u64 = 5_000;
 
-/// Attribute a dead-worker crash to a per-user systemd manager teardown or
-/// owning systemd unit stop/restart when provable from the record alone.
+/// Attribute a dead-worker crash to a per-user systemd manager teardown,
+/// the session's own systemd unit being OOM-killed, its owning unit
+/// stopping/restarting, or manager-wide OOM pressure -- whichever the
+/// record plus journal evidence can prove, most specific first.
 fn attribute_systemd_teardown(
     record: &SessionRecord,
     base: String,
     manager_started_ms: Option<u64>,
     unit_teardown_ms: Option<u64>,
+    oom_evidence: Option<&OomEvidence>,
 ) -> String {
     let cgroup = record.worker_cgroup.as_deref();
     if let Some(boot_ms) = manager_started_ms.filter(|boot_ms| *boot_ms != 0) {
@@ -295,6 +433,21 @@ fn attribute_systemd_teardown(
                 let gap_ms = boot_ms.saturating_sub(record.created_at_ms);
                 return format!(
                     "{base}; the per-user systemd manager user@{uid}.service started ~{} after this session started, tearing down every session beneath it together",
+                    format_duration_gap(gap_ms)
+                );
+            }
+        }
+    }
+    if let Some(kill_ms) = oom_evidence
+        .and_then(|oom| oom.unit_kill_ms)
+        .filter(|ts| *ts != 0)
+    {
+        if kill_ms > record.created_at_ms.saturating_add(MANAGER_BOOT_SKEW_MS) {
+            if let Some(unit_scope) = cgroup.and_then(crate::placement::systemd_unit_from_cgroup) {
+                let gap_ms = kill_ms.saturating_sub(record.created_at_ms);
+                return format!(
+                    "{base}; the kernel OOM killer killed a process in this session's systemd unit {} ~{} after the session started (systemd journal)",
+                    unit_scope.unit_name(),
                     format_duration_gap(gap_ms)
                 );
             }
@@ -312,7 +465,41 @@ fn attribute_systemd_teardown(
             }
         }
     }
+    if let Some(pressure) = oom_evidence.and_then(|oom| oom.manager_pressure.as_ref()) {
+        if pressure.kills > 0
+            && pressure.last_kill_ms != 0
+            // The pressure journal is the per-user manager's; a worker
+            // outside that tree (login session, system slice) was not
+            // threatened by it. Mirrors the resolver's own guard.
+            && cgroup.map(crate::placement::classify_cgroup_path)
+                == Some(crate::placement::CgroupPlacement::UserManager)
+        {
+            if let Some(uid) = cgroup.and_then(crate::placement::user_manager_uid_from_cgroup) {
+                return format!(
+                    "{base}; the kernel OOM killer killed {} process(es) under the same per-user systemd manager user@{uid}.service within the day before this crash was detected ({}), so kernel memory pressure is the likely kill source (systemd journal)",
+                    pressure.kills,
+                    format_pressure_units(&pressure.units)
+                );
+            }
+        }
+    }
     base
+}
+
+/// The victim-unit list of a manager-pressure attribution, bounded:
+/// `a.scope, b.scope, c.scope, …` when the journal named more units than
+/// are rendered (the `kills` count already carries the magnitude), or
+/// `unnamed victims` when every kill line named only a slice.
+fn format_pressure_units(units: &[String]) -> String {
+    if units.is_empty() {
+        return "unnamed victims".to_string();
+    }
+    let named: Vec<&str> = units.iter().take(3).map(String::as_str).collect();
+    let mut text = named.join(", ");
+    if units.len() > 3 {
+        text += ", …";
+    }
+    text
 }
 
 /// Human gap between session start and manager boot for the teardown

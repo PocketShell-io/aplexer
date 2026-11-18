@@ -2,7 +2,8 @@ use super::*;
 use crate::record::ExitInfo;
 use crate::warnings::{
     acknowledge_warnings, diagnostic_error_for_record, load_warning_for, load_warnings,
-    record_warning, select_warnings, sweep_warnings, warning_for_record, WarningKind,
+    record_warning, select_warnings, sweep_warnings, warning_for_record, ManagerOomPressure,
+    OomEvidence, WarningKind,
 };
 
 fn test_paths(root: &std::path::Path) -> Paths {
@@ -514,6 +515,7 @@ fn unit_teardown_is_attributed_not_hidden() {
         TEARDOWN_NOW,
         Some(TEARDOWN_BOOT_OLDER),
         Some(TEARDOWN_BOOT_NEWER),
+        None,
     )
     .expect("dead worker still warns");
     assert_eq!(kind, WarningKind::Crash);
@@ -539,6 +541,7 @@ fn unit_teardown_within_skew_or_older_stays_generic() {
             TEARDOWN_NOW,
             Some(TEARDOWN_BOOT_OLDER),
             ts,
+            None,
         )
         .expect("dead worker still warns");
         assert!(
@@ -560,6 +563,7 @@ fn manager_teardown_wins_over_unit_teardown() {
         TEARDOWN_NOW,
         Some(TEARDOWN_BOOT_NEWER),
         Some(TEARDOWN_BOOT_NEWER),
+        None,
     )
     .expect("dead worker still warns");
     assert!(
@@ -567,6 +571,273 @@ fn manager_teardown_wins_over_unit_teardown() {
         "{detail}"
     );
     assert!(!detail.contains("supervision.service"), "{detail}");
+}
+
+/// Hub intake 9cb24bf5 (2026-11-16): a codex worker died in the `running`
+/// phase with no exit while the kernel OOM killer was killing processes in
+/// neighboring session units (journal: kills at 21:52:44 and 21:54:43, the
+/// warning first observed 21:53:41). The warning read "termination signal
+/// and kill source are unknown" and needed journal forensics. A dead
+/// worker whose own unit carries a journal OOM-killer line, or whose
+/// per-user manager was killing processes around detection time, must name
+/// the OOM killer instead.
+fn oom_fixture(cgroup: Option<&str>) -> SessionRecord {
+    teardown_fixture(cgroup, TEARDOWN_CREATED)
+}
+
+fn unit_oom_evidence(kill_ms: Option<u64>) -> OomEvidence {
+    OomEvidence {
+        unit_kill_ms: kill_ms,
+        manager_pressure: None,
+    }
+}
+
+fn pressure_evidence(kills: u32, units: &[&str], last_kill_ms: u64) -> OomEvidence {
+    OomEvidence {
+        unit_kill_ms: None,
+        manager_pressure: Some(ManagerOomPressure {
+            kills,
+            units: units.iter().map(|unit| unit.to_string()).collect(),
+            last_kill_ms,
+        }),
+    }
+}
+
+#[test]
+fn unit_oom_kill_is_attributed_not_hidden() {
+    let record = oom_fixture(Some(&user_manager_cgroup()));
+    let evidence = unit_oom_evidence(Some(TEARDOWN_CREATED + 1_800_000));
+    let (kind, detail) = crate::warnings::warning_for_record_with(
+        &record,
+        TEARDOWN_NOW,
+        Some(TEARDOWN_BOOT_OLDER),
+        None,
+        Some(&evidence),
+    )
+    .expect("dead worker still warns");
+    assert_eq!(kind, WarningKind::Crash, "OOM deaths stay crashes");
+    assert!(detail.contains("while running"), "{detail}");
+    assert!(detail.contains("no exit recorded"), "{detail}");
+    assert!(
+        detail.contains("the kernel OOM killer killed a process in this session's systemd unit aplexer-workload-x.scope"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("~30m after the session started"),
+        "{detail}"
+    );
+    assert!(detail.contains("systemd journal"), "{detail}");
+}
+
+#[test]
+fn unit_oom_kill_within_skew_before_or_absent_stays_generic() {
+    let record = oom_fixture(Some(&user_manager_cgroup()));
+    for kill_ms in [
+        None,
+        Some(0),
+        Some(TEARDOWN_CREATED - 60_000),
+        Some(TEARDOWN_CREATED + 1_000),
+    ] {
+        let (_, detail) = crate::warnings::warning_for_record_with(
+            &record,
+            TEARDOWN_NOW,
+            Some(TEARDOWN_BOOT_OLDER),
+            None,
+            Some(&unit_oom_evidence(kill_ms)),
+        )
+        .expect("dead worker still warns");
+        assert!(
+            detail.contains("termination signal and kill source are unknown"),
+            "{detail}"
+        );
+        assert!(!detail.contains("OOM killer"), "{detail}");
+    }
+}
+
+#[test]
+fn manager_oom_pressure_is_named_as_the_likely_kill_source() {
+    let record = oom_fixture(Some(&user_manager_cgroup()));
+    let evidence = pressure_evidence(
+        5,
+        &[
+            "aplexer-workload-a.scope",
+            "aplexer-workload-b.scope",
+            "app.slice",
+            "-.slice",
+        ],
+        TEARDOWN_NOW - 600_000,
+    );
+    let (kind, detail) = crate::warnings::warning_for_record_with(
+        &record,
+        TEARDOWN_NOW,
+        Some(TEARDOWN_BOOT_OLDER),
+        None,
+        Some(&evidence),
+    )
+    .expect("dead worker still warns");
+    assert_eq!(kind, WarningKind::Crash);
+    assert!(detail.contains("killed 5 process(es)"), "{detail}");
+    assert!(
+        detail.contains("per-user systemd manager user@1000.service"),
+        "{detail}"
+    );
+    assert!(detail.contains("likely kill source"), "{detail}");
+    assert!(
+        detail.contains("aplexer-workload-a.scope, aplexer-workload-b.scope, app.slice, …"),
+        "{detail}"
+    );
+    assert!(!detail.contains("tearing down every session"), "{detail}");
+}
+
+#[test]
+fn manager_oom_pressure_outside_the_user_manager_stays_generic() {
+    // A login-session worker is not beneath the per-user manager whose
+    // journal was scanned; its pressure evidence must not be applied.
+    let record = oom_fixture(Some("/user.slice/user-1000.slice/session-8.scope"));
+    let evidence = pressure_evidence(5, &["app.slice"], TEARDOWN_NOW - 600_000);
+    let (_, detail) = crate::warnings::warning_for_record_with(
+        &record,
+        TEARDOWN_NOW,
+        Some(TEARDOWN_BOOT_OLDER),
+        None,
+        Some(&evidence),
+    )
+    .expect("dead worker still warns");
+    assert!(
+        detail.contains("termination signal and kill source are unknown"),
+        "{detail}"
+    );
+    assert!(!detail.contains("OOM killer"), "{detail}");
+}
+
+#[test]
+fn empty_or_absent_oom_evidence_stays_generic() {
+    let record = oom_fixture(Some(&user_manager_cgroup()));
+    for evidence in [None, Some(OomEvidence::default())] {
+        let (_, detail) = crate::warnings::warning_for_record_with(
+            &record,
+            TEARDOWN_NOW,
+            Some(TEARDOWN_BOOT_OLDER),
+            None,
+            evidence.as_ref(),
+        )
+        .expect("dead worker still warns");
+        assert!(
+            detail.contains("termination signal and kill source are unknown"),
+            "{detail}"
+        );
+    }
+}
+
+#[test]
+fn manager_teardown_wins_over_oom_attribution() {
+    let record = oom_fixture(Some(&user_manager_cgroup()));
+    let evidence = OomEvidence {
+        unit_kill_ms: Some(TEARDOWN_CREATED + 1_800_000),
+        manager_pressure: Some(ManagerOomPressure {
+            kills: 3,
+            units: vec!["app.slice".to_string()],
+            last_kill_ms: TEARDOWN_NOW - 600_000,
+        }),
+    };
+    let (_, detail) = crate::warnings::warning_for_record_with(
+        &record,
+        TEARDOWN_NOW,
+        Some(TEARDOWN_BOOT_NEWER),
+        None,
+        Some(&evidence),
+    )
+    .expect("dead worker still warns");
+    assert!(
+        detail.contains("per-user systemd manager user@1000.service"),
+        "{detail}"
+    );
+    assert!(!detail.contains("OOM killer"), "{detail}");
+}
+
+#[test]
+fn unit_oom_kill_wins_over_unit_teardown_and_pressure() {
+    let record = oom_fixture(Some(&user_manager_cgroup()));
+    let evidence = OomEvidence {
+        unit_kill_ms: Some(TEARDOWN_CREATED + 1_800_000),
+        manager_pressure: Some(ManagerOomPressure {
+            kills: 3,
+            units: vec!["app.slice".to_string()],
+            last_kill_ms: TEARDOWN_NOW - 600_000,
+        }),
+    };
+    let (_, detail) = crate::warnings::warning_for_record_with(
+        &record,
+        TEARDOWN_NOW,
+        Some(TEARDOWN_BOOT_OLDER),
+        Some(TEARDOWN_BOOT_NEWER),
+        Some(&evidence),
+    )
+    .expect("dead worker still warns");
+    assert!(
+        detail.contains("the kernel OOM killer killed a process in this session's systemd unit"),
+        "{detail}"
+    );
+    assert!(!detail.contains("stopped or restarted"), "{detail}");
+    assert!(!detail.contains("likely kill source"), "{detail}");
+}
+
+/// The `--output=short-unix` journal parser: epoch timestamps first, the
+/// kill message recognized, the victim unit lifted from the message, and
+/// everything else (other messages, malformed lines) ignored.
+#[test]
+fn journal_oom_line_parser_keeps_only_oom_kill_lines() {
+    let text = concat!(
+        "1794862364.526310 RMTHZ systemd[2147666]: aplexer-workload-8dac4bac.scope: A process of this unit has been killed by the OOM killer.\n",
+        "1794862365.100000 RMTHZ systemd[2147666]: aplexer-workload-8dac4bac.scope: Consumed 21.707s CPU time, 3.0M memory peak, 0B memory swap peak.\n",
+        "1794816980.430687 RMTHZ systemd[2147666]: -.slice: A process of this unit has been killed by the OOM killer.\n",
+        "not a journal line\n",
+        "1794816981.000000 RMTHZ systemd[2147666]: Starting crash-triage.service - Auto-triage...\n",
+    );
+    let kills = crate::systemd_journal_oom_kill_lines(text);
+    assert_eq!(kills.len(), 2, "{kills:?}");
+    assert_eq!(kills[0].at_ms, 1_794_862_364_526);
+    assert_eq!(
+        kills[0].unit.as_deref(),
+        Some("aplexer-workload-8dac4bac.scope")
+    );
+    assert_eq!(kills[1].at_ms, 1_794_816_980_430);
+    assert_eq!(kills[1].unit.as_deref(), Some("-.slice"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn live_unit_oom_lookup_handles_missing_unit_gracefully() {
+    let missing = crate::placement::SystemdUnitScope::System {
+        unit: "aplexer-nonexistent-unit-for-test.service".to_string(),
+    };
+    assert_eq!(crate::systemd_unit_oom_kill_ms(&missing, 0), None);
+}
+
+/// The live manager-pressure lookup returns only kills inside the queried
+/// window, with units the journal actually named -- or nothing at all on
+/// hosts without a readable user journal. Never fails hard either way.
+#[cfg(target_os = "linux")]
+#[test]
+fn live_manager_oom_lookup_is_bounded_and_sane_or_absent() {
+    let uid = unsafe { libc::getuid() };
+    let now = crate::util::now_ms();
+    let since = now - 3_600_000;
+    let kills = crate::user_manager_oom_kills(uid, since, now);
+    for kill in &kills {
+        assert!(
+            kill.at_ms >= since.saturating_sub(2_000) && kill.at_ms <= now + 2_000,
+            "kill {kill:?} outside the queried window"
+        );
+        if let Some(unit) = &kill.unit {
+            assert!(
+                unit.ends_with(".scope") || unit.ends_with(".service") || unit.ends_with(".slice"),
+                "kill {kill:?} names no unit-like victim"
+            );
+        }
+    }
+    // Another user's manager is unreadable and yields nothing, not an error.
+    assert!(crate::user_manager_oom_kills(uid + 4_000_000, since, now).is_empty());
 }
 
 #[cfg(target_os = "linux")]

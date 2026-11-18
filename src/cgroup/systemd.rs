@@ -211,6 +211,163 @@ pub fn systemd_unit_teardown_ms(scope: &crate::placement::SystemdUnitScope) -> O
     monotonic_us_to_epoch_ms(max_us)
 }
 
+/// One kernel OOM kill the systemd journal recorded: when it happened and
+/// which unit owned the victim. `unit` is `None` for the manager-wide
+/// summary lines (`-.slice:`, `app.slice:`) that name a slice rather than
+/// the victim's own unit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JournalOomKill {
+    pub at_ms: u64,
+    pub unit: Option<String>,
+}
+
+/// The most recent epoch-ms at which the systemd journal recorded a kernel
+/// OOM kill inside `scope`'s unit at or after `since_ms` (session start:
+/// the worker cannot have been killed before it existed). Used by the
+/// crash warning's kill-source attribution: a worker that died with no
+/// exit while its own unit carries an OOM-killer line was OOM-killed, even
+/// though nobody was left to write `exit.oom_killed`. `None` when the unit
+/// has no such line, the journal is unreadable, the manager belongs to
+/// another user, or the query exceeds its deadline -- a missed attribution
+/// falls back to the generic diagnosis, never fails a sweep.
+pub fn systemd_unit_oom_kill_ms(
+    scope: &crate::placement::SystemdUnitScope,
+    since_ms: u64,
+) -> Option<u64> {
+    let unit = scope.unit_name().to_string();
+    let bus = match scope {
+        // `journalctl --user` talks to the calling user's journal only.
+        crate::placement::SystemdUnitScope::User { uid, .. } => {
+            if *uid != unsafe { libc::geteuid() } {
+                return None;
+            }
+            "--user"
+        }
+        crate::placement::SystemdUnitScope::System { .. } => "--system",
+    };
+    systemd_journal_oom_kills(bus, Some(&unit), since_ms, crate::now_ms())
+        .last()
+        .map(|kill| kill.at_ms)
+}
+
+/// OOM-killer kill lines from the per-user manager `user@<uid>.service`'s
+/// journal between `since_ms` and `until_ms`, oldest first. Pressure
+/// evidence for the kill-source attribution: a dead worker with no exit
+/// whose own unit names no OOM kill may still have been a victim of a
+/// manager-wide memory storm (kernel OOM kills cross unit boundaries).
+/// `uid` must be the calling user's; other managers are unreadable. Empty
+/// on any failure, like every attribution lookup.
+pub fn user_manager_oom_kills(uid: u32, since_ms: u64, until_ms: u64) -> Vec<JournalOomKill> {
+    if uid != unsafe { libc::geteuid() } {
+        return Vec::new();
+    }
+    systemd_journal_oom_kills("--user", None, since_ms, until_ms)
+}
+
+/// Query the trusted `journalctl` for lines whose message says a process
+/// was killed by the OOM killer, optionally narrowed to one unit
+/// (`-u`), parsed from `--output=short-unix` (epoch seconds first token,
+/// no locale-dependent dates). Mirrors [`run_systemctl_show`]'s helper
+/// discipline: never while the descendant reaper is armed (the SIGCHLD
+/// race), registered and reaped off the caller's critical path, hard
+/// deadline so a wedged journal client cannot stall a listing sweep.
+fn systemd_journal_oom_kills(
+    bus_flag: &str,
+    unit: Option<&str>,
+    since_ms: u64,
+    until_ms: u64,
+) -> Vec<JournalOomKill> {
+    let mut args: Vec<String> = vec![
+        bus_flag.to_string(),
+        "--quiet".to_string(),
+        "--no-pager".to_string(),
+        "--output=short-unix".to_string(),
+        format!("--since=@{}", since_ms / 1_000),
+        format!("--until=@{}", until_ms / 1_000),
+    ];
+    if let Some(unit) = unit {
+        args.push("--unit".to_string());
+        args.push(unit.to_string());
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let Some(text) = run_journalctl(&arg_refs) else {
+        return Vec::new();
+    };
+    systemd_journal_oom_kill_lines(&text)
+}
+
+/// Parse `--output=short-unix` journal text into the OOM kills it records.
+/// Split out for tests: the shape is `<epoch>.<usec> <host> <ident>[<pid>]:
+/// <message>`, the kill lines say `killed by the OOM killer`, and the
+/// victim's unit (when systemd could name one) opens the message as
+/// `<unit>: A process of this unit has been killed by the OOM killer.`.
+pub fn systemd_journal_oom_kill_lines(text: &str) -> Vec<JournalOomKill> {
+    let mut kills = Vec::new();
+    for line in text.lines() {
+        let message = match line.split_once("]: ") {
+            Some((_, message)) => message,
+            None => continue,
+        };
+        if !message.contains("killed by the OOM killer") {
+            continue;
+        }
+        let Some(ts_text) = line.split_whitespace().next() else {
+            continue;
+        };
+        let Ok(secs) = ts_text.parse::<f64>() else {
+            continue;
+        };
+        if !secs.is_finite() || secs <= 0.0 {
+            continue;
+        }
+        let unit = message
+            .split_once(": ")
+            .map(|(unit, _)| unit.to_string())
+            .filter(|unit| {
+                unit.ends_with(".scope") || unit.ends_with(".service") || unit.ends_with(".slice")
+            });
+        kills.push(JournalOomKill {
+            at_ms: (secs * 1_000.0) as u64,
+            unit,
+        });
+    }
+    kills
+}
+
+/// Run the trusted `journalctl` with a tight deadline, same discipline as
+/// [`run_systemctl_show`]. `None` on any failure or deadline miss.
+fn run_journalctl(args: &[&str]) -> Option<String> {
+    if crate::worker::reaper_is_armed() {
+        return None;
+    }
+    let journalctl = trusted_system_helper("journalctl").ok()?;
+    let mut child = Command::new(&journalctl)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let pid = child.id();
+    crate::worker::own_child_pid(pid);
+    let output = (|| -> Option<std::process::Output> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match child.try_wait().ok()? {
+                Some(_) => return child.wait_with_output().ok(),
+                None if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                None => thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    })();
+    crate::worker::disown_child_pid(pid);
+    String::from_utf8(output?.stdout).ok()
+}
+
 fn monotonic_us_to_epoch_ms(monotonic_us: u64) -> Option<u64> {
     if monotonic_us == 0 {
         return None;
