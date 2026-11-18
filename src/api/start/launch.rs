@@ -122,6 +122,8 @@ pub(super) fn spawn_worker_process(
     // turn into a broken start, and the honest placement warning from
     // `start_session` covers the degraded shape.
     #[cfg(unix)]
+    let mut system_scoped = false;
+    #[cfg(unix)]
     if crate::placement::system_scope_requested() {
         match crate::system_scope_escape_decision() {
             Ok(true) => {
@@ -131,6 +133,8 @@ pub(super) fn spawn_worker_process(
                          worker could not be wrapped in a system scope ({error:#}); the \
                          worker stays in the ambient cgroup"
                     );
+                } else {
+                    system_scoped = true;
                 }
             }
             // The decision is `false` only when the escape was not
@@ -145,10 +149,27 @@ pub(super) fn spawn_worker_process(
             }
         }
     }
+    // Nested `a start` from inside another aplexer session under the user
+    // manager would otherwise leave the new worker inside the parent's scope
+    // (and reparented to the parent's subreaper worker), so killing the
+    // parent session would kill the child session too. Isolate into its own
+    // transient user scope when available.
+    #[cfg(target_os = "linux")]
+    if !system_scoped
+        && std::env::var_os("APLEXER_SESSION_ID").is_some()
+        && crate::placement::read_process_cgroup(std::process::id())
+            .as_deref()
+            .map(crate::placement::classify_cgroup_path)
+            == Some(crate::placement::CgroupPlacement::UserManager)
+        && crate::probe_user_scope_backend().is_ok()
+    {
+        let _ = crate::wrap_worker_in_user_scope(id, &mut command);
+    }
     command
         .env("APLEXER_RUNTIME_DIR", &paths.runtime_root)
         .env("APLEXER_STATE_DIR", &paths.state_root)
         .env("APLEXER_CONFIG", &paths.config_file)
+        .env("APLEXER_WORKER_SESSION_ID", id.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(

@@ -96,19 +96,30 @@ pub(super) fn systemd_run_scope(
 /// exits, and `--collect` garbage-collects it. Never called unless the env
 /// opt-in is set.
 pub fn probe_system_scope_backend() -> Result<()> {
+    probe_scope_backend("--system")
+}
+
+pub(crate) fn probe_user_scope_backend() -> Result<()> {
+    probe_scope_backend("--user")
+}
+
+fn probe_scope_backend(bus_flag: &str) -> Result<()> {
     let systemd_run = trusted_system_helper("systemd-run")?;
     let true_binary = trusted_system_helper("true")?;
     let unit = format!("aplexer-escape-probe-{}", Uuid::new_v4().simple());
-    let mut command = systemd_run_scope(systemd_run, "--system", &unit, true);
+    let mut command = systemd_run_scope(systemd_run, bus_flag, &unit, true);
     command
         .arg("--")
         .arg(&true_binary)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut probe = command
-        .spawn()
-        .with_context(|| format!("spawn system-scope probe from {}", true_binary.display()))?;
+    let mut probe = command.spawn().with_context(|| {
+        format!(
+            "spawn {bus_flag} scope probe from {}",
+            true_binary.display()
+        )
+    })?;
     // Same discipline as every other helper child: register the pid so the
     // worker's descendant reaper cannot consume its status, and always reap
     // it here before dropping.
@@ -122,7 +133,7 @@ pub fn probe_system_scope_backend() -> Result<()> {
                 None if Instant::now() >= deadline => {
                     let _ = probe.kill();
                     let _ = probe.wait();
-                    bail!("systemd-run system-scope probe timed out after 10s");
+                    bail!("systemd-run {bus_flag} --scope probe timed out after 10s");
                 }
                 None => thread::sleep(Duration::from_millis(20)),
             }
@@ -132,9 +143,8 @@ pub fn probe_system_scope_backend() -> Result<()> {
     let status = probe_result?;
     if !status.success() {
         bail!(
-            "systemd-run --system --scope probe exited with {status}; creating system \
-             manager scopes needs root or polkit authorization \
-             (org.freedesktop.systemd1.manage-units)"
+            "systemd-run {bus_flag} --scope probe exited with {status}; creating manager \
+             scopes failed"
         );
     }
     Ok(())
@@ -306,15 +316,19 @@ fn boot_time_ms() -> Option<u64> {
 /// in that case: the issue asks for honest degradation with a warning,
 /// never for a broken start.
 pub(crate) fn wrap_worker_in_system_scope(id: Uuid, worker: &mut Command) -> Result<()> {
+    wrap_worker_in_scope(id, "--system", worker)
+}
+
+pub(crate) fn wrap_worker_in_user_scope(id: Uuid, worker: &mut Command) -> Result<()> {
+    wrap_worker_in_scope(id, "--user", worker)
+}
+
+fn wrap_worker_in_scope(id: Uuid, bus_flag: &str, worker: &mut Command) -> Result<()> {
     let systemd_run = trusted_system_helper("systemd-run")?;
     let program = worker.get_program().to_os_string();
     let worker_args: Vec<OsString> = worker.get_args().map(|arg| arg.to_os_string()).collect();
-    let mut command = systemd_run_scope(
-        systemd_run,
-        "--system",
-        &format!("aplexer-worker-{id}"),
-        true,
-    );
+    let mut command =
+        systemd_run_scope(systemd_run, bus_flag, &format!("aplexer-worker-{id}"), true);
     command.arg("--").arg(&program).args(&worker_args);
     *worker = command;
     Ok(())
