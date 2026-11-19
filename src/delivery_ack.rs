@@ -84,6 +84,79 @@ fn codex_footer_at<T: AsRef<str>>(lines: &[T], i: usize) -> bool {
             && line.contains(" · "))
 }
 
+/// Horizontal box-drawing border used by Hydrogen/Antigravity composers.
+fn is_antigravity_border(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.chars().count() >= 16 && trimmed.chars().all(|c| c == '─')
+}
+
+/// Maintained Hydrogen/Antigravity footer immediately below the bottom border.
+/// Requires both an action hint (`? for shortcuts` or `esc to interrupt`) and
+/// a complete maintained Gemini model segment (rejecting truncated footers and
+/// unrelated engines).
+fn is_antigravity_footer(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.ends_with('…') || trimmed.ends_with("...") {
+        return false;
+    }
+    let has_action =
+        trimmed.contains("? for shortcuts") || trimmed.contains("esc to interrupt");
+    let has_model = trimmed.contains(" · ")
+        && trimmed.contains("Gemini")
+        && (trimmed.contains("Hydrogen")
+            || trimmed.contains("Argon")
+            || trimmed.contains("Flash"));
+    has_action && has_model
+}
+
+/// Locate the single unambiguous bordered ASCII `>` composer and its
+/// maintained Hydrogen footer, returning `(top_border, prompt_row, bottom_border)`.
+/// Shared by `parse_screen` and `styled_composer_is_ghost` so plain and styled
+/// checks always inspect the exact same region.
+fn antigravity_composer_bounds<T: AsRef<str>>(lines: &[T]) -> Option<(usize, usize, usize)> {
+    let bottom = (0..lines.len()).rev().find(|&i| {
+        is_antigravity_border(lines[i].as_ref())
+            && i + 1 < lines.len()
+            && is_antigravity_footer(lines[i + 1].as_ref())
+    })?;
+    // Reject menus, modals, or extra UI rendered below the footer.
+    if lines[bottom + 2..]
+        .iter()
+        .any(|line| !line.as_ref().trim().is_empty())
+    {
+        return None;
+    }
+    let top = (0..bottom)
+        .rev()
+        .find(|&i| is_antigravity_border(lines[i].as_ref()))?;
+    if bottom <= top + 1 {
+        return None;
+    }
+    // Reject duplicate top border immediately above the composer.
+    if top > 0 && is_antigravity_border(lines[top - 1].as_ref()) {
+        return None;
+    }
+    let start = top + 1;
+    if !lines[start].as_ref().trim_start().starts_with('>') {
+        return None;
+    }
+    // Reject ambiguous second bordered `>` composer + footer above in the screen.
+    if (0..top).any(|i| {
+        is_antigravity_border(lines[i].as_ref())
+            && i + 1 < top
+            && is_antigravity_footer(lines[i + 1].as_ref())
+            && (0..i)
+                .rev()
+                .find(|&t| is_antigravity_border(lines[t].as_ref()))
+                .is_some_and(|t| {
+                    i > t + 1 && lines[t + 1].as_ref().trim_start().starts_with('>')
+                })
+    }) {
+        return None;
+    }
+    Some((top, start, bottom))
+}
+
 /// Parse a plain screen into composer and surroundings. `None` means the
 /// layout is not one this engine family is known to draw (booting, a modal
 /// dialog, an unknown engine): callers must treat that as "unknown", never
@@ -132,9 +205,23 @@ pub fn parse_screen(engine: &str, screen: &str) -> Option<ScreenView> {
                 .join("\n");
             (start, bottom + 1, input)
         }
+        "antigravity" => {
+            let (top, prompt_row, bottom) = antigravity_composer_bounds(&lines)?;
+            let first = lines[prompt_row].trim_start().strip_prefix('>')?;
+            let mut joined = first.to_string();
+            for row in &lines[prompt_row + 1..bottom] {
+                joined.push('\n');
+                joined.push_str(row);
+            }
+            (top, bottom + 1, joined)
+        }
         _ => return None,
     };
-    let input = strip(input.trim_start().trim_start_matches(['›', '❯']));
+    let input = if family == "antigravity" {
+        strip(&input)
+    } else {
+        strip(input.trim_start().trim_start_matches(['›', '❯']))
+    };
     let composer = if input.is_empty() || is_placeholder(family, &input) {
         Composer::Empty
     } else {
@@ -151,7 +238,7 @@ pub fn parse_screen(engine: &str, screen: &str) -> Option<ScreenView> {
 }
 
 /// The engine families with a screen model, most distinctive first.
-const SCREEN_FAMILIES: [&str; 3] = ["claude", "codex", "opencode"];
+const SCREEN_FAMILIES: [&str; 4] = ["claude", "codex", "opencode", "antigravity"];
 
 /// The screen model that verifies an engine's own deliveries: `None` when
 /// its family has none (`shell`, a private wrapper) and sniffing decides.
@@ -310,12 +397,19 @@ pub fn styled_composer_is_ghost(engine: &str, screen: &vt100::Screen) -> bool {
             }
             (start, bottom - 1)
         }
+        "antigravity" => {
+            let Some((_top, prompt_row, bottom)) = antigravity_composer_bounds(&rows) else {
+                return false;
+            };
+            (prompt_row, bottom)
+        }
         _ => return false,
     };
     let mut content_cells = 0u32;
     for r in first..last {
         let r = r as u16;
         let mut in_content = false;
+        let mut saw_marker = false;
         let mut c: u16 = 0;
         while c < cols {
             let Some(cell) = screen.cell(r, c) else {
@@ -328,8 +422,13 @@ pub fn styled_composer_is_ghost(engine: &str, screen: &vt100::Screen) -> bool {
                 if !in_content {
                     // Leading chrome: blanks and one prompt marker or bar.
                     let trimmed = text.trim();
-                    if trimmed.is_empty() || matches!(trimmed, "❯" | "›" | "┃" | "│") {
+                    if trimmed.is_empty() {
                         // Still chrome; the first other glyph starts content.
+                    } else if !saw_marker
+                        && ((r == first as u16 && trimmed == ">")
+                            || matches!(trimmed, "❯" | "›" | "┃" | "│"))
+                    {
+                        saw_marker = true;
                     } else {
                         in_content = true;
                     }
@@ -383,8 +482,32 @@ pub fn is_busy(engine: &str, screen: &str) -> bool {
             line.contains("esc to interrupt") || line.starts_with("• Working (")
         }),
         "opencode" => view.below.iter().any(|line| line.contains("esc interrupt")),
+        "antigravity" => {
+            status_rows.iter().any(|line| antigravity_spinner(line))
+                || view
+                    .below
+                    .iter()
+                    .any(|line| line.contains("esc to interrupt") || line.contains("esc interrupt"))
+        }
         _ => false,
     }
+}
+
+/// Braille spinner or `esc to interrupt` status row immediately above the
+/// Hydrogen/Antigravity composer.
+fn antigravity_spinner(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.contains("esc to interrupt") {
+        return true;
+    }
+    let mut chars = trimmed.chars();
+    let Some(glyph) = chars.next() else {
+        return false;
+    };
+    matches!(
+        glyph,
+        '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏'
+    ) && chars.next() == Some(' ')
 }
 
 /// `✶ Stewing…`, `· Hyperspacing… (1m 26s · ↓ 6.2k tokens)`; the finished
@@ -440,6 +563,7 @@ fn is_status_line(family: &str, line: &str) -> bool {
                 || trimmed.starts_with("Worked for ")
                 || trimmed.contains("esc to interrupt")
         }
+        "antigravity" => antigravity_spinner(line),
         _ => false,
     }
 }
@@ -555,6 +679,16 @@ pub fn strict_payload_landed(engine: &str, plain: &str, payload: &str) -> bool {
                 }
             }
         }
+        "antigravity" => {
+            if let Some(text) = lines.get(start + 1).and_then(|line| prompt_text(line, '>')) {
+                content.push(text);
+            }
+            for line in lines.iter().take(end.saturating_sub(1)).skip(start + 2) {
+                if !line.trim().is_empty() {
+                    return false;
+                }
+            }
+        }
         _ => return false,
     }
     content.len() == 1 && strict_text_matches(content[0], payload)
@@ -590,6 +724,7 @@ fn strict_echo_count(engine: &str, plain: &str, payload: &str) -> usize {
             let marker = match family {
                 "codex" => '›',
                 "claude" => '❯',
+                "antigravity" => '>',
                 _ => return 0,
             };
             if let Some(text) = prompt_text(&lines[index], marker) {
@@ -641,6 +776,12 @@ pub fn screen_is_fresh_empty_prompt(engine: &str, plain: &str, screen: &vt100::S
             }
             "codex" => trimmed.starts_with(['›', '•']) || trimmed.starts_with("Worked for "),
             "opencode" => trimmed.starts_with(['┃', '▣']),
+            "antigravity" => {
+                trimmed == ">"
+                    || trimmed.starts_with("> ")
+                    || trimmed.starts_with(['•', '●'])
+                    || antigravity_spinner(line)
+            }
             _ => true,
         }
     })
@@ -695,7 +836,7 @@ pub fn echo_count(engine: &str, screen: &str, payload: &str) -> usize {
     let transcript: String = view
         .above
         .iter()
-        .map(|line| strip(line.trim_start().trim_start_matches(['┃', '›', '❯'])))
+        .map(|line| strip(line.trim_start().trim_start_matches(['┃', '›', '❯', '>'])))
         .collect();
     let needle = tail(&payload);
     transcript.matches(needle.as_str()).count()

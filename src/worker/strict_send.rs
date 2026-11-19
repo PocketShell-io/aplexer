@@ -806,4 +806,153 @@ mod tests {
         assert_eq!(submit(&recovered, operation, PAYLOAD)["replayed"], true);
         assert_eq!(fs::read(writes).unwrap(), bytes);
     }
+
+    fn hydrogen_plain(above: &[&str], composer: &[&str], footer: &str) -> String {
+        let rule = "\u{2500}".repeat(80);
+        let mut lines: Vec<String> = above.iter().map(|s| (*s).to_string()).collect();
+        lines.push(rule.clone());
+        for row in composer {
+            lines.push((*row).to_string());
+        }
+        lines.push(rule);
+        if !footer.is_empty() {
+            lines.push(footer.to_string());
+        }
+        lines.join("\n")
+    }
+
+    fn set_raw_screen(runtime: &WorkerRuntime, bracketed_paste: bool, plain: &str) {
+        let mode = if bracketed_paste {
+            "\x1b[?2004h"
+        } else {
+            "\x1b[?2004l"
+        };
+        runtime
+            .output
+            .append(format!("{mode}\x1b[2J\x1b[H{}", plain.replace('\n', "\r\n")).as_bytes())
+            .unwrap();
+    }
+
+    #[test]
+    fn strict_hydrogen_submission_is_verified_once_and_replay_never_writes_again() {
+        let (_dir, runtime, writes) = fixture();
+        {
+            let mut record = runtime.record.lock().unwrap();
+            record.engine = "antigravity".into();
+        }
+        let footer =
+            "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
+        let ready = hydrogen_plain(&["  \u{2022} Ready for task"], &[">"], footer);
+        let pending = hydrogen_plain(
+            &["  \u{2022} Ready for task"],
+            &[&format!("> {PAYLOAD}")],
+            footer,
+        );
+        let done = hydrogen_plain(
+            &[
+                "  \u{2022} Ready for task",
+                &format!("> {PAYLOAD}"),
+                "",
+                "\u{2022} ACKDONE",
+            ],
+            &[">"],
+            footer,
+        );
+        set_raw_screen(&runtime, true, &ready);
+        let worker = runtime.clone();
+        let input = writes.clone();
+        let paint = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline && fs::metadata(&input).unwrap().len() == 0 {
+                thread::sleep(Duration::from_millis(5));
+            }
+            set_raw_screen(&worker, true, &pending);
+            while Instant::now() < deadline && !fs::read(&input).unwrap().ends_with(b"\r") {
+                thread::sleep(Duration::from_millis(5));
+            }
+            set_raw_screen(&worker, true, &done);
+        });
+        let operation = Uuid::new_v4();
+        let receipt = submit(&runtime, operation, PAYLOAD);
+        paint.join().unwrap();
+        assert_eq!(receipt["status"], "submitted_verified", "{receipt}");
+        assert_eq!(receipt["reason"], "submission_observed", "{receipt}");
+        assert_eq!(receipt["landed"], true);
+        assert_eq!(receipt["submitted"], true);
+        assert!(receipt["consumed"].is_null());
+        let bytes = fs::read(&writes).unwrap();
+        assert_eq!(bytes, format!("\x1b[200~{PAYLOAD}\x1b[201~\r").as_bytes());
+        assert_eq!(submit(&runtime, operation, PAYLOAD)["replayed"], true);
+        assert_eq!(
+            submit(&runtime, operation, "different")["reason"],
+            "operation_conflict"
+        );
+        assert_eq!(fs::read(writes).unwrap(), bytes);
+    }
+
+    #[test]
+    fn strict_hydrogen_refuses_unknown_busy_draft_menu_attached_and_no_paste_without_bytes() {
+        let (_dir, runtime, writes) = fixture();
+        {
+            let mut record = runtime.record.lock().unwrap();
+            record.engine = "antigravity".into();
+        }
+        let footer_idle =
+            "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
+        let footer_busy =
+            "esc to interrupt                               auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
+        let ready = hydrogen_plain(&[], &[">"], footer_idle);
+
+        // Unknown / malformed / menu layouts must refuse as unknown_layout.
+        let truncated_footer = hydrogen_plain(
+            &[],
+            &[">"],
+            "? for shortcuts                                auto \u{00b7} Gemini 4 Hydro",
+        );
+        let menu_below = format!("{ready}\n  1. Allow once");
+        for bad in [truncated_footer, menu_below] {
+            set_raw_screen(&runtime, true, &bad);
+            let receipt = submit(&runtime, Uuid::new_v4(), PAYLOAD);
+            assert_eq!(receipt["status"], "refused", "{bad}: {receipt}");
+            assert_eq!(receipt["reason"], "unknown_layout", "{bad}: {receipt}");
+            assert_eq!(receipt["mutation"], false);
+        }
+
+        // Busy, nonempty draft, and multiline draft must refuse as unsafe_composer.
+        let busy = hydrogen_plain(&[], &[">"], footer_busy);
+        let draft = hydrogen_plain(&[], &["> unsent text"], footer_idle);
+        let multiline = hydrogen_plain(&[], &["> line one", "line two"], footer_idle);
+        for unsafe_screen in [busy, draft, multiline] {
+            set_raw_screen(&runtime, true, &unsafe_screen);
+            let receipt = submit(&runtime, Uuid::new_v4(), PAYLOAD);
+            assert_eq!(receipt["status"], "refused", "{unsafe_screen}: {receipt}");
+            assert_eq!(
+                receipt["reason"], "unsafe_composer",
+                "{unsafe_screen}: {receipt}"
+            );
+            assert_eq!(receipt["mutation"], false);
+        }
+
+        // Bracketed paste disabled refuses cleanly.
+        set_raw_screen(&runtime, false, &ready);
+        let no_paste = submit(&runtime, Uuid::new_v4(), PAYLOAD);
+        assert_eq!(no_paste["reason"], "bracketed_paste_unavailable");
+        assert_eq!(no_paste["mutation"], false);
+
+        // Attached client refuses cleanly.
+        set_raw_screen(&runtime, true, &ready);
+        runtime.terminal.lock().unwrap().clients.push(1);
+        let attached = submit(&runtime, Uuid::new_v4(), PAYLOAD);
+        assert_eq!(attached["reason"], "input_client_attached");
+        assert_eq!(attached["mutation"], false);
+        runtime.terminal.lock().unwrap().clients.clear();
+
+        // Reported working state refuses as not_idle.
+        runtime.record.lock().unwrap().reported_state = Some("working".into());
+        let working = submit(&runtime, Uuid::new_v4(), PAYLOAD);
+        assert_eq!(working["reason"], "not_idle");
+        assert_eq!(working["mutation"], false);
+
+        assert_eq!(fs::metadata(writes).unwrap().len(), 0);
+    }
 }
