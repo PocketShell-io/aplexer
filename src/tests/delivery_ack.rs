@@ -950,3 +950,191 @@ fn strict_full_visible_row_is_provable_for_each_maintained_family() {
         );
     }
 }
+
+fn hydrogen_screen(above: &[&str], composer_rows: &[&str], footer: &str) -> String {
+    let rule = "\u{2500}".repeat(80);
+    let mut lines: Vec<String> = above.iter().map(|s| (*s).to_string()).collect();
+    lines.push(rule.clone());
+    for row in composer_rows {
+        lines.push((*row).to_string());
+    }
+    lines.push(rule);
+    if !footer.is_empty() {
+        lines.push(footer.to_string());
+    }
+    lines.join("\n")
+}
+
+#[test]
+fn hydrogen_bounded_layout_recognizes_idle_and_footer_variants_and_rejects_malformed() {
+    let footer_med =
+        "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
+    let footer_high =
+        "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} high";
+    let footer_argon =
+        "? for shortcuts                                auto \u{00b7} Gemini 4 Argon \u{00b7} high";
+    let idle = hydrogen_screen(
+        &["  \u{2022} Verified prior step", "  \u{2022} Ready for next prompt"],
+        &[">"],
+        footer_med,
+    );
+    for engine in ["antigravity", "argon", "flash"] {
+        assert_eq!(known_family(engine), Some("antigravity"));
+        assert_eq!(resolve_family(engine, &idle), Some("antigravity"));
+        let view = parse_screen(engine, &idle).expect("valid hydrogen idle");
+        assert_eq!(view.composer, Composer::Empty);
+        assert!(is_ready(engine, &idle));
+        assert!(!is_busy(engine, &idle));
+        let styled = screen_from_snapshot(idle.replace('\n', "\r\n").as_bytes());
+        assert!(screen_is_ready_idle(engine, &idle, styled.screen()));
+    }
+    assert_eq!(sniff_family(&idle), Some("antigravity"));
+    assert_eq!(resolve_family("shell", &idle), Some("antigravity"));
+
+    for variant in [footer_high, footer_argon] {
+        let s = hydrogen_screen(&[], &[">"], variant);
+        assert!(parse_screen("antigravity", &s).is_some(), "{variant}");
+    }
+
+    // Truncated, changed-model, or missing-action footers must be refused.
+    for bad_footer in [
+        "? for shortcuts",
+        "? for shortcuts                                auto \u{00b7} Gemini 4 Hydro",
+        "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} med\u{2026}",
+        "? for shortcuts                                auto \u{00b7} GPT-6-Luna \u{00b7} medium",
+        "auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium",
+        "",
+    ] {
+        let s = hydrogen_screen(&[], &[">"], bad_footer);
+        assert!(
+            parse_screen("antigravity", &s).is_none(),
+            "bad footer must fail: {bad_footer:?}"
+        );
+    }
+
+    // Missing/duplicate borders, empty box, menu below footer, and ambiguous second composer.
+    let rule = "\u{2500}".repeat(80);
+    let no_top = format!(">\n{rule}\n{footer_med}");
+    let no_bottom = format!("{rule}\n>\n{footer_med}");
+    let dup_top = format!("{rule}\n{rule}\n>\n{rule}\n{footer_med}");
+    let dup_bottom = format!("{rule}\n>\n{rule}\n{rule}\n{footer_med}");
+    let empty_box = format!("{rule}\n{rule}\n{footer_med}");
+    let menu_below = format!("{idle}\n  1. Allow once\n  2. Deny");
+    let ambiguous_two = format!("{idle}\n\n{idle}");
+    let lookalike_in_transcript = format!(
+        "{idle}\n\nSome assistant output\n\u{2022} Done"
+    );
+    for bad in [
+        no_top,
+        no_bottom,
+        dup_top,
+        dup_bottom,
+        empty_box,
+        menu_below,
+        ambiguous_two,
+        lookalike_in_transcript,
+    ] {
+        assert!(parse_screen("antigravity", &bad).is_none(), "{bad}");
+        assert_eq!(sniff_family(&bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn hydrogen_busy_drafts_ghost_and_strict_landing_submission_boundaries() {
+    let footer_idle =
+        "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
+    let footer_busy =
+        "esc to interrupt                               auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
+
+    let ready = hydrogen_screen(&[], &[">"], footer_idle);
+    let ready_styled = screen_from_snapshot(ready.replace('\n', "\r\n").as_bytes());
+    assert!(screen_is_fresh_empty_prompt("antigravity", &ready, ready_styled.screen()));
+
+    // Busy via footer or spinner in status rows.
+    let busy_footer = hydrogen_screen(&[&format!("> {SHORT}")], &[">"], footer_busy);
+    let busy_spinner = hydrogen_screen(
+        &[&format!("> {SHORT}"), "\u{280b} Thinking\u{2026}"],
+        &[">"],
+        footer_idle,
+    );
+    for busy in [&busy_footer, &busy_spinner] {
+        assert!(is_busy("antigravity", busy), "{busy}");
+        let styled = screen_from_snapshot(busy.replace('\n', "\r\n").as_bytes());
+        assert!(!screen_is_ready_idle("antigravity", busy, styled.screen()));
+        assert!(!screen_is_fresh_empty_prompt("antigravity", busy, styled.screen()));
+    }
+
+    // Real draft and multiline draft are unsafe without ghost styling.
+    let draft = hydrogen_screen(&[], &["> unsent draft"], footer_idle);
+    let draft_styled = screen_from_snapshot(draft.replace('\n', "\r\n").as_bytes());
+    assert!(!styled_composer_is_ghost("antigravity", draft_styled.screen()));
+    assert!(!screen_is_ready_idle("antigravity", &draft, draft_styled.screen()));
+
+    // Ghost suggestion (faint) in the exact same region counts as idle; mixed real+ghost does not.
+    let rule = "\u{2500}".repeat(80);
+    let ghost_raw = format!("{rule}\r\n> \x1b[2msuggested follow-up\x1b[0m\r\n{rule}\r\n{footer_idle}");
+    let ghost_parsed = screen_from_snapshot(ghost_raw.as_bytes());
+    let ghost_plain = ghost_parsed.screen().contents();
+    assert!(styled_composer_is_ghost("antigravity", ghost_parsed.screen()));
+    assert!(screen_is_ready_idle("antigravity", &ghost_plain, ghost_parsed.screen()));
+
+    let mixed_raw = format!("{rule}\r\n> real \x1b[2mghost\x1b[0m\r\n{rule}\r\n{footer_idle}");
+    let mixed_parsed = screen_from_snapshot(mixed_raw.as_bytes());
+    let mixed_plain = mixed_parsed.screen().contents();
+    assert!(!styled_composer_is_ghost("antigravity", mixed_parsed.screen()));
+    assert!(!screen_is_ready_idle("antigravity", &mixed_plain, mixed_parsed.screen()));
+
+    // Exact strict landing and submission verification.
+    let pending = hydrogen_screen(&[], &[&format!("> {SHORT}")], footer_idle);
+    let pending_multiline = hydrogen_screen(&[], &[&format!("> {SHORT}"), "extra line"], footer_idle);
+    let pending_leading_space = hydrogen_screen(&[], &[&format!(">  {SHORT}")], footer_idle);
+    let pending_pasted = hydrogen_screen(&[], &["> [Pasted Content 400 chars]"], footer_idle);
+    assert!(strict_payload_landed("antigravity", &pending, SHORT));
+    assert!(!strict_payload_landed("antigravity", &ready, SHORT));
+    assert!(!strict_payload_landed("antigravity", &pending_multiline, SHORT));
+    assert!(!strict_payload_landed("antigravity", &pending_leading_space, SHORT));
+    assert!(!strict_payload_landed("antigravity", &pending_pasted, SHORT));
+    assert!(!strict_payload_landed("antigravity", &busy_footer, SHORT));
+
+    let done = hydrogen_screen(
+        &[&format!("> {SHORT}"), "", "\u{2022} ACKDONE"],
+        &[">"],
+        footer_idle,
+    );
+    let done_styled = screen_from_snapshot(done.replace('\n', "\r\n").as_bytes());
+    assert!(strict_submission_confirmed(
+        "antigravity",
+        &ready,
+        &done,
+        SHORT,
+        done_styled.screen()
+    ));
+    // Old echo, assistant-only quote, or pending composer must not confirm.
+    assert!(!strict_submission_confirmed(
+        "antigravity",
+        &done,
+        &done,
+        SHORT,
+        done_styled.screen()
+    ));
+    let assistant_only = hydrogen_screen(
+        &[&format!("\u{2022} {SHORT}"), "", "\u{2022} ACKDONE"],
+        &[">"],
+        footer_idle,
+    );
+    let assistant_styled = screen_from_snapshot(assistant_only.replace('\n', "\r\n").as_bytes());
+    assert!(!strict_submission_confirmed(
+        "antigravity",
+        &ready,
+        &assistant_only,
+        SHORT,
+        assistant_styled.screen()
+    ));
+    assert!(!strict_submission_confirmed(
+        "antigravity",
+        &ready,
+        &pending,
+        SHORT,
+        done_styled.screen()
+    ));
+}
