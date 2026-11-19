@@ -156,9 +156,7 @@ fn antigravity_composer_bounds<T: AsRef<str>>(lines: &[T]) -> Option<(usize, usi
             && (0..i)
                 .rev()
                 .find(|&t| is_antigravity_border(lines[t].as_ref()))
-                .is_some_and(|t| {
-                    i > t + 1 && lines[t + 1].as_ref().trim_start().starts_with('>')
-                })
+                .is_some_and(|t| i > t + 1 && lines[t + 1].as_ref().trim_start().starts_with('>'))
     }) {
         return None;
     }
@@ -846,9 +844,7 @@ pub fn strict_submission_confirmed(
     payload: &str,
     styled: &vt100::Screen,
 ) -> bool {
-    if parse_screen(engine, after).is_none()
-        || !composer_is_empty_or_ghost(engine, after, styled)
-    {
+    if parse_screen(engine, after).is_none() || !composer_is_empty_or_ghost(engine, after, styled) {
         return false;
     }
     if crate::engine_family(engine) == "antigravity" {

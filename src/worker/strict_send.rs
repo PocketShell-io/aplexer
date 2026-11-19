@@ -941,7 +941,12 @@ mod tests {
 
         // Attached client refuses cleanly.
         set_raw_screen(&runtime, true, &ready);
-        runtime.terminal.lock().unwrap().clients.push(1);
+        runtime
+            .terminal
+            .lock()
+            .unwrap()
+            .clients
+            .insert(1, super::runtime::AttachedClient { geometry: None });
         let attached = submit(&runtime, Uuid::new_v4(), PAYLOAD);
         assert_eq!(attached["reason"], "input_client_attached");
         assert_eq!(attached["mutation"], false);
