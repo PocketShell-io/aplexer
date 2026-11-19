@@ -851,7 +851,7 @@ mod tests {
         let done = hydrogen_plain(
             &[
                 "  \u{2022} Ready for task",
-                &format!("> {PAYLOAD}"),
+                &format!("\x1b[34;1m  {PAYLOAD}\x1b[0m"),
                 "",
                 "\u{2022} ACKDONE",
             ],
@@ -900,7 +900,7 @@ mod tests {
         let footer_idle =
             "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
         let footer_busy =
-            "esc to interrupt                               auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
+            "esc to cancel                                  auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
         let ready = hydrogen_plain(&[], &[">"], footer_idle);
 
         // Unknown / malformed / menu layouts must refuse as unknown_layout.

@@ -996,12 +996,18 @@ fn hydrogen_bounded_layout_recognizes_idle_and_footer_variants_and_rejects_malfo
         assert!(parse_screen("antigravity", &s).is_some(), "{variant}");
     }
 
-    // Truncated, changed-model, or missing-action footers must be refused.
+    // Truncated, embedded, extra-suffix, changed-model, or missing-action footers must be refused.
     for bad_footer in [
         "? for shortcuts",
+        "? for shortcuts \u{00b7} NotGemini FakeHydrogen",
+        "? for shortcuts   auto \u{00b7} NotGemini FakeHydrogen \u{00b7} medium",
         "? for shortcuts                                auto \u{00b7} Gemini 4 Hydro",
+        "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} med",
+        "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen",
         "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} med\u{2026}",
+        "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium \u{00b7} extra",
         "? for shortcuts                                auto \u{00b7} GPT-6-Luna \u{00b7} medium",
+        "foo ? for shortcuts                            auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium",
         "auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium",
         "",
     ] {
@@ -1044,16 +1050,16 @@ fn hydrogen_busy_drafts_ghost_and_strict_landing_submission_boundaries() {
     let footer_idle =
         "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
     let footer_busy =
-        "esc to interrupt                               auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
+        "esc to cancel                                  auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
 
     let ready = hydrogen_screen(&[], &[">"], footer_idle);
     let ready_styled = screen_from_snapshot(ready.replace('\n', "\r\n").as_bytes());
     assert!(screen_is_fresh_empty_prompt("antigravity", &ready, ready_styled.screen()));
 
     // Busy via footer or spinner in status rows.
-    let busy_footer = hydrogen_screen(&[&format!("> {SHORT}")], &[">"], footer_busy);
+    let busy_footer = hydrogen_screen(&[&format!("  {SHORT}")], &[">"], footer_busy);
     let busy_spinner = hydrogen_screen(
-        &[&format!("> {SHORT}"), "\u{280b} Thinking\u{2026}"],
+        &[&format!("  {SHORT}"), "\u{28ff}  Running command..."],
         &[">"],
         footer_idle,
     );
@@ -1096,12 +1102,11 @@ fn hydrogen_busy_drafts_ghost_and_strict_landing_submission_boundaries() {
     assert!(!strict_payload_landed("antigravity", &pending_pasted, SHORT));
     assert!(!strict_payload_landed("antigravity", &busy_footer, SHORT));
 
-    let done = hydrogen_screen(
-        &[&format!("> {SHORT}"), "", "\u{2022} ACKDONE"],
-        &[">"],
-        footer_idle,
+    let done_raw = format!(
+        "\x1b[34;1m  {SHORT}\x1b[0m\r\n\r\n\u{2022} ACKDONE\r\n{rule}\r\n>\r\n{rule}\r\n{footer_idle}"
     );
-    let done_styled = screen_from_snapshot(done.replace('\n', "\r\n").as_bytes());
+    let done_styled = screen_from_snapshot(done_raw.as_bytes());
+    let done = done_styled.screen().contents();
     assert!(strict_submission_confirmed(
         "antigravity",
         &ready,
@@ -1109,7 +1114,8 @@ fn hydrogen_busy_drafts_ghost_and_strict_landing_submission_boundaries() {
         SHORT,
         done_styled.screen()
     ));
-    // Old echo, assistant-only quote, or pending composer must not confirm.
+    // Old echo, assistant Markdown `> payload` blockquote, unstyled indent,
+    // wrapped continuation, or pending composer must not confirm.
     assert!(!strict_submission_confirmed(
         "antigravity",
         &done,
@@ -1117,18 +1123,43 @@ fn hydrogen_busy_drafts_ghost_and_strict_landing_submission_boundaries() {
         SHORT,
         done_styled.screen()
     ));
-    let assistant_only = hydrogen_screen(
-        &[&format!("\u{2022} {SHORT}"), "", "\u{2022} ACKDONE"],
+    let quote_only = hydrogen_screen(
+        &[&format!("> {SHORT}"), "", "\u{2022} ACKDONE"],
         &[">"],
         footer_idle,
     );
-    let assistant_styled = screen_from_snapshot(assistant_only.replace('\n', "\r\n").as_bytes());
+    let quote_styled = screen_from_snapshot(quote_only.replace('\n', "\r\n").as_bytes());
     assert!(!strict_submission_confirmed(
         "antigravity",
         &ready,
-        &assistant_only,
+        &quote_only,
         SHORT,
-        assistant_styled.screen()
+        quote_styled.screen()
+    ));
+    let unstyled_indent = hydrogen_screen(
+        &[&format!("  {SHORT}"), "", "\u{2022} ACKDONE"],
+        &[">"],
+        footer_idle,
+    );
+    let unstyled_screen =
+        screen_from_snapshot(unstyled_indent.replace('\n', "\r\n").as_bytes());
+    assert!(!strict_submission_confirmed(
+        "antigravity",
+        &ready,
+        &unstyled_indent,
+        SHORT,
+        unstyled_screen.screen()
+    ));
+    let wrapped_raw = format!(
+        "\x1b[34;1m  {SHORT}\r\n  continued\x1b[0m\r\n{rule}\r\n>\r\n{rule}\r\n{footer_idle}"
+    );
+    let wrapped_styled = screen_from_snapshot(wrapped_raw.as_bytes());
+    assert!(!strict_submission_confirmed(
+        "antigravity",
+        &ready,
+        &wrapped_styled.screen().contents(),
+        SHORT,
+        wrapped_styled.screen()
     ));
     assert!(!strict_submission_confirmed(
         "antigravity",
