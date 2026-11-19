@@ -768,6 +768,49 @@ fn antigravity_plain_echo_count(plain: &str, payload: &str) -> usize {
         .count()
 }
 
+/// Whether row `r` of `styled` is a 2-space-indented user-turn row whose
+/// visible glyphs all carry Antigravity/Hydrogen's `SGR 34;1` (bold +
+/// `Color::Idx(4)`) user-turn styling.
+fn antigravity_row_has_user_style(
+    styled: &vt100::Screen,
+    r: usize,
+    row_text: &str,
+    cols: u16,
+) -> bool {
+    if !row_text.starts_with("  ") {
+        return false;
+    }
+    let mut saw_glyph = false;
+    let mut c: u16 = 2;
+    while c < cols {
+        let Some(cell) = styled.cell(r as u16, c) else {
+            c += 1;
+            continue;
+        };
+        let wide = cell.is_wide();
+        if !cell.is_wide_continuation() && !cell.contents().trim().is_empty() {
+            saw_glyph = true;
+            if !cell.bold() || cell.fgcolor() != vt100::Color::Idx(4) {
+                return false;
+            }
+        }
+        c += if wide { 2 } else { 1 };
+    }
+    saw_glyph
+}
+
+/// Whether `styled` contains any 2-space-indented `SGR 34;1` user-turn row in
+/// the `above` region before the bounded composer. Fails closed (`true`) if
+/// `styled` does not match the bounded composer layout.
+fn antigravity_has_styled_user_history(styled: &vt100::Screen) -> bool {
+    let (_, cols) = styled.size();
+    let rows: Vec<String> = styled.rows(0, cols).collect();
+    let Some((top, _, _)) = antigravity_composer_bounds(&rows) else {
+        return true;
+    };
+    (0..top).any(|r| antigravity_row_has_user_style(styled, r, &rows[r], cols))
+}
+
 /// Count bounded user-turn echoes in `above` that carry Antigravity/Hydrogen's
 /// maintained bold-blue (`SGR 34;1`) user-turn styling, distinguishing real
 /// submitted user turns from assistant Markdown `> ` blockquotes or plain
@@ -784,28 +827,10 @@ fn antigravity_styled_echo_count(payload: &str, styled: &vt100::Screen) -> usize
             continue;
         };
         let bounded = r + 1 == top || rows[r + 1].trim().is_empty();
-        if !bounded || !strict_text_matches(rest.trim_end(), payload) {
-            continue;
-        }
-        let mut saw_glyph = false;
-        let mut all_user_style = true;
-        let mut c: u16 = 2;
-        while c < cols {
-            let Some(cell) = styled.cell(r as u16, c) else {
-                c += 1;
-                continue;
-            };
-            let wide = cell.is_wide();
-            if !cell.is_wide_continuation() && !cell.contents().trim().is_empty() {
-                saw_glyph = true;
-                if !cell.bold() || cell.fgcolor() != vt100::Color::Idx(4) {
-                    all_user_style = false;
-                    break;
-                }
-            }
-            c += if wide { 2 } else { 1 };
-        }
-        if saw_glyph && all_user_style {
+        if bounded
+            && strict_text_matches(rest.trim_end(), payload)
+            && antigravity_row_has_user_style(styled, r, &rows[r], cols)
+        {
             count += 1;
         }
     }
@@ -857,12 +882,12 @@ pub fn screen_is_fresh_empty_prompt(engine: &str, plain: &str, screen: &vt100::S
             "antigravity" => {
                 trimmed == ">"
                     || trimmed.starts_with("> ")
-                    || trimmed.starts_with(['•', '●'])
+                    || trimmed.starts_with(['•', '●', '○'])
                     || antigravity_spinner(line)
             }
             _ => true,
         }
-    })
+    }) && (family != "antigravity" || !antigravity_has_styled_user_history(screen))
 }
 
 /// Whether the transition from `before_plain` to `after_plain` (`after_screen`)

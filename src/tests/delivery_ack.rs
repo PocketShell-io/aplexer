@@ -1056,6 +1056,20 @@ fn hydrogen_busy_drafts_ghost_and_strict_landing_submission_boundaries() {
     let ready_styled = screen_from_snapshot(ready.replace('\n', "\r\n").as_bytes());
     assert!(screen_is_fresh_empty_prompt("antigravity", &ready, ready_styled.screen()));
 
+    // Historical styled user turn (two spaces + SGR 34;1, no `>` or bullet) +
+    // blank + empty composer must NOT be treated as a fresh empty prompt.
+    let rule = "\u{2500}".repeat(80);
+    let hist_styled_raw = format!(
+        "\x1b[34;1m  prior submitted prompt\x1b[0m\r\n\r\n{rule}\r\n>\r\n{rule}\r\n{footer_idle}"
+    );
+    let hist_styled = screen_from_snapshot(hist_styled_raw.as_bytes());
+    let hist_plain = hist_styled.screen().contents();
+    assert!(!screen_is_fresh_empty_prompt(
+        "antigravity",
+        &hist_plain,
+        hist_styled.screen()
+    ));
+
     // Busy via footer or spinner in status rows.
     let busy_footer = hydrogen_screen(&[&format!("  {SHORT}")], &[">"], footer_busy);
     let busy_spinner = hydrogen_screen(
