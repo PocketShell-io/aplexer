@@ -1047,6 +1047,90 @@ fn hydrogen_bounded_layout_recognizes_idle_and_footer_variants_and_rejects_malfo
 }
 
 #[test]
+fn hydrogen_strict_landing_recognizes_blank_action_without_relaxing_preflight() {
+    // Sanitized from the owned Hydrogen wake: its footer hides the shortcut
+    // label after paste, while retaining the right-aligned model and effort.
+    let footer_idle =
+        "? for shortcuts                                auto · Gemini 4 Hydrogen · medium";
+    let footer_staged =
+        "                                               auto · Gemini 4 Hydrogen · medium";
+    let payload = "Read inbox message 11111111-2222-4333-8444-555555555555";
+    let ready = hydrogen_screen(&[], &[">"], footer_idle);
+    let staged = hydrogen_screen(&[], &[&format!("> {payload}")], footer_staged);
+    let staged_style = screen_from_snapshot(staged.replace('\n', "\r\n").as_bytes());
+
+    assert!(strict_payload_landed("antigravity", &staged, payload));
+    // This is only a landing observation. It never authorizes a new paste or
+    // proves submission, and an actionless empty composer remains unknown.
+    assert!(parse_screen("antigravity", &staged).is_none());
+    assert!(!screen_is_ready_idle(
+        "antigravity",
+        &staged,
+        staged_style.screen()
+    ));
+    assert!(!strict_submission_confirmed(
+        "antigravity",
+        &ready,
+        &staged,
+        payload,
+        staged_style.screen()
+    ));
+    let empty = hydrogen_screen(&[], &[">"], footer_staged);
+    assert!(!strict_payload_landed("antigravity", &empty, payload));
+    assert!(!strict_payload_landed("antigravity", &empty, ""));
+    assert!(parse_screen("antigravity", &empty).is_none());
+
+    for footer in [
+        "auto · Gemini 4 Hydrogen · medium", // no retained right alignment
+        "                                               auto · Gemini 4 Hydro · medium",
+        "                                               auto · Gemini 4 Hydrogen · med",
+        "                                               auto · Gemini 4 Hydrogen · medium · extra",
+        "                                               auto · GPT-6-Luna · medium",
+        "unrecognized action                            auto · Gemini 4 Hydrogen · medium",
+        "esc to cancel                                  auto · Gemini 4 Hydrogen · medium",
+    ] {
+        let wrong = hydrogen_screen(&[], &[&format!("> {payload}")], footer);
+        assert!(
+            !strict_payload_landed("antigravity", &wrong, payload),
+            "{footer}"
+        );
+    }
+    for wrong in [
+        hydrogen_screen(&[], &["> somebody else's draft"], footer_staged),
+        hydrogen_screen(&[], &[&format!(">  {payload}")], footer_staged),
+        hydrogen_screen(&[], &[&format!("> {payload}"), "extra line"], footer_staged),
+        hydrogen_screen(&[], &["> [Pasted Content 400 chars]"], footer_staged),
+        hydrogen_screen(
+            &["⣯  Running command..."],
+            &[&format!("> {payload}")],
+            footer_staged,
+        ),
+        format!("{staged}\n  1. Allow once\n  2. Deny"),
+        format!("{ready}\n\n{staged}"),
+        format!("{staged}\n\n{staged}"),
+    ] {
+        assert!(
+            !strict_payload_landed("antigravity", &wrong, payload),
+            "{wrong}"
+        );
+    }
+
+    // The usual post-Enter proof is still required: a newly styled user echo
+    // plus the known, empty composer. A staged notice alone never passes it.
+    let rule = "─".repeat(80);
+    let submitted =
+        format!("\x1b[34;1m  {payload}\x1b[0m\r\n\r\n{rule}\r\n>\r\n{rule}\r\n{footer_idle}");
+    let submitted_style = screen_from_snapshot(submitted.as_bytes());
+    assert!(strict_submission_confirmed(
+        "antigravity",
+        &ready,
+        &submitted_style.screen().contents(),
+        payload,
+        submitted_style.screen()
+    ));
+}
+
+#[test]
 fn hydrogen_busy_drafts_ghost_and_strict_landing_submission_boundaries() {
     let footer_idle =
         "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";

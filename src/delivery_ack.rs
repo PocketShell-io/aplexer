@@ -104,7 +104,10 @@ fn is_antigravity_footer(line: &str) -> bool {
     ) {
         return false;
     }
-    let right = right.trim_start();
+    is_antigravity_model_footer(right.trim_start())
+}
+
+fn is_antigravity_model_footer(right: &str) -> bool {
     let segments: Vec<&str> = right.split(" · ").collect();
     let (model, effort) = match segments.as_slice() {
         ["auto", model, effort] => (*model, *effort),
@@ -117,15 +120,31 @@ fn is_antigravity_footer(line: &str) -> bool {
     ) && matches!(effort, "low" | "medium" | "high")
 }
 
+// Hydrogen hides the shortcut label while a payload is staged. This footer is
+// accepted only by strict landing, never as evidence of a ready input prompt.
+fn is_antigravity_staged_footer(line: &str) -> bool {
+    line.starts_with("  ") && is_antigravity_model_footer(line.trim_matches(' '))
+}
+
 /// Locate the single unambiguous bordered ASCII `>` composer and its
 /// maintained Hydrogen footer, returning `(top_border, prompt_row, bottom_border)`.
 /// Shared by `parse_screen` and `styled_composer_is_ghost` so plain and styled
 /// checks always inspect the exact same region.
 fn antigravity_composer_bounds<T: AsRef<str>>(lines: &[T]) -> Option<(usize, usize, usize)> {
+    antigravity_composer_bounds_inner(lines, false)
+}
+
+fn antigravity_composer_bounds_inner<T: AsRef<str>>(
+    lines: &[T],
+    allow_staged_footer: bool,
+) -> Option<(usize, usize, usize)> {
+    let footer = |line: &str| {
+        is_antigravity_footer(line) || (allow_staged_footer && is_antigravity_staged_footer(line))
+    };
     let bottom = (0..lines.len()).rev().find(|&i| {
         is_antigravity_border(lines[i].as_ref())
             && i + 1 < lines.len()
-            && is_antigravity_footer(lines[i + 1].as_ref())
+            && footer(lines[i + 1].as_ref())
     })?;
     // Reject menus, modals, or extra UI rendered below the footer.
     if lines[bottom + 2..]
@@ -148,11 +167,21 @@ fn antigravity_composer_bounds<T: AsRef<str>>(lines: &[T]) -> Option<(usize, usi
     if !lines[start].as_ref().trim_start().starts_with('>') {
         return None;
     }
+    if is_antigravity_staged_footer(lines[bottom + 1].as_ref())
+        && lines[start]
+            .as_ref()
+            .trim_start()
+            .strip_prefix('>')?
+            .trim()
+            .is_empty()
+    {
+        return None;
+    }
     // Reject ambiguous second bordered `>` composer + footer above in the screen.
     if (0..top).any(|i| {
         is_antigravity_border(lines[i].as_ref())
             && i + 1 < top
-            && is_antigravity_footer(lines[i + 1].as_ref())
+            && footer(lines[i + 1].as_ref())
             && (0..i)
                 .rev()
                 .find(|&t| is_antigravity_border(lines[t].as_ref()))
@@ -168,6 +197,10 @@ fn antigravity_composer_bounds<T: AsRef<str>>(lines: &[T]) -> Option<(usize, usi
 /// dialog, an unknown engine): callers must treat that as "unknown", never
 /// as "empty".
 pub fn parse_screen(engine: &str, screen: &str) -> Option<ScreenView> {
+    parse_screen_inner(engine, screen, false)
+}
+
+fn parse_screen_inner(engine: &str, screen: &str, allow_staged_footer: bool) -> Option<ScreenView> {
     let lines: Vec<&str> = screen.lines().collect();
     let family = crate::engine_family(engine);
     let (start, end, input) = match family {
@@ -212,7 +245,8 @@ pub fn parse_screen(engine: &str, screen: &str) -> Option<ScreenView> {
             (start, bottom + 1, input)
         }
         "antigravity" => {
-            let (top, prompt_row, bottom) = antigravity_composer_bounds(&lines)?;
+            let (top, prompt_row, bottom) =
+                antigravity_composer_bounds_inner(&lines, allow_staged_footer)?;
             let first = lines[prompt_row].trim_start().strip_prefix('>')?;
             let mut joined = first.to_string();
             for row in &lines[prompt_row + 1..bottom] {
@@ -474,6 +508,10 @@ pub fn is_busy(engine: &str, screen: &str) -> bool {
     let Some(view) = parse_screen(engine, screen) else {
         return false;
     };
+    view_is_busy(engine, &view)
+}
+
+fn view_is_busy(engine: &str, view: &ScreenView) -> bool {
     let status_rows = &view.above[view.above.len().saturating_sub(6)..];
     match crate::engine_family(engine) {
         "claude" => {
@@ -641,10 +679,10 @@ fn strict_bar_text(line: &str) -> Option<&str> {
 }
 
 pub fn strict_payload_landed(engine: &str, plain: &str, payload: &str) -> bool {
-    let Some(view) = parse_screen(engine, plain) else {
+    let Some(view) = parse_screen_inner(engine, plain, true) else {
         return false;
     };
-    if is_busy(engine, plain) {
+    if view_is_busy(engine, &view) {
         return false;
     }
     let lines: Vec<&str> = plain.lines().collect();
