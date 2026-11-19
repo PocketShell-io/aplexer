@@ -782,7 +782,24 @@ fn strict_echo_count(engine: &str, plain: &str, payload: &str) -> usize {
     count
 }
 
-/// Count plain-text bounded 2-space-indented user-turn candidates in `above`
+fn antigravity_user_turn_text(row: &str) -> Option<&str> {
+    row.strip_prefix("  ").or_else(|| row.strip_prefix("> "))
+}
+
+fn antigravity_echo_bounded(lines: &[String], index: usize) -> bool {
+    let Some(next) = lines.get(index + 1) else {
+        return true;
+    };
+    if next.trim().is_empty() {
+        return true;
+    }
+    // Unlike broad busy detection, transcript framing must not accept a
+    // continuation merely because it mentions "esc to cancel" in prose.
+    let mut chars = next.trim_start().chars();
+    matches!(chars.next(), Some('\u{2800}'..='\u{28ff}')) && chars.next() == Some(' ')
+}
+
+/// Count plain-text bounded user-turn candidates in `above`
 /// for `antigravity`. Used only as the baseline lower bound against
 /// `antigravity_styled_echo_count` so plain assistant quotes/indents cannot
 /// confirm a new submission.
@@ -795,16 +812,15 @@ fn antigravity_plain_echo_count(plain: &str, payload: &str) -> usize {
         .iter()
         .enumerate()
         .filter(|&(index, line)| {
-            let Some(rest) = line.strip_prefix("  ") else {
+            let Some(rest) = antigravity_user_turn_text(line) else {
                 return false;
             };
-            let bounded = index + 1 == lines.len() || lines[index + 1].trim().is_empty();
-            bounded && strict_text_matches(rest.trim_end(), payload)
+            antigravity_echo_bounded(lines, index) && strict_text_matches(rest.trim_end(), payload)
         })
         .count()
 }
 
-/// Whether row `r` of `styled` is a 2-space-indented user-turn row whose
+/// Whether row `r` of `styled` is a two-space or `> ` user-turn row whose
 /// visible glyphs all carry Antigravity/Hydrogen's `SGR 34;1` (bold +
 /// `Color::Idx(4)`) user-turn styling.
 fn antigravity_row_has_user_style(
@@ -813,11 +829,13 @@ fn antigravity_row_has_user_style(
     row_text: &str,
     cols: u16,
 ) -> bool {
-    if !row_text.starts_with("  ") {
+    if antigravity_user_turn_text(row_text).is_none() {
         return false;
     }
     let mut saw_glyph = false;
-    let mut c: u16 = 2;
+    // Include the prompt marker: an assistant quote with only its body painted
+    // blue must not qualify as a provider-rendered user turn.
+    let mut c: u16 = 0;
     while c < cols {
         let Some(cell) = styled.cell(r as u16, c) else {
             c += 1;
@@ -835,7 +853,7 @@ fn antigravity_row_has_user_style(
     saw_glyph
 }
 
-/// Whether `styled` contains any 2-space-indented `SGR 34;1` user-turn row in
+/// Whether `styled` contains any maintained `SGR 34;1` user-turn row in
 /// the `above` region before the bounded composer. Fails closed (`true`) if
 /// `styled` does not match the bounded composer layout.
 fn antigravity_has_styled_user_history(styled: &vt100::Screen) -> bool {
@@ -859,11 +877,10 @@ fn antigravity_styled_echo_count(payload: &str, styled: &vt100::Screen) -> usize
     };
     let mut count = 0;
     for r in 0..top {
-        let Some(rest) = rows[r].strip_prefix("  ") else {
+        let Some(rest) = antigravity_user_turn_text(&rows[r]) else {
             continue;
         };
-        let bounded = r + 1 == top || rows[r + 1].trim().is_empty();
-        if bounded
+        if antigravity_echo_bounded(&rows[..top], r)
             && strict_text_matches(rest.trim_end(), payload)
             && antigravity_row_has_user_style(styled, r, &rows[r], cols)
         {

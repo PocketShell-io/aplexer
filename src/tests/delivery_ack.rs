@@ -1131,6 +1131,106 @@ fn hydrogen_strict_landing_recognizes_blank_action_without_relaxing_preflight() 
 }
 
 #[test]
+fn hydrogen_styled_prompt_marker_submission_and_history_boundaries() {
+    // Sanitized from the owned post-fix wake's actual raw terminal history:
+    // SGR 34;1 covers both `> ` and the wire text; Generating follows directly.
+    const WIRE: &str = "Read inbox message 00000000-0000-4000-8000-000000000001";
+    let rule = "\u{2500}".repeat(80);
+    let footer =
+        "esc to cancel                                  auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
+    let idle_footer =
+        "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
+    let ready = hydrogen_screen(&[], &[">"], idle_footer);
+    let frame = |row: &str, next: &str, composer: &str| {
+        format!("{row}\r\n{next}\r\n{rule}\r\n{composer}\r\n{rule}\r\n{footer}")
+    };
+    let user = format!("\x1b[34;1m> {WIRE}\x1b[m");
+    for next in ["", "\u{28f7}  \x1b[90mGeneratin\x1b[94mg...\x1b[m"] {
+        let raw = frame(&user, next, ">");
+        let styled = screen_from_snapshot(raw.as_bytes());
+        let plain = styled.screen().contents();
+        assert!(strict_submission_confirmed(
+            "antigravity",
+            &ready,
+            &plain,
+            WIRE,
+            styled.screen()
+        ));
+        // Both forms of pre-existing plain candidate must contribute to the
+        // conservative before-count; repainting a historical echo is not new.
+        for old_next in ["", "\u{28f7}  Generating..."] {
+            let old = frame(&format!("> {WIRE}"), old_next, ">");
+            let old_styled = screen_from_snapshot(old.as_bytes());
+            assert!(!strict_submission_confirmed(
+                "antigravity",
+                &old_styled.screen().contents(),
+                &plain,
+                WIRE,
+                styled.screen()
+            ));
+        }
+        assert!(!screen_is_fresh_empty_prompt(
+            "antigravity",
+            &plain,
+            styled.screen()
+        ));
+    }
+    for row in [
+        format!("> {WIRE}"),                 // plain assistant quote
+        format!("\x1b[34m> {WIRE}\x1b[m"),   // blue without bold
+        format!("\x1b[94;1m> {WIRE}\x1b[m"), // bright blue is not user-role blue
+        format!("> \x1b[34;1m{WIRE}\x1b[m"), // unstyled quote marker
+        format!("\x1b[34;1m> {WIRE} suffix\x1b[m"),
+        format!("\x1b[34;1m> wrong {WIRE}\x1b[m"),
+        format!("\x1b[34;1m> [Pasted Content 400 chars]\x1b[m"),
+    ] {
+        let raw = frame(&row, "", ">");
+        let styled = screen_from_snapshot(raw.as_bytes());
+        assert!(
+            !strict_submission_confirmed(
+                "antigravity",
+                &ready,
+                &styled.screen().contents(),
+                WIRE,
+                styled.screen()
+            ),
+            "{row:?}"
+        );
+    }
+    for (next, composer) in [
+        ("continued payload", ">"),
+        ("continued payload esc to cancel", ">"),
+        ("continued payload esc to interrupt", ">"),
+        ("\u{28f7}Generating...", ">"), // no spinner separator
+        ("", "> unsent draft"),
+        ("", "> [Pasted Content 400 chars]"),
+    ] {
+        let raw = frame(&user, next, composer);
+        let styled = screen_from_snapshot(raw.as_bytes());
+        assert!(
+            !strict_submission_confirmed(
+                "antigravity",
+                &ready,
+                &styled.screen().contents(),
+                WIRE,
+                styled.screen()
+            ),
+            "{next:?} {composer:?}"
+        );
+    }
+    let raw = frame(&user, "", ">");
+    let duplicate = format!("{raw}\r\n{rule}\r\n>\r\n{rule}\r\n{idle_footer}");
+    let styled = screen_from_snapshot(duplicate.as_bytes());
+    assert!(!strict_submission_confirmed(
+        "antigravity",
+        &ready,
+        &styled.screen().contents(),
+        WIRE,
+        styled.screen()
+    ));
+}
+
+#[test]
 fn hydrogen_busy_drafts_ghost_and_strict_landing_submission_boundaries() {
     let footer_idle =
         "? for shortcuts                                auto \u{00b7} Gemini 4 Hydrogen \u{00b7} medium";
