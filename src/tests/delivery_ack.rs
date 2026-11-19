@@ -1182,7 +1182,7 @@ fn hydrogen_styled_prompt_marker_submission_and_history_boundaries() {
         format!("> \x1b[34;1m{WIRE}\x1b[m"), // unstyled quote marker
         format!("\x1b[34;1m> {WIRE} suffix\x1b[m"),
         format!("\x1b[34;1m> wrong {WIRE}\x1b[m"),
-        format!("\x1b[34;1m> [Pasted Content 400 chars]\x1b[m"),
+        "\x1b[34;1m> [Pasted Content 400 chars]\x1b[m".to_string(),
     ] {
         let raw = frame(&row, "", ">");
         let styled = screen_from_snapshot(raw.as_bytes());
