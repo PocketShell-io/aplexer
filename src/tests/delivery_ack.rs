@@ -974,7 +974,10 @@ fn hydrogen_bounded_layout_recognizes_idle_and_footer_variants_and_rejects_malfo
     let footer_argon =
         "? for shortcuts                                auto \u{00b7} Gemini 4 Argon \u{00b7} high";
     let idle = hydrogen_screen(
-        &["  \u{2022} Verified prior step", "  \u{2022} Ready for next prompt"],
+        &[
+            "  \u{2022} Verified prior step",
+            "  \u{2022} Ready for next prompt",
+        ],
         &[">"],
         footer_med,
     );
@@ -1027,9 +1030,7 @@ fn hydrogen_bounded_layout_recognizes_idle_and_footer_variants_and_rejects_malfo
     let empty_box = format!("{rule}\n{rule}\n{footer_med}");
     let menu_below = format!("{idle}\n  1. Allow once\n  2. Deny");
     let ambiguous_two = format!("{idle}\n\n{idle}");
-    let lookalike_in_transcript = format!(
-        "{idle}\n\nSome assistant output\n\u{2022} Done"
-    );
+    let lookalike_in_transcript = format!("{idle}\n\nSome assistant output\n\u{2022} Done");
     for bad in [
         no_top,
         no_bottom,
@@ -1054,7 +1055,11 @@ fn hydrogen_busy_drafts_ghost_and_strict_landing_submission_boundaries() {
 
     let ready = hydrogen_screen(&[], &[">"], footer_idle);
     let ready_styled = screen_from_snapshot(ready.replace('\n', "\r\n").as_bytes());
-    assert!(screen_is_fresh_empty_prompt("antigravity", &ready, ready_styled.screen()));
+    assert!(screen_is_fresh_empty_prompt(
+        "antigravity",
+        &ready,
+        ready_styled.screen()
+    ));
 
     // Historical styled user turn (two spaces + SGR 34;1, no `>` or bullet) +
     // blank + empty composer must NOT be treated as a fresh empty prompt.
@@ -1081,39 +1086,78 @@ fn hydrogen_busy_drafts_ghost_and_strict_landing_submission_boundaries() {
         assert!(is_busy("antigravity", busy), "{busy}");
         let styled = screen_from_snapshot(busy.replace('\n', "\r\n").as_bytes());
         assert!(!screen_is_ready_idle("antigravity", busy, styled.screen()));
-        assert!(!screen_is_fresh_empty_prompt("antigravity", busy, styled.screen()));
+        assert!(!screen_is_fresh_empty_prompt(
+            "antigravity",
+            busy,
+            styled.screen()
+        ));
     }
 
     // Real draft and multiline draft are unsafe without ghost styling.
     let draft = hydrogen_screen(&[], &["> unsent draft"], footer_idle);
     let draft_styled = screen_from_snapshot(draft.replace('\n', "\r\n").as_bytes());
-    assert!(!styled_composer_is_ghost("antigravity", draft_styled.screen()));
-    assert!(!screen_is_ready_idle("antigravity", &draft, draft_styled.screen()));
+    assert!(!styled_composer_is_ghost(
+        "antigravity",
+        draft_styled.screen()
+    ));
+    assert!(!screen_is_ready_idle(
+        "antigravity",
+        &draft,
+        draft_styled.screen()
+    ));
 
     // Ghost suggestion (faint) in the exact same region counts as idle; mixed real+ghost does not.
     let rule = "\u{2500}".repeat(80);
-    let ghost_raw = format!("{rule}\r\n> \x1b[2msuggested follow-up\x1b[0m\r\n{rule}\r\n{footer_idle}");
+    let ghost_raw =
+        format!("{rule}\r\n> \x1b[2msuggested follow-up\x1b[0m\r\n{rule}\r\n{footer_idle}");
     let ghost_parsed = screen_from_snapshot(ghost_raw.as_bytes());
     let ghost_plain = ghost_parsed.screen().contents();
-    assert!(styled_composer_is_ghost("antigravity", ghost_parsed.screen()));
-    assert!(screen_is_ready_idle("antigravity", &ghost_plain, ghost_parsed.screen()));
+    assert!(styled_composer_is_ghost(
+        "antigravity",
+        ghost_parsed.screen()
+    ));
+    assert!(screen_is_ready_idle(
+        "antigravity",
+        &ghost_plain,
+        ghost_parsed.screen()
+    ));
 
     let mixed_raw = format!("{rule}\r\n> real \x1b[2mghost\x1b[0m\r\n{rule}\r\n{footer_idle}");
     let mixed_parsed = screen_from_snapshot(mixed_raw.as_bytes());
     let mixed_plain = mixed_parsed.screen().contents();
-    assert!(!styled_composer_is_ghost("antigravity", mixed_parsed.screen()));
-    assert!(!screen_is_ready_idle("antigravity", &mixed_plain, mixed_parsed.screen()));
+    assert!(!styled_composer_is_ghost(
+        "antigravity",
+        mixed_parsed.screen()
+    ));
+    assert!(!screen_is_ready_idle(
+        "antigravity",
+        &mixed_plain,
+        mixed_parsed.screen()
+    ));
 
     // Exact strict landing and submission verification.
     let pending = hydrogen_screen(&[], &[&format!("> {SHORT}")], footer_idle);
-    let pending_multiline = hydrogen_screen(&[], &[&format!("> {SHORT}"), "extra line"], footer_idle);
+    let pending_multiline =
+        hydrogen_screen(&[], &[&format!("> {SHORT}"), "extra line"], footer_idle);
     let pending_leading_space = hydrogen_screen(&[], &[&format!(">  {SHORT}")], footer_idle);
     let pending_pasted = hydrogen_screen(&[], &["> [Pasted Content 400 chars]"], footer_idle);
     assert!(strict_payload_landed("antigravity", &pending, SHORT));
     assert!(!strict_payload_landed("antigravity", &ready, SHORT));
-    assert!(!strict_payload_landed("antigravity", &pending_multiline, SHORT));
-    assert!(!strict_payload_landed("antigravity", &pending_leading_space, SHORT));
-    assert!(!strict_payload_landed("antigravity", &pending_pasted, SHORT));
+    assert!(!strict_payload_landed(
+        "antigravity",
+        &pending_multiline,
+        SHORT
+    ));
+    assert!(!strict_payload_landed(
+        "antigravity",
+        &pending_leading_space,
+        SHORT
+    ));
+    assert!(!strict_payload_landed(
+        "antigravity",
+        &pending_pasted,
+        SHORT
+    ));
     assert!(!strict_payload_landed("antigravity", &busy_footer, SHORT));
 
     let done_raw = format!(
@@ -1155,8 +1199,7 @@ fn hydrogen_busy_drafts_ghost_and_strict_landing_submission_boundaries() {
         &[">"],
         footer_idle,
     );
-    let unstyled_screen =
-        screen_from_snapshot(unstyled_indent.replace('\n', "\r\n").as_bytes());
+    let unstyled_screen = screen_from_snapshot(unstyled_indent.replace('\n', "\r\n").as_bytes());
     assert!(!strict_submission_confirmed(
         "antigravity",
         &ready,
