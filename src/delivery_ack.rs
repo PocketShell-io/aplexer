@@ -91,22 +91,30 @@ fn is_antigravity_border(line: &str) -> bool {
 }
 
 /// Maintained Hydrogen/Antigravity footer immediately below the bottom border.
-/// Requires both an action hint (`? for shortcuts` or `esc to interrupt`) and
-/// a complete maintained Gemini model segment (rejecting truncated footers and
-/// unrelated engines).
+/// Parses exact segmented tokens (`<action>  [auto · ]<model> · <effort>`)
+/// and rejects truncated, embedded, or foreign model/effort strings.
 fn is_antigravity_footer(line: &str) -> bool {
     let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.ends_with('…') || trimmed.ends_with("...") {
+    let Some((left, right)) = trimmed.split_once("  ") else {
+        return false;
+    };
+    if !matches!(
+        left,
+        "? for shortcuts" | "esc to cancel" | "esc to interrupt"
+    ) {
         return false;
     }
-    let has_action =
-        trimmed.contains("? for shortcuts") || trimmed.contains("esc to interrupt");
-    let has_model = trimmed.contains(" · ")
-        && trimmed.contains("Gemini")
-        && (trimmed.contains("Hydrogen")
-            || trimmed.contains("Argon")
-            || trimmed.contains("Flash"));
-    has_action && has_model
+    let right = right.trim_start();
+    let segments: Vec<&str> = right.split(" · ").collect();
+    let (model, effort) = match segments.as_slice() {
+        ["auto", model, effort] => (*model, *effort),
+        [model, effort] => (*model, *effort),
+        _ => return false,
+    };
+    matches!(
+        model,
+        "Gemini 4 Hydrogen" | "Gemini 4 Argon" | "Gemini 3.8 Flash"
+    ) && matches!(effort, "low" | "medium" | "high")
 }
 
 /// Locate the single unambiguous bordered ASCII `>` composer and its
@@ -484,30 +492,28 @@ pub fn is_busy(engine: &str, screen: &str) -> bool {
         "opencode" => view.below.iter().any(|line| line.contains("esc interrupt")),
         "antigravity" => {
             status_rows.iter().any(|line| antigravity_spinner(line))
-                || view
-                    .below
-                    .iter()
-                    .any(|line| line.contains("esc to interrupt") || line.contains("esc interrupt"))
+                || view.below.iter().any(|line| {
+                    line.contains("esc to cancel")
+                        || line.contains("esc to interrupt")
+                        || line.contains("esc interrupt")
+                })
         }
         _ => false,
     }
 }
 
-/// Braille spinner or `esc to interrupt` status row immediately above the
-/// Hydrogen/Antigravity composer.
+/// Braille spinner or `esc to cancel`/`esc to interrupt` status row
+/// immediately above the Hydrogen/Antigravity composer.
 fn antigravity_spinner(line: &str) -> bool {
     let trimmed = line.trim_start();
-    if trimmed.contains("esc to interrupt") {
+    if trimmed.contains("esc to cancel") || trimmed.contains("esc to interrupt") {
         return true;
     }
     let mut chars = trimmed.chars();
     let Some(glyph) = chars.next() else {
         return false;
     };
-    matches!(
-        glyph,
-        '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏'
-    ) && chars.next() == Some(' ')
+    ('\u{2800}'..='\u{28ff}').contains(&glyph) && chars.next() == Some(' ')
 }
 
 /// `✶ Stewing…`, `· Hyperspacing… (1m 26s · ↓ 6.2k tokens)`; the finished
@@ -724,7 +730,6 @@ fn strict_echo_count(engine: &str, plain: &str, payload: &str) -> usize {
             let marker = match family {
                 "codex" => '›',
                 "claude" => '❯',
-                "antigravity" => '>',
                 _ => return 0,
             };
             if let Some(text) = prompt_text(&lines[index], marker) {
@@ -741,6 +746,72 @@ fn strict_echo_count(engine: &str, plain: &str, payload: &str) -> usize {
     count
 }
 
+/// Count plain-text bounded 2-space-indented user-turn candidates in `above`
+/// for `antigravity`. Used only as the baseline lower bound against
+/// `antigravity_styled_echo_count` so plain assistant quotes/indents cannot
+/// confirm a new submission.
+fn antigravity_plain_echo_count(plain: &str, payload: &str) -> usize {
+    let Some(view) = parse_screen("antigravity", plain) else {
+        return 0;
+    };
+    let lines = &view.above;
+    lines
+        .iter()
+        .enumerate()
+        .filter(|&(index, line)| {
+            let Some(rest) = line.strip_prefix("  ") else {
+                return false;
+            };
+            let bounded = index + 1 == lines.len() || lines[index + 1].trim().is_empty();
+            bounded && strict_text_matches(rest.trim_end(), payload)
+        })
+        .count()
+}
+
+/// Count bounded user-turn echoes in `above` that carry Antigravity/Hydrogen's
+/// maintained bold-blue (`SGR 34;1`) user-turn styling, distinguishing real
+/// submitted user turns from assistant Markdown `> ` blockquotes or plain
+/// indented text.
+fn antigravity_styled_echo_count(payload: &str, styled: &vt100::Screen) -> usize {
+    let (_, cols) = styled.size();
+    let rows: Vec<String> = styled.rows(0, cols).collect();
+    let Some((top, _, _)) = antigravity_composer_bounds(&rows) else {
+        return 0;
+    };
+    let mut count = 0;
+    for r in 0..top {
+        let Some(rest) = rows[r].strip_prefix("  ") else {
+            continue;
+        };
+        let bounded = r + 1 == top || rows[r + 1].trim().is_empty();
+        if !bounded || !strict_text_matches(rest.trim_end(), payload) {
+            continue;
+        }
+        let mut saw_glyph = false;
+        let mut all_user_style = true;
+        let mut c: u16 = 2;
+        while c < cols {
+            let Some(cell) = styled.cell(r as u16, c) else {
+                c += 1;
+                continue;
+            };
+            let wide = cell.is_wide();
+            if !cell.is_wide_continuation() && !cell.contents().trim().is_empty() {
+                saw_glyph = true;
+                if !cell.bold() || cell.fgcolor() != vt100::Color::Idx(4) {
+                    all_user_style = false;
+                    break;
+                }
+            }
+            c += if wide { 2 } else { 1 };
+        }
+        if saw_glyph && all_user_style {
+            count += 1;
+        }
+    }
+    count
+}
+
 /// Positive rendered submission, not consumption. No suffix collisions,
 /// collapsed markers, assistant-only quotations or historical echoes qualify.
 pub fn strict_submission_confirmed(
@@ -750,9 +821,16 @@ pub fn strict_submission_confirmed(
     payload: &str,
     styled: &vt100::Screen,
 ) -> bool {
-    parse_screen(engine, after).is_some()
-        && composer_is_empty_or_ghost(engine, after, styled)
-        && strict_echo_count(engine, after, payload) > strict_echo_count(engine, before, payload)
+    if parse_screen(engine, after).is_none()
+        || !composer_is_empty_or_ghost(engine, after, styled)
+    {
+        return false;
+    }
+    if crate::engine_family(engine) == "antigravity" {
+        return antigravity_styled_echo_count(payload, styled)
+            > antigravity_plain_echo_count(before, payload);
+    }
+    strict_echo_count(engine, after, payload) > strict_echo_count(engine, before, payload)
 }
 
 /// Whether `plain`/`screen` shows a fresh interactive session at an empty
