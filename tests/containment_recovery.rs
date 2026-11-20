@@ -54,14 +54,6 @@ impl Drop for ProcessCleanup {
     }
 }
 
-fn wait_for_path(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while !path.exists() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert!(path.exists(), "{} did not appear", path.display());
-}
-
 fn process_alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
@@ -75,7 +67,7 @@ fn kill_and_wait_mac(pid: i32) {
     }
     let deadline = Instant::now() + Duration::from_secs(5);
     while process_alive(pid) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(10));
     }
     assert!(!process_alive(pid), "pid {pid} did not die");
 }
@@ -117,7 +109,7 @@ fn kill_preserves_evidence_when_dead_unlimited_worker_loses_setsid_descendant() 
         "--",
         "/bin/sh",
         "-c",
-        "/usr/bin/setsid /bin/sh -c 'trap \"\" HUP TERM; echo $$ > \"$1\"; sleep 30' aplexer-descendant \"$1\" & wait",
+        "/usr/bin/setsid /bin/sh -c 'trap \"\" HUP TERM; echo $$ > \"$1.tmp\"; mv \"$1.tmp\" \"$1\"; sleep 30' aplexer-descendant \"$1\" & wait",
         "aplexer-leader",
         descendant_marker_text,
     ]);
@@ -129,12 +121,7 @@ fn kill_preserves_evidence_when_dead_unlimited_worker_loses_setsid_descendant() 
     let record: Value = serde_json::from_slice(&started.stdout).expect("start JSON");
     let id = record["id"].as_str().expect("session id");
     let worker_pid = record["worker_pid"].as_i64().expect("worker pid") as i32;
-    wait_for_path(&descendant_marker);
-    let descendant_pid = fs::read_to_string(&descendant_marker)
-        .expect("read descendant marker")
-        .trim()
-        .parse::<i32>()
-        .expect("descendant pid");
+    let descendant_pid = wait_for_pid_marker(&descendant_marker, Duration::from_secs(3));
     let mut cleanup = ProcessCleanup(vec![descendant_pid, worker_pid]);
 
     let live_forget = harness.run(&["forget", id, "--force"]);
@@ -373,17 +360,19 @@ fn kill_proves_empty_pgid_domain_for_dead_worker_with_daemonized_descendant() {
         &daemon,
         "import os, sys, time, signal\n\
          marker, marker2 = sys.argv[1], sys.argv[2]\n\
+         def publish(path):\n\
+         \x20   with open(path + \".tmp\", \"w\") as handle:\n\
+         \x20       handle.write(str(os.getpid()))\n\
+         \x20   os.replace(path + \".tmp\", path)\n\
          first = os.fork()\n\
          if first == 0:\n\
          \x20   os.setsid()\n\
          \x20   second = os.fork()\n\
          \x20   if second != 0:\n\
          \x20       os._exit(0)\n\
-         \x20   with open(marker, \"w\") as handle:\n\
-         \x20       handle.write(str(os.getpid()))\n\
+         \x20   publish(marker)\n\
          \x20   time.sleep(900)\n\
-         with open(marker2, \"w\") as handle:\n\
-         \x20   handle.write(str(os.getpid()))\n\
+         publish(marker2)\n\
          signal.signal(signal.SIGHUP, signal.SIG_IGN)\n\
          signal.signal(signal.SIGTERM, signal.SIG_IGN)\n\
          time.sleep(900)\n",
@@ -415,26 +404,8 @@ fn kill_proves_empty_pgid_domain_for_dead_worker_with_daemonized_descendant() {
     let worker_pid = record["worker_pid"].as_i64().expect("worker pid") as i32;
     let workload_pid = record["workload_pid"].as_i64().expect("workload pid") as i32;
 
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !marker.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let descendant_pid = std::fs::read_to_string(&marker)
-        .unwrap_or_else(|error| {
-            let list = harness.run(&["--json", "list"]);
-            panic!(
-                "read descendant marker: {error}; sessions: {}",
-                String::from_utf8_lossy(&list.stdout)
-            )
-        })
-        .trim()
-        .parse::<i32>()
-        .expect("descendant pid");
-    let middle_pid = std::fs::read_to_string(&marker2)
-        .expect("intermediate marker")
-        .trim()
-        .parse::<i32>()
-        .expect("intermediate pid");
+    let descendant_pid = wait_for_pid_marker(&marker, Duration::from_secs(30));
+    let middle_pid = wait_for_pid_marker(&marker2, Duration::from_secs(30));
     let _cleanup = ProcessCleanup(vec![descendant_pid, worker_pid, workload_pid, middle_pid]);
 
     kill_and_wait_mac(worker_pid);
@@ -457,4 +428,30 @@ fn kill_proves_empty_pgid_domain_for_dead_worker_with_daemonized_descendant() {
         process_alive(descendant_pid),
         "a kill must never signal the daemon outside the domain"
     );
+}
+
+/// Wait for a fixture process to publish its pid in `path` and return it.
+///
+/// The writers publish atomically (write a `.tmp` sibling, then rename), but
+/// the wait is still on a *parseable* pid rather than on the path existing:
+/// a marker read between `open(O_TRUNC)` and `write` is empty, which is how
+/// `prune_reaps_a_record_whose_daemonized_descendant_escaped` failed on
+/// macos-15-intel with `ParseIntError { kind: Empty }`. Two markers written
+/// by sibling processes are also unordered, so each one is waited on.
+fn wait_for_pid_marker(path: &Path, timeout: Duration) -> i32 {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        if let Ok(pid) = text.trim().parse::<i32>() {
+            if pid > 0 {
+                return pid;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{} never held a pid (last read {text:?})",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
 }
