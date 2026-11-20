@@ -17,10 +17,13 @@
 //! `a attach` wrote, replayed into a parser at the physical size) must agree
 //! with the worker's own screen model, row for row.
 
+#[path = "support/captured_command.rs"]
+mod captured_command;
+use captured_command::run_with_timeout;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -74,28 +77,6 @@ impl Harness {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).into_owned()
-    }
-}
-
-fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::process::Output {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = cmd.spawn().expect("failed to spawn command");
-    let pid = child.id();
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => panic!("failed to wait for command: {error}"),
-        Err(_) => {
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGKILL);
-            }
-            panic!("command (pid {pid}) did not finish within {timeout:?}");
-        }
     }
 }
 
@@ -190,17 +171,34 @@ impl PtyClient {
         self.master.flush().expect("flush pty master");
     }
 
+    /// Waits for `needle` while the stream is still moving. The fake agent's
+    /// wall-clock length is the runner's speed, not a property under test: on
+    /// a loaded macOS runner a 400-step run paced ~120 ms a step and finished
+    /// just after a fixed 45 s budget, though every frame arrived. So the
+    /// deadline is an idle one -- no new client output for `IDLE` -- under a
+    /// hard ceiling that still fails a genuinely wedged stream.
     fn wait_for(&self, needle: &[u8], what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(45);
+        const IDLE: Duration = Duration::from_secs(20);
+        const CEILING: Duration = Duration::from_secs(240);
+        let ceiling = Instant::now() + CEILING;
+        let mut seen = 0usize;
+        let mut idle_since = Instant::now();
         loop {
             let out = self.output();
             if find_bytes(&out, needle).is_some() {
                 return;
             }
-            if Instant::now() >= deadline {
+            if out.len() != seen {
+                seen = out.len();
+                idle_since = Instant::now();
+            }
+            let now = Instant::now();
+            if now.duration_since(idle_since) >= IDLE || now >= ceiling {
                 panic!(
-                    "timed out waiting for {what} ({:?}) in the client's output; captured:\n{}",
+                    "timed out waiting for {what} ({:?}) in the client's output \
+                     (idle {:?}); captured:\n{}",
                     String::from_utf8_lossy(needle),
+                    now.duration_since(idle_since),
                     escape(&out)
                 );
             }
