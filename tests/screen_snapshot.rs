@@ -26,11 +26,14 @@
 // byte it writes captured and fed back through a `vt100::Parser` standing in
 // for the user's terminal.
 
+#[path = "support/captured_command.rs"]
+mod captured_command;
+use captured_command::run_with_timeout;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -87,28 +90,6 @@ impl Harness {
         let mut cmd = self.command();
         cmd.args(args);
         run_with_timeout(cmd, timeout)
-    }
-}
-
-fn run_with_timeout(mut cmd: Command, timeout: Duration) -> std::process::Output {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = cmd.spawn().expect("failed to spawn command");
-    let pid = child.id();
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => panic!("failed to wait for command: {error}"),
-        Err(_) => {
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGKILL);
-            }
-            panic!("command (pid {pid}) did not finish within {timeout:?}");
-        }
     }
 }
 
