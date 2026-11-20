@@ -147,7 +147,7 @@ impl Harness {
             &[
                 "/bin/sh",
                 "-c",
-                "/usr/bin/setsid /bin/sh -c 'trap \"\" HUP TERM; echo $$ > \"$1\"; sleep 900' \
+                "/usr/bin/setsid /bin/sh -c 'trap \"\" HUP TERM; echo $$ > \"$1.tmp\"; mv \"$1.tmp\" \"$1\"; sleep 900' \
                  aplexer-descendant \"$1\" & wait",
                 "aplexer-leader",
                 marker.to_str().expect("UTF-8 marker path"),
@@ -637,15 +637,7 @@ fn prune_reaps_a_record_whose_setsid_descendant_escaped() {
     let marker = harness.runtime.path().join("setsid-descendant-pid");
     let session = harness.start_setsid_escapee(&workspace, "escapee", &marker);
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !marker.exists() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    let descendant: i32 = fs::read_to_string(&marker)
-        .expect("descendant marker")
-        .trim()
-        .parse()
-        .expect("descendant pid");
+    let descendant = wait_for_pid_marker(&marker, Duration::from_secs(10));
     let _cleanup = ProcessCleanup(vec![session.worker_pid, session.workload_pid, descendant]);
 
     // Worker first (no exit recorded), then the leader. The `setsid`
@@ -715,17 +707,19 @@ fn prune_reaps_a_record_whose_daemonized_descendant_escaped() {
         &daemon,
         "import os, sys, time, signal\n\
          marker, marker2 = sys.argv[1], sys.argv[2]\n\
+         def publish(path):\n\
+         \x20   with open(path + \".tmp\", \"w\") as handle:\n\
+         \x20       handle.write(str(os.getpid()))\n\
+         \x20   os.replace(path + \".tmp\", path)\n\
          first = os.fork()\n\
          if first == 0:\n\
          \x20   os.setsid()\n\
          \x20   second = os.fork()\n\
          \x20   if second != 0:\n\
          \x20       os._exit(0)\n\
-         \x20   with open(marker, \"w\") as handle:\n\
-         \x20       handle.write(str(os.getpid()))\n\
+         \x20   publish(marker)\n\
          \x20   time.sleep(900)\n\
-         with open(marker2, \"w\") as handle:\n\
-         \x20   handle.write(str(os.getpid()))\n\
+         publish(marker2)\n\
          signal.signal(signal.SIGHUP, signal.SIG_IGN)\n\
          signal.signal(signal.SIGTERM, signal.SIG_IGN)\n\
          time.sleep(900)\n",
@@ -745,23 +739,11 @@ fn prune_reaps_a_record_whose_daemonized_descendant_escaped() {
         ],
     );
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !marker.exists() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    let descendant: i32 = fs::read_to_string(&marker)
-        .expect("descendant marker")
-        .trim()
-        .parse()
-        .expect("descendant pid");
+    let descendant = wait_for_pid_marker(&marker, Duration::from_secs(10));
     // The intermediate stays in the foreground (like the Linux test's
     // trapping sleeper) so the leader -- and the session -- stays alive
     // until we kill it; only the grandchild escapes.
-    let middle: i32 = fs::read_to_string(&marker2)
-        .expect("intermediate marker")
-        .trim()
-        .parse()
-        .expect("intermediate pid");
+    let middle = wait_for_pid_marker(&marker2, Duration::from_secs(10));
     let _cleanup = ProcessCleanup(vec![
         session.worker_pid,
         session.workload_pid,
@@ -810,4 +792,30 @@ fn prune_reaps_a_record_whose_daemonized_descendant_escaped() {
         process_alive(descendant),
         "prune must never signal anything, including a descendant it is abandoning"
     );
+}
+
+/// Wait for a fixture process to publish its pid in `path` and return it.
+///
+/// The writers publish atomically (write a `.tmp` sibling, then rename), but
+/// the wait is still on a *parseable* pid rather than on the path existing:
+/// a marker read between `open(O_TRUNC)` and `write` is empty, which is how
+/// `prune_reaps_a_record_whose_daemonized_descendant_escaped` failed on
+/// macos-15-intel with `ParseIntError { kind: Empty }`. Two markers written
+/// by sibling processes are also unordered, so each one is waited on.
+fn wait_for_pid_marker(path: &Path, timeout: Duration) -> i32 {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        if let Ok(pid) = text.trim().parse::<i32>() {
+            if pid > 0 {
+                return pid;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{} never held a pid (last read {text:?})",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
 }
